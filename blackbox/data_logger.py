@@ -1,0 +1,283 @@
+"""
+Главный класс регистратора данных
+"""
+
+import threading
+import time
+from datetime import datetime
+from typing import Dict, Optional
+import logging
+import os
+
+from .config import DataLoggerConfig, AlarmCondition
+from .discrete_inputs import DiscreteInputs
+from .analog_inputs import AnalogInputs
+from .data_writer import DataWriter, AlarmWriter
+
+logger = logging.getLogger(__name__)
+
+
+class DataLogger:
+    """Главный класс для регистрации данных"""
+    
+    def __init__(self, config: Optional[DataLoggerConfig] = None):
+        """
+        Инициализация регистратора данных
+        
+        Args:
+            config: Конфигурация регистратора (если None, используется конфигурация по умолчанию)
+        """
+        self.config = config or DataLoggerConfig()
+        self.config.validate()
+
+        # Настройка логирования
+        self._setup_logging()
+        
+        # Инициализация компонентов
+        self.discrete_inputs = DiscreteInputs(self.config.max_discrete_inputs)
+        self.analog_inputs = AnalogInputs(
+            self.config.analog_current_inputs,
+            self.config.analog_voltage_inputs
+        )
+        self.data_writer = DataWriter(self.config)
+        self.alarm_writer = AlarmWriter(self.config)
+        
+        # Состояние работы
+        self._running = False
+        self._analog_thread: Optional[threading.Thread] = None
+        self._discrete_thread: Optional[threading.Thread] = None
+        self._alarm_thread: Optional[threading.Thread] = None
+        
+        # Регистрация callback для дискретных входов
+        self._setup_discrete_callbacks()
+
+        logger.info("DataLogger инициализирован (data_directory=%s, alarm_directory=%s)",
+                    self.config.data_directory, self.config.alarm_directory)
+
+    def _setup_logging(self) -> None:
+        """Настроить систему логирования для библиотеки."""
+        os.makedirs(self.config.log_directory, exist_ok=True)
+
+        log_path = os.path.join(self.config.log_directory, "blackbox.log")
+
+        # Не переинициализируем логирование, если уже есть хендлеры
+        root_logger = logging.getLogger()
+        if not root_logger.handlers:
+            handlers = [logging.FileHandler(log_path, encoding="utf-8")]
+            if self.config.log_to_console:
+                handlers.append(logging.StreamHandler())
+
+            logging.basicConfig(
+                level=self.config.log_level,
+                format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+                handlers=handlers,
+            )
+        else:
+            # Добавляем только файл-логгер для текущего запуска
+            file_handler = logging.FileHandler(log_path, encoding="utf-8")
+            file_handler.setLevel(self.config.log_level)
+            formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+            file_handler.setFormatter(formatter)
+            root_logger.addHandler(file_handler)
+    
+    def _setup_discrete_callbacks(self):
+        """Настроить callbacks для дискретных входов"""
+        def on_discrete_change(input_index: int, old_value: bool, new_value: bool):
+            """Обработчик изменения дискретного входа"""
+            if self._running:
+                # Записываем данные при изменении дискретного входа
+                self._write_data_point()
+        
+        for idx in range(self.config.max_discrete_inputs):
+            self.discrete_inputs.register_change_callback(idx, on_discrete_change)
+    
+    def start(self):
+        """Запустить регистратор данных"""
+        if self._running:
+            return
+        
+        self._running = True
+        
+        # Запуск потока для опроса аналоговых входов
+        self._analog_thread = threading.Thread(target=self._analog_poll_loop, daemon=True)
+        self._analog_thread.start()
+        
+        # Запуск потока для мониторинга аварийных событий
+        self._alarm_thread = threading.Thread(target=self._alarm_monitor_loop, daemon=True)
+        self._alarm_thread.start()
+    
+    def stop(self):
+        """Остановить регистратор данных"""
+        self._running = False
+        
+        # Ждем завершения потоков
+        if self._analog_thread:
+            self._analog_thread.join(timeout=2.0)
+        if self._alarm_thread:
+            self._alarm_thread.join(timeout=2.0)
+        
+        # Закрываем файлы
+        self.data_writer.close()
+        self.alarm_writer.close()
+    
+    def _analog_poll_loop(self):
+        """Цикл опроса аналоговых входов"""
+        while self._running:
+            try:
+                # Записываем точку данных
+                self._write_data_point()
+                
+                # Добавляем в буфер аварийных событий
+                timestamp = datetime.now()
+                discrete_values = self.discrete_inputs.get_all_values()
+                analog_values = self.analog_inputs.get_all_values()
+                self.alarm_writer.add_data_point(timestamp, discrete_values, analog_values)
+                
+                # Ждем до следующего опроса
+                time.sleep(self.config.analog_poll_interval)
+            except Exception as e:
+                print(f"Ошибка в цикле опроса аналоговых входов: {e}")
+                time.sleep(self.config.analog_poll_interval)
+    
+    def _alarm_monitor_loop(self):
+        """Цикл мониторинга аварийных событий"""
+        active_alarm_name: Optional[str] = None
+        active_alarm_start: Optional[datetime] = None
+        
+        while self._running:
+            try:
+                discrete_values = self.discrete_inputs.get_all_values()
+                analog_values = self.analog_inputs.get_all_values()
+                
+                # Если авария не активна, проверяем условия
+                if not self.alarm_writer.is_alarm_active():
+                    # Проверяем все условия аварийных событий
+                    for condition in self.config.alarm_conditions:
+                        if condition.check(discrete_values, analog_values):
+                            # Начинаем запись аварийного события
+                            timestamp = datetime.now()
+                            self.alarm_writer.start_alarm(condition.name, timestamp)
+                            active_alarm_name = condition.name
+                            active_alarm_start = timestamp
+                            print(f"Аварийное событие: {condition.name}")
+                            break
+                else:
+                    # Авария активна, проверяем время окончания
+                    alarm_end_time = self.alarm_writer.get_alarm_end_time()
+                    if alarm_end_time and datetime.now() >= alarm_end_time:
+                        # Время записи истекло, завершаем
+                        if active_alarm_name:
+                            self.alarm_writer.finish_alarm(active_alarm_name)
+                            print(f"Завершена запись аварийного события: {active_alarm_name}")
+                            active_alarm_name = None
+                            active_alarm_start = None
+                
+                time.sleep(0.1)  # Проверка каждые 100мс
+            except Exception as e:
+                print(f"Ошибка в цикле мониторинга аварийных событий: {e}")
+                time.sleep(0.1)
+    
+    def _write_data_point(self):
+        """Записать точку данных"""
+        timestamp = datetime.now()
+        discrete_values = self.discrete_inputs.get_all_values()
+        analog_values = self.analog_inputs.get_all_values()
+        self.data_writer.write_data(timestamp, discrete_values, analog_values)
+    
+    # Методы для работы с дискретными входами (для внешнего скрипта)
+    def set_discrete_value(self, input_index: int, value: bool):
+        """
+        Установить значение дискретного входа
+        
+        Args:
+            input_index: Номер входа (0-19)
+            value: Значение (True/False)
+        """
+        self.discrete_inputs.set_value(input_index, value)
+    
+    def get_discrete_value(self, input_index: int) -> bool:
+        """
+        Получить значение дискретного входа
+        
+        Args:
+            input_index: Номер входа
+        
+        Returns:
+            Текущее значение
+        """
+        return self.discrete_inputs.get_value(input_index)
+    
+    def get_all_discrete_values(self) -> Dict[int, bool]:
+        """Получить все значения дискретных входов"""
+        return self.discrete_inputs.get_all_values()
+    
+    # Методы для работы с аналоговыми входами (для внешнего скрипта)
+    def set_current_value(self, input_index: int, value: float):
+        """
+        Установить значение токового входа
+        
+        Args:
+            input_index: Номер входа (0-2)
+            value: Значение тока
+        """
+        self.analog_inputs.set_current_value(input_index, value)
+    
+    def set_voltage_value(self, input_index: int, value: float):
+        """
+        Установить значение входа напряжения генератора
+        
+        Args:
+            input_index: Номер входа (0-2)
+            value: Значение напряжения
+        """
+        self.analog_inputs.set_voltage_value(input_index, value)
+    
+    def get_current_value(self, input_index: int) -> float:
+        """Получить значение токового входа"""
+        return self.analog_inputs.get_current_value(input_index)
+    
+    def get_voltage_value(self, input_index: int) -> float:
+        """Получить значение входа напряжения генератора"""
+        return self.analog_inputs.get_voltage_value(input_index)
+    
+    def get_all_analog_values(self) -> Dict[int, float]:
+        """Получить все значения аналоговых входов"""
+        return self.analog_inputs.get_all_values()
+    
+    # Методы для настройки аварийных условий
+    def add_alarm_condition(self, condition: AlarmCondition):
+        """
+        Добавить условие аварийного события
+        
+        Args:
+            condition: Условие аварийного события
+        """
+        self.config.alarm_conditions.append(condition)
+    
+    def remove_alarm_condition(self, name: str):
+        """
+        Удалить условие аварийного события
+        
+        Args:
+            name: Имя условия
+        """
+        self.config.alarm_conditions = [
+            c for c in self.config.alarm_conditions if c.name != name
+        ]
+    
+    def get_alarm_conditions(self) -> list[AlarmCondition]:
+        """Получить список всех условий аварийных событий"""
+        return self.config.alarm_conditions.copy()
+    
+    def is_running(self) -> bool:
+        """Проверить, запущен ли регистратор"""
+        return self._running
+    
+    def __enter__(self):
+        """Контекстный менеджер: вход"""
+        self.start()
+        return self
+    
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """Контекстный менеджер: выход"""
+        self.stop()
