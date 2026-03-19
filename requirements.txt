@@ -4,3 +4,4 @@
 # Для запуска тестов и измерения покрытия:
 pytest
 pytest-cov
+minimalmodbus

@@ -5,7 +5,7 @@
 import threading
 import time
 from datetime import datetime
-from typing import Dict, Optional
+from typing import Callable, Dict, Optional
 import logging
 import os
 
@@ -47,6 +47,8 @@ class DataLogger:
         self._analog_thread: Optional[threading.Thread] = None
         self._discrete_thread: Optional[threading.Thread] = None
         self._alarm_thread: Optional[threading.Thread] = None
+        self._modbus_thread: Optional[threading.Thread] = None
+        self._modbus_read_fn: Optional[Callable[[], Dict[str, object]]] = None
         
         # Регистрация callback для дискретных входов
         self._setup_discrete_callbacks()
@@ -105,6 +107,11 @@ class DataLogger:
         # Запуск потока для мониторинга аварийных событий
         self._alarm_thread = threading.Thread(target=self._alarm_monitor_loop, daemon=True)
         self._alarm_thread.start()
+
+        # Опциональный поток опроса Modbus
+        if self.config.modbus_enabled:
+            self._modbus_thread = threading.Thread(target=self._modbus_poll_loop, daemon=True)
+            self._modbus_thread.start()
     
     def stop(self):
         """Остановить регистратор данных"""
@@ -115,6 +122,8 @@ class DataLogger:
             self._analog_thread.join(timeout=2.0)
         if self._alarm_thread:
             self._alarm_thread.join(timeout=2.0)
+        if self._modbus_thread:
+            self._modbus_thread.join(timeout=2.0)
         
         # Закрываем файлы
         self.data_writer.close()
@@ -136,8 +145,23 @@ class DataLogger:
                 # Ждем до следующего опроса
                 time.sleep(self.config.analog_poll_interval)
             except Exception as e:
-                print(f"Ошибка в цикле опроса аналоговых входов: {e}")
+                logger.exception("Ошибка в цикле опроса аналоговых входов: %s", e)
                 time.sleep(self.config.analog_poll_interval)
+
+    def _modbus_poll_loop(self):
+        """Цикл опроса данных с Modbus RTU."""
+        from .modbus_reader import read_all_data
+
+        if self._modbus_read_fn is None:
+            self._modbus_read_fn = lambda: read_all_data(self.config.modbus_reader_config)
+
+        while self._running:
+            try:
+                data = self._modbus_read_fn()
+                self.update_from_modbus_data(data)
+            except Exception as e:
+                logger.exception("Ошибка в цикле опроса Modbus: %s", e)
+            time.sleep(self.config.modbus_poll_interval)
     
     def _alarm_monitor_loop(self):
         """Цикл мониторинга аварийных событий"""
@@ -174,7 +198,7 @@ class DataLogger:
                 
                 time.sleep(0.1)  # Проверка каждые 100мс
             except Exception as e:
-                print(f"Ошибка в цикле мониторинга аварийных событий: {e}")
+                logger.exception("Ошибка в цикле мониторинга аварийных событий: %s", e)
                 time.sleep(0.1)
     
     def _write_data_point(self):
@@ -183,6 +207,46 @@ class DataLogger:
         discrete_values = self.discrete_inputs.get_all_values()
         analog_values = self.analog_inputs.get_all_values()
         self.data_writer.write_data(timestamp, discrete_values, analog_values)
+
+    def update_from_modbus_data(self, data: Dict[str, object]):
+        """
+        Применить данные, прочитанные по Modbus, к текущему состоянию logger.
+
+        Args:
+            data: Результат вызова read_all_data()
+        """
+        # Аналоговые значения
+        for key, idx in self.config.modbus_to_analog_map.items():
+            if key not in data:
+                continue
+            try:
+                value = float(data[key])
+            except (TypeError, ValueError):
+                logger.warning("Некорректное значение Modbus '%s': %s", key, data[key])
+                continue
+
+            if idx < self.config.analog_current_inputs:
+                self.set_current_value(idx, value)
+            else:
+                voltage_idx = idx - self.config.analog_current_inputs
+                if 0 <= voltage_idx < self.config.analog_voltage_inputs:
+                    self.set_voltage_value(voltage_idx, value)
+
+        # Дискретные значения (алармы)
+        active_alarms = data.get("alarms", [])
+        if isinstance(active_alarms, list):
+            active_set = {str(a) for a in active_alarms}
+            for alarm_name, discrete_idx in self.config.modbus_alarm_bits_to_discrete_map.items():
+                self.set_discrete_value(discrete_idx, alarm_name in active_set)
+
+    def set_modbus_reader(self, reader_fn: Callable[[], Dict[str, object]]):
+        """
+        Подменить источник Modbus-данных (для кастомной интеграции или тестов).
+
+        Args:
+            reader_fn: Функция без аргументов, возвращающая dict данных.
+        """
+        self._modbus_read_fn = reader_fn
     
     # Методы для работы с дискретными входами (для внешнего скрипта)
     def set_discrete_value(self, input_index: int, value: bool):

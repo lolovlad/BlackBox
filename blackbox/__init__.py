@@ -8,6 +8,14 @@ from .discrete_inputs import DiscreteInputs
 from .analog_inputs import AnalogInputs
 from .data_writer import DataWriter, AlarmWriter
 
+try:
+    from .modbus_reader import read_all_data
+except Exception:  # pragma: no cover - безопасный fallback при отсутствии зависимости
+    def read_all_data(*args, **kwargs):
+        raise RuntimeError(
+            "Modbus-модуль недоступен. Установите зависимость 'minimalmodbus'."
+        )
+
 __version__ = "1.0.0"
 __all__ = [
     "DataLogger",
@@ -18,4 +26,5 @@ __all__ = [
     "AnalogInputs",
     "DataWriter",
     "AlarmWriter",
+    "read_all_data",
 ]

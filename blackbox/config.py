@@ -94,6 +94,29 @@ class DataLoggerConfig:
     # Настройки логирования
     log_level: int = logging.INFO  # Уровень логирования
     log_to_console: bool = True  # Дублировать логи в консоль
+
+    # Настройки Modbus-интеграции
+    modbus_enabled: bool = False  # Включить чтение данных с Modbus в DataLogger
+    modbus_poll_interval: float = 0.5  # Интервал опроса Modbus (сек)
+    modbus_reader_config: Dict[str, Any] = field(default_factory=lambda: {})  # override для modbus_reader
+    modbus_to_analog_map: Dict[str, int] = field(default_factory=lambda: {
+        "power": 0,       # current_0
+        "engine_rpm": 1,  # current_1
+        "frequency": 2,   # current_2
+        "voltage_L1": 3,  # voltage_0 (индекс уже в unified-формате)
+        "voltage_L2": 4,  # voltage_1
+        "voltage_L3": 5,  # voltage_2
+    })
+    modbus_alarm_bits_to_discrete_map: Dict[str, int] = field(default_factory=lambda: {
+        "low_oil_pressure": 0,
+        "high_coolant_temp": 1,
+        "overspeed": 2,
+        "underspeed": 3,
+        "generator_overvoltage": 4,
+        "generator_undervoltage": 5,
+        "low_fuel_level": 6,
+        "emergency_stop": 7,
+    })
     
     # Порядок колонок в CSV (гибкая настройка)
     csv_column_order: List[str] = field(default_factory=lambda: [
@@ -121,4 +144,6 @@ class DataLoggerConfig:
             raise ValueError("analog_poll_interval должен быть больше 0")
         if self.alarm_pre_time < 0 or self.alarm_post_time < 0:
             raise ValueError("Время записи аварийных событий не может быть отрицательным")
+        if self.modbus_poll_interval <= 0:
+            raise ValueError("modbus_poll_interval должен быть больше 0")
         return True

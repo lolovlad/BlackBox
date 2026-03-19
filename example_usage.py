@@ -7,6 +7,7 @@
 
 import time
 from blackbox import DataLogger, DataLoggerConfig, AlarmCondition, DataFormat
+from modbus_reader import read_all_data
 
 
 # Симуляция чтения данных с датчиков (в реальном проекте замените на реальные функции)
@@ -102,6 +103,14 @@ def main():
         iteration = 0
         
         while True:
+            # Пример чтения с контроллера ДГУ по Modbus RTU
+            try:
+                modbus_data = read_all_data()
+                logger.update_from_modbus_data(modbus_data)
+                print(modbus_data)
+            except Exception as exc:
+                print(f"Ошибка Modbus чтения: {exc}")
+
             # Чтение данных с датчиков
             # Дискретные входы
             for i in range(20):

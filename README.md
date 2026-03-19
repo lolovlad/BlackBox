@@ -1,22 +1,15 @@
-# BlackBox - Библиотека для регистрации данных на Raspberry Pi 5
+# BlackBox
 
-Библиотека для сбора и хранения данных с дискретных и аналоговых входов на Raspberry Pi 5. Предоставляет гибкую систему настройки условий записи, включая аварийные события с предварительной и последующей записью.
+Библиотека для сбора, нормализации и записи телеметрии (дискретные/аналоговые сигналы) с поддержкой аварийных событий и интеграции с Modbus RTU.
 
-## Основные возможности
+## Возможности
 
-- **Контроль дискретных входов**: До 20 дискретных входов с опросом по изменению статуса
-- **Контроль аналоговых входов**: 
-  - 3 токовых входа
-  - 3 входа напряжения генератора
-  - Опрос с дискретностью 0.1 сек
-- **Гибкая запись данных**: 
-  - Разделение по дням (папка с датой и CSV файлом)
-  - Возможность перезаписи обычных данных
-  - Настраиваемый формат данных (CSV, JSON)
-- **Аварийные события**:
-  - Гибкая настройка условий срабатывания
-  - Запись 5 минут до события и 15 минут после
-  - Сохранение в отдельную папку без возможности перезаписи
+- До 20 дискретных входов с обработкой изменений
+- Аналоговые входы (ток/напряжение) с периодическим опросом
+- Запись в `CSV` или `JSON` с ротацией по дням
+- Аварийные события: буфер до/после события и запись в отдельные файлы
+- Резервное хранение при ошибках записи
+- Гибкое чтение Modbus RTU (`minimalmodbus`): scaling, 16/32-bit, bitfield, byte order
 
 ## Установка
 
@@ -26,377 +19,289 @@ pip install -r requirements.txt
 
 ## Быстрый старт
 
-### Базовое использование
+### 1) Базовый DataLogger
 
 ```python
 from blackbox import DataLogger, DataLoggerConfig
 
-# Создание конфигурации
 config = DataLoggerConfig(
     data_directory="./data",
     alarm_directory="./alarms",
-    analog_poll_interval=0.1
+    analog_poll_interval=0.1,
 )
 
-# Создание и запуск регистратора
 logger = DataLogger(config)
 logger.start()
 
-# В вашем скрипте чтения данных с датчиков:
-# Установка значений дискретных входов
 logger.set_discrete_value(0, True)
-logger.set_discrete_value(1, False)
+logger.set_current_value(0, 5.5)
+logger.set_voltage_value(0, 220.0)
 
-# Установка значений аналоговых входов
-logger.set_current_value(0, 5.5)  # Ток, вход 0
-logger.set_voltage_value(0, 220.0)  # Напряжение, вход 0
-
-# Остановка регистратора
 logger.stop()
 ```
 
-### Использование с контекстным менеджером
+### 2) Контекстный менеджер
 
 ```python
 from blackbox import DataLogger, DataLoggerConfig
 
-config = DataLoggerConfig()
-with DataLogger(config) as logger:
-    # Ваш код работы с датчиками
+with DataLogger(DataLoggerConfig()) as logger:
     logger.set_discrete_value(0, True)
     logger.set_current_value(0, 5.5)
-    # Регистратор автоматически остановится при выходе из блока
 ```
 
-## Конфигурация
+## Работа с Modbus RTU
 
-### Базовая конфигурация
+По умолчанию используется:
+
+- порт: `/dev/ttyAMA0`
+- режим: RTU
+- параметры: `9600 8N1`
+- slave id: `1`
+
+### 1) Простое чтение
+
+```python
+from modbus_reader import read_all_data
+
+data = read_all_data()
+print(data)
+```
+
+Ожидаемый формат:
+
+```python
+{
+    "voltage_L1": 230.4,
+    "frequency": 50.0,
+    "power": 125.6,
+    "engine_rpm": 1500,
+    "alarms": ["overspeed"]
+}
+```
+
+### 2) Кастомная карта регистров (`fields`)
+
+```python
+from modbus_reader import read_all_data
+
+data = read_all_data({
+    "fields": [
+        {"name": "freq", "address": 3, "reg_type": "input", "data_type": "u16", "scale": 0.01},
+        {"name": "power", "address": 10, "reg_type": "input", "data_type": "s32", "scale": 0.1, "byteorder": "big"},
+        {"name": "alarms", "address": 20, "reg_type": "input", "data_type": "bitfield",
+         "bit_labels": {0: "low_oil", 1: "high_temp"}},
+    ],
+    "include_raw": True,
+})
+
+print(data)
+```
+
+Поддерживаемые поля:
+
+- `reg_type`: `input` или `holding`
+- `data_type`: `u16`, `s16`, `u32`, `s32`, `bitfield`
+- `byteorder`: `big`, `little`, `big_swap`, `little_swap` (для 32-bit)
+- `scale`, `decimals`
+
+### 3) Пример Holding Registers
+
+```python
+from modbus_reader import read_all_data
+
+data = read_all_data({
+    "fields": [
+        {"name": "oil_pressure", "address": 100, "reg_type": "holding", "data_type": "u16", "scale": 0.1},
+        {"name": "coolant_temp", "address": 101, "reg_type": "holding", "data_type": "s16", "scale": 0.1},
+    ]
+})
+```
+
+### 4) 32-bit с другим порядком слов/байтов
+
+```python
+from modbus_reader import read_all_data
+
+data = read_all_data({
+    "fields": [
+        {
+            "name": "energy_total_kwh",
+            "address": 300,
+            "reg_type": "input",
+            "data_type": "u32",
+            "byteorder": "little_swap",
+            "scale": 0.01,
+            "decimals": 2,
+        }
+    ]
+})
+
+print(data["energy_total_kwh"])
+```
+
+## Интеграция Modbus в DataLogger
+
+### Автоматический опрос в отдельном потоке
+
+```python
+from blackbox import DataLogger, DataLoggerConfig
+
+config = DataLoggerConfig(
+    modbus_enabled=True,
+    modbus_poll_interval=0.5,
+    modbus_reader_config={
+        "slave_id": 1,
+        # "fields": [...]  # при необходимости переопределите карту регистров
+    },
+)
+
+logger = DataLogger(config)
+logger.start()
+```
+
+### Ручное обновление (без фонового Modbus-потока)
+
+```python
+from blackbox import DataLogger, DataLoggerConfig
+from modbus_reader import read_all_data
+
+logger = DataLogger(DataLoggerConfig(modbus_enabled=False))
+logger.start()
+
+data = read_all_data()
+logger.update_from_modbus_data(data)
+```
+
+### Подмена источника Modbus (максимальная гибкость)
+
+```python
+from blackbox import DataLogger, DataLoggerConfig
+from modbus_reader import read_all_data
+
+logger = DataLogger(DataLoggerConfig(modbus_enabled=True))
+
+def my_modbus_reader():
+    return read_all_data({
+        "slave_id": 2,
+        "timeout": 1.5,
+        "retry_count": 5,
+        "fields": [
+            {"name": "frequency", "address": 3, "reg_type": "input", "data_type": "u16", "scale": 0.01},
+            {"name": "power", "address": 10, "reg_type": "input", "data_type": "s32", "scale": 0.1},
+            {"name": "alarms", "address": 20, "reg_type": "input", "data_type": "bitfield",
+             "bit_labels": {0: "low_oil_pressure", 1: "high_coolant_temp"}},
+        ],
+    })
+
+logger.set_modbus_reader(my_modbus_reader)
+logger.start()
+```
+
+## Конфигурация `DataLoggerConfig`
+
+Базовые параметры:
+
+- `data_directory`, `alarm_directory`, `backup_directory`, `log_directory`
+- `max_discrete_inputs` (1..20)
+- `analog_current_inputs`, `analog_voltage_inputs`
+- `analog_poll_interval`
+- `data_format` (`CSV` / `JSON`)
+- `overwrite_data`, `overwrite_alarms`
+- `alarm_pre_time`, `alarm_post_time`
+- `enable_backup_storage`
+- `log_level`, `log_to_console`
+
+Параметры Modbus-интеграции:
+
+- `modbus_enabled`
+- `modbus_poll_interval`
+- `modbus_reader_config`
+- `modbus_to_analog_map`
+- `modbus_alarm_bits_to_discrete_map`
+
+Пример:
 
 ```python
 from blackbox import DataLoggerConfig, DataFormat
 
 config = DataLoggerConfig(
-    data_directory="./data",           # Директория для обычных данных
-    alarm_directory="./alarms",        # Директория для аварийных событий
-    max_discrete_inputs=20,            # Максимум дискретных входов
-    analog_current_inputs=3,           # Количество токовых входов
-    analog_voltage_inputs=3,           # Количество входов напряжения
-    analog_poll_interval=0.1,          # Интервал опроса аналоговых входов (сек)
-    discrete_poll_on_change=True,      # Опрос дискретных по изменению
-    data_format=DataFormat.CSV,        # Формат данных (CSV или JSON)
-    overwrite_data=True,               # Перезапись обычных данных
-    overwrite_alarms=False,            # Перезапись аварийных данных
-    alarm_pre_time=300,                # Время записи до события (сек) - 5 минут
-    alarm_post_time=900                # Время записи после события (сек) - 15 минут
-)
-```
-
-### Настройка формата CSV
-
-Вы можете настроить порядок и имена колонок в CSV файле:
-
-```python
-config = DataLoggerConfig(
-    csv_column_order=[
-        "timestamp",
-        "discrete_0", "discrete_1", "discrete_2",
-        "current_0", "current_1", "current_2",
-        "voltage_0", "voltage_1", "voltage_2"
-    ],
-    csv_column_names={
-        "timestamp": "Время",
-        "discrete_0": "Датчик_1",
-        "current_0": "Ток_Генератор_1",
-        "voltage_0": "Напряжение_Генератор_1"
-    },
-    csv_delimiter=","
+    data_directory="./data",
+    alarm_directory="./alarms",
+    data_format=DataFormat.CSV,
+    analog_poll_interval=0.1,
+    modbus_enabled=True,
+    modbus_poll_interval=0.5,
 )
 ```
 
 ## Аварийные события
 
-### Простое условие на дискретные входы
+### Простое условие по дискретному входу
 
 ```python
 from blackbox import DataLogger, DataLoggerConfig, AlarmCondition
 
-config = DataLoggerConfig()
-logger = DataLogger(config)
-
-# Условие: если вход 0 стал True
-def check_discrete(discrete_values):
-    return discrete_values.get(0, False) == True
+logger = DataLogger(DataLoggerConfig())
 
 alarm = AlarmCondition(
     name="Авария_Датчик_1",
     discrete_inputs=[0],
-    discrete_condition=check_discrete
+    discrete_condition=lambda d: d.get(0, False) is True,
 )
 
 logger.add_alarm_condition(alarm)
 logger.start()
 ```
 
-### Условие на аналоговые входы (пороговые значения)
+### Порог по аналоговому входу
 
 ```python
-# Условие: если ток на входе 0 превышает 10 А
+from blackbox import AlarmCondition
+
 alarm = AlarmCondition(
     name="Перегрузка_Ток",
-    analog_inputs=[0],  # Токовый вход 0
-    threshold_max=10.0  # Максимальное значение
-)
-
-logger.add_alarm_condition(alarm)
-```
-
-### Комплексное условие (дискреты + аналоги)
-
-```python
-def check_complex(discrete_values, analog_values):
-    # Проверка дискретного входа
-    if not discrete_values.get(0, False):
-        return False
-    # Проверка аналогового входа
-    if analog_values.get(0, 0.0) > 10.0:
-        return True
-    return False
-
-alarm = AlarmCondition(
-    name="Комплексная_Авария",
-    discrete_inputs=[0],
     analog_inputs=[0],
-    discrete_condition=lambda d: d.get(0, False) == True,
-    analog_condition=lambda a: a.get(0, 0.0) > 10.0
+    threshold_max=10.0,
 )
-
-logger.add_alarm_condition(alarm)
 ```
 
-### Условие с несколькими входами
+## Формат хранения данных
 
-```python
-# Авария если любой из входов 0, 1, 2 стал True
-def check_multiple(discrete_values):
-    return any(discrete_values.get(i, False) for i in [0, 1, 2])
+Обычные данные:
 
-alarm = AlarmCondition(
-    name="Авария_Группа_Датчиков",
-    discrete_inputs=[0, 1, 2],
-    discrete_condition=check_multiple
-)
-
-logger.add_alarm_condition(alarm)
-```
-
-## API Reference
-
-### DataLogger
-
-Главный класс регистратора данных.
-
-#### Методы управления
-
-- `start()` - Запустить регистратор
-- `stop()` - Остановить регистратор
-- `is_running() -> bool` - Проверить статус работы
-
-#### Методы работы с дискретными входами
-
-- `set_discrete_value(input_index: int, value: bool)` - Установить значение дискретного входа
-- `get_discrete_value(input_index: int) -> bool` - Получить значение дискретного входа
-- `get_all_discrete_values() -> Dict[int, bool]` - Получить все значения дискретных входов
-
-#### Методы работы с аналоговыми входами
-
-- `set_current_value(input_index: int, value: float)` - Установить значение токового входа
-- `set_voltage_value(input_index: int, value: float)` - Установить значение входа напряжения
-- `get_current_value(input_index: int) -> float` - Получить значение токового входа
-- `get_voltage_value(input_index: int) -> float` - Получить значение входа напряжения
-- `get_all_analog_values() -> Dict[int, float]` - Получить все значения аналоговых входов
-
-#### Методы работы с аварийными условиями
-
-- `add_alarm_condition(condition: AlarmCondition)` - Добавить условие аварийного события
-- `remove_alarm_condition(name: str)` - Удалить условие по имени
-- `get_alarm_conditions() -> List[AlarmCondition]` - Получить список всех условий
-
-### DataLoggerConfig
-
-Класс конфигурации регистратора.
-
-#### Основные параметры
-
-- `data_directory: str` - Директория для обычных данных
-- `alarm_directory: str` - Директория для аварийных событий
-- `max_discrete_inputs: int` - Максимум дискретных входов (1-20)
-- `analog_current_inputs: int` - Количество токовых входов
-- `analog_voltage_inputs: int` - Количество входов напряжения
-- `analog_poll_interval: float` - Интервал опроса аналоговых входов (сек)
-- `discrete_poll_on_change: bool` - Опрос дискретных по изменению
-- `data_format: DataFormat` - Формат данных (CSV, JSON)
-- `overwrite_data: bool` - Перезапись обычных данных
-- `overwrite_alarms: bool` - Перезапись аварийных данных
-- `alarm_pre_time: int` - Время записи до события (сек)
-- `alarm_post_time: int` - Время записи после события (сек)
-
-#### Параметры формата CSV
-
-- `csv_delimiter: str` - Разделитель в CSV
-- `csv_include_timestamp: bool` - Включать временную метку
-- `csv_include_discrete: bool` - Включать дискретные входы
-- `csv_include_analog: bool` - Включать аналоговые входы
-- `csv_column_order: List[str]` - Порядок колонок
-- `csv_column_names: Dict[str, str]` - Имена колонок
-
-### AlarmCondition
-
-Класс для определения условий аварийных событий.
-
-#### Параметры
-
-- `name: str` - Имя условия
-- `discrete_inputs: Optional[List[int]]` - Номера дискретных входов для мониторинга
-- `analog_inputs: Optional[List[int]]` - Номера аналоговых входов для мониторинга
-- `discrete_condition: Optional[Callable]` - Функция проверки дискретов
-- `analog_condition: Optional[Callable]` - Функция проверки аналогов
-- `threshold_min: Optional[float]` - Минимальное значение для аналогов
-- `threshold_max: Optional[float]` - Максимальное значение для аналогов
-
-#### Методы
-
-- `check(discrete_values: Dict[int, bool], analog_values: Dict[int, float]) -> bool` - Проверка условия
-
-## Структура файлов данных
-
-### Обычные данные
-
-Данные сохраняются в структуре:
-```
+```text
 data/
-  2024-01-15/
-    data.csv
-  2024-01-16/
+  2026-03-19/
     data.csv
 ```
 
-### Аварийные события
+Аварийные события:
 
-Аварийные события сохраняются в структуре:
-```
+```text
 alarms/
-  alarm_Авария_Датчик_1_20240115_143022.csv
-  alarm_Перегрузка_Ток_20240115_150315.csv
+  alarm_ИмяСобытия_YYYYMMDD_HHMMSS.csv
 ```
 
-Каждый файл аварийного события содержит:
-- 5 минут данных до события
-- Данные во время события
-- 15 минут данных после события
+Каждый аварийный файл включает данные:
 
-## Примеры использования
+- за `alarm_pre_time` секунд до события
+- во время события
+- за `alarm_post_time` секунд после события
 
-### Пример 1: Простой регистратор
+## Ограничения и примечания
 
-```python
-from blackbox import DataLogger, DataLoggerConfig
+- Библиотека не читает физические датчики напрямую: это делает ваш код, а затем передает значения в `DataLogger`.
+- Для Modbus требуется `minimalmodbus` (уже в `requirements.txt`).
+- Потокобезопасность обеспечивается внутри модулей (`threading.Lock`).
 
-config = DataLoggerConfig(
-    data_directory="/mnt/ssd/data",
-    analog_poll_interval=0.1
-)
+## API (кратко)
 
-logger = DataLogger(config)
-logger.start()
-
-# В цикле чтения датчиков:
-while True:
-    # Чтение данных с датчиков (ваш код)
-    discrete_0 = read_discrete_sensor(0)
-    current_0 = read_current_sensor(0)
-    
-    # Передача данных в регистратор
-    logger.set_discrete_value(0, discrete_0)
-    logger.set_current_value(0, current_0)
-    
-    time.sleep(0.1)
-```
-
-### Пример 2: С аварийными событиями
-
-```python
-from blackbox import DataLogger, DataLoggerConfig, AlarmCondition
-
-config = DataLoggerConfig(
-    data_directory="/mnt/ssd/data",
-    alarm_directory="/mnt/ssd/alarms"
-)
-
-logger = DataLogger(config)
-
-# Настройка аварийных условий
-alarm1 = AlarmCondition(
-    name="Перегрузка_Генератор_1",
-    analog_inputs=[0],  # Токовый вход генератора 1
-    threshold_max=50.0  # Максимум 50 А
-)
-
-alarm2 = AlarmCondition(
-    name="Авария_Датчик_Двери",
-    discrete_inputs=[5],
-    discrete_condition=lambda d: d.get(5, False) == True
-)
-
-logger.add_alarm_condition(alarm1)
-logger.add_alarm_condition(alarm2)
-
-logger.start()
-
-# Ваш код работы с датчиками...
-```
-
-### Пример 3: Кастомный формат CSV
-
-```python
-config = DataLoggerConfig(
-    csv_column_order=[
-        "timestamp",
-        "discrete_0", "discrete_1",
-        "current_0", "current_1", "current_2",
-        "voltage_0", "voltage_1", "voltage_2"
-    ],
-    csv_column_names={
-        "timestamp": "Время_измерения",
-        "discrete_0": "Датчик_Двери",
-        "discrete_1": "Датчик_Окна",
-        "current_0": "Ток_Генератор_1_А",
-        "current_1": "Ток_Генератор_2_А",
-        "current_2": "Ток_Генератор_3_А",
-        "voltage_0": "Напряжение_Генератор_1_В",
-        "voltage_1": "Напряжение_Генератор_2_В",
-        "voltage_2": "Напряжение_Генератор_3_В"
-    },
-    csv_delimiter=";"
-)
-```
-
-## Важные замечания
-
-1. **Чтение данных с датчиков**: Библиотека НЕ содержит код для чтения данных с физических датчиков. Вы должны реализовать это в своем скрипте и передавать данные через методы `set_discrete_value()`, `set_current_value()`, `set_voltage_value()`.
-
-2. **Видеонаблюдение**: Библиотека НЕ содержит функционал видеонаблюдения. Это должно быть реализовано отдельно.
-
-3. **Потокобезопасность**: Все операции с данными потокобезопасны и могут использоваться из разных потоков.
-
-4. **Производительность**: Запись данных выполняется асинхронно в отдельных потоках, не блокируя основной поток чтения датчиков.
-
-5. **SSD диск**: Убедитесь, что директории `data_directory` и `alarm_directory` указывают на SSD диск для оптимальной производительности.
-
-## Требования
-
-- Python 3.7+
-- Стандартная библиотека Python (os, csv, json, threading, datetime, pathlib)
+- `DataLogger`: `start()`, `stop()`, `update_from_modbus_data()`, `set_modbus_reader()`, методы `set/get` входов
+- `DataLoggerConfig`: конфигурация логгера/хранилища/Modbus
+- `AlarmCondition`: условия аварийных событий
+- `read_all_data()`: быстрое чтение Modbus данных
 
 ## Лицензия
 
-MIT License
+MIT
