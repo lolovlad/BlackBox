@@ -14,10 +14,10 @@ if ! command -v uv >/dev/null 2>&1; then
   exit 1
 fi
 
-echo "[1/5] Installing dependencies with uv..."
+echo "[1/6] Installing dependencies with uv..."
 uv sync
 
-echo "[2/5] Exporting default environment variables..."
+echo "[2/6] Exporting default environment variables..."
 export BLACKBOX_DB_PATH="${BLACKBOX_DB_PATH:-blackbox.db}"
 export MODBUS_PORT="${MODBUS_PORT:-/dev/ttyAMA0}"
 export MODBUS_SLAVE="${MODBUS_SLAVE:-1}"
@@ -38,10 +38,13 @@ if [ ! -d "migrations" ] || [ ! -f "migrations/env.py" ]; then
   uv run flask db init
 fi
 
-echo "[4/5] Applying database migrations..."
+echo "[4/6] Applying database migrations..."
 uv run flask db upgrade
 
-echo "[5/5] Starting web application..."
+echo "[5/6] Seeding initial users and roles..."
+DISABLE_MODBUS_COLLECTOR=1 uv run python -m src.seed
+
+echo "[6/6] Starting web application..."
 PUBLIC_IP="${PUBLIC_IP:-10.109.114.106}"
 echo "Open: http://${PUBLIC_IP}:${PORT}/"
 echo "Uvicorn logs: access=on level=debug"

@@ -10,6 +10,7 @@ import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 from flask import Flask, Response, redirect, render_template_string, request, session, url_for
@@ -167,6 +168,7 @@ def _decode_raw(payload: bytes) -> dict[str, Any]:
 
 def create_app() -> Flask:
     config = RuntimeConfig()
+    db_file = Path(config.db_path).resolve()
     app = Flask(__name__)
     app.secret_key = config.secret_key
     app.config["SQLALCHEMY_DATABASE_URI"] = f"sqlite:///{config.db_path.replace(os.sep, '/')}"
@@ -180,19 +182,33 @@ def create_app() -> Flask:
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
     app.logger.setLevel(logging.DEBUG)
-    logger.info("Starting web app with DB path: %s", config.db_path)
+    logger.info("Starting web app with DB path: %s", db_file)
 
     db.init_app(app)
     Migrate(app, db, compare_type=True, render_as_batch=True)
     with app.app_context():
         table_inspector = inspect(db.engine)
+        required_tables = ("analogs", "discretes")
+        missing_required = [t for t in required_tables if not table_inspector.has_table(t)]
+        if missing_required:
+            logger.error(
+                "Missing required tables %s in DB %s. Run migrations: flask db upgrade",
+                ",".join(missing_required),
+                db_file,
+            )
         alarms_enabled = table_inspector.has_table("alarms")
         if not alarms_enabled:
             logger.error("Table 'alarms' is missing. Run migrations: flask db upgrade")
         session_factory = sessionmaker(bind=db.engine, autoflush=False, autocommit=False, expire_on_commit=False)
+    collector_enabled = not missing_required
     collector = ModbusCollector(session_factory, config, alarms_enabled=alarms_enabled)
-    collector.start()
-    atexit.register(collector.stop)
+    if os.getenv("DISABLE_MODBUS_COLLECTOR", "0") != "1" and collector_enabled:
+        collector.start()
+        atexit.register(collector.stop)
+    elif not collector_enabled:
+        logger.error("Modbus collector startup skipped because required DB tables are missing.")
+    else:
+        logger.info("Modbus collector startup skipped by DISABLE_MODBUS_COLLECTOR=1")
 
     def is_auth() -> bool:
         return bool(session.get("auth"))

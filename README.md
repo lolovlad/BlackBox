@@ -69,13 +69,28 @@ uv run flask db migrate -m "describe changes"
 uv run flask db upgrade
 ```
 
-8) Запуск сервера (Uvicorn, полный лог в консоль):
+8) Сид начальных ролей и пользователей:
+
+```powershell
+$env:DISABLE_MODBUS_COLLECTOR="1"
+uv run python -m src.seed
+```
+
+По умолчанию будут созданы:
+- типы пользователей: `admin`, `user`
+- пользователи: `admin/admin` и `user/user`
+
+Можно переопределить:
+- `SEED_ADMIN_USERNAME`, `SEED_ADMIN_PASSWORD`
+- `SEED_USER_USERNAME`, `SEED_USER_PASSWORD`
+
+9) Запуск сервера (Uvicorn, полный лог в консоль):
 
 ```powershell
 uv run uvicorn src.web_app:app --host 0.0.0.0 --port 5000 --interface wsgi --log-level debug --access-log
 ```
 
-9) Открыть в браузере:
+10) Открыть в браузере:
 
 ```text
 http://10.109.114.106:5000/
