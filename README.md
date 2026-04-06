@@ -2,6 +2,96 @@
 
 Регистрация данных с дискретных/аналоговых входов, запись в CSV/JSON, аварийные срезы. Отдельно — **получение данных по Modbus** в пакете `modbus_acquire` (удобно подключать к Flask без всей логики записи).
 
+## Flask веб-интерфейс (логин, просмотр данных, экспорт)
+
+Веб-приложение находится в `src/web_app.py`.
+
+- При открытии `/` сразу показывается форма входа.
+- После входа доступна панель `/dashboard`.
+- Страница `/data` показывает `Analogs`, `Discretes`, `Alarms`.
+- Для `Analogs` и `Discretes` используется вывод в формате колонок, как в CSV.
+- Экспорт CSV: `/export.csv`.
+
+### Команды развертывания и запуска (PowerShell, Windows)
+
+1) Установка зависимостей:
+
+```powershell
+uv sync
+```
+
+2) Пересоздание lock-файла (если менялись зависимости):
+
+```powershell
+uv lock
+```
+
+3) Настройка переменных окружения (пример):
+
+```powershell
+$env:BLACKBOX_DB_PATH="blackbox.db"
+$env:MODBUS_PORT="COM3"
+$env:MODBUS_SLAVE="1"
+$env:MODBUS_BAUDRATE="9600"
+$env:MODBUS_TIMEOUT="0.35"
+$env:MODBUS_INTERVAL="0.12"
+$env:MODBUS_ADDRESS_OFFSET="1"
+$env:RAM_BATCH_SIZE="60"
+$env:APP_USERNAME="admin"
+$env:APP_PASSWORD="admin"
+$env:SECRET_KEY="change-me"
+```
+
+4) Настройка Flask CLI для миграций:
+
+```powershell
+$env:FLASK_APP="src.web_app:app"
+```
+
+5) Инициализация миграций (только один раз на проект):
+
+```powershell
+uv run flask db init
+```
+
+6) Создание миграции с автогенерацией после изменения моделей:
+
+```powershell
+uv run flask db migrate -m "describe changes"
+```
+
+7) Применение миграций:
+
+```powershell
+uv run flask db upgrade
+```
+
+8) Запуск Flask-приложения:
+
+```powershell
+uv run python src/web_app.py
+```
+
+9) Открыть в браузере:
+
+```text
+http://127.0.0.1:5000/
+```
+
+### Полезные команды Flask-Migrate
+
+Создать новую миграцию с автогенерацией:
+
+```powershell
+uv run flask db migrate -m "describe changes"
+```
+
+Откатить миграцию на один шаг:
+
+```powershell
+uv run flask db downgrade -1
+```
+
 ## Зависимости
 
 - **Источник правды для версий пакетов:** `pyproject.toml` (рекомендуется [uv](https://docs.astral.sh/uv/)).
