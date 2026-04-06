@@ -4,7 +4,7 @@ set -eu
 # Bootstrap script for full BlackBox startup from zero:
 # 1) install dependencies
 # 2) initialize/apply DB migrations
-# 3) run Flask app
+# 3) run app with Uvicorn
 
 PROJECT_ROOT="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 cd "$PROJECT_ROOT"
@@ -30,6 +30,8 @@ export APP_USERNAME="${APP_USERNAME:-admin}"
 export APP_PASSWORD="${APP_PASSWORD:-admin}"
 export SECRET_KEY="${SECRET_KEY:-change-me}"
 export FLASK_APP="${FLASK_APP:-src.web_app:app}"
+export HOST="${HOST:-0.0.0.0}"
+export PORT="${PORT:-5000}"
 
 echo "[3/5] Preparing Flask-Migrate repository..."
 if [ ! -d "migrations" ] || [ ! -f "migrations/env.py" ]; then
@@ -40,5 +42,6 @@ echo "[4/5] Applying database migrations..."
 uv run flask db upgrade
 
 echo "[5/5] Starting web application..."
-echo "Open: http://127.0.0.1:5000/"
-exec uv run python src/web_app.py
+echo "Open: http://127.0.0.1:${PORT}/"
+echo "Uvicorn logs: access=on level=debug"
+exec uv run uvicorn src.web_app:app --host "$HOST" --port "$PORT" --interface wsgi --log-level debug --access-log

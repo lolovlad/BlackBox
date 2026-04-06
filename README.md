@@ -66,10 +66,10 @@ uv run flask db migrate -m "describe changes"
 uv run flask db upgrade
 ```
 
-8) Запуск Flask-приложения:
+8) Запуск сервера (Uvicorn, полный лог в консоль):
 
 ```powershell
-uv run python src/web_app.py
+uv run uvicorn src.web_app:app --host 0.0.0.0 --port 5000 --interface wsgi --log-level debug --access-log
 ```
 
 9) Открыть в браузере:

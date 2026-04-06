@@ -4,6 +4,7 @@ import atexit
 import csv
 import io
 import json
+import logging
 import os
 import threading
 import time
@@ -18,6 +19,8 @@ from modbus_acquire.instrument import build_instrument
 from sqlalchemy.orm import sessionmaker
 
 from src.database import Alarms, Analogs, Discretes, db
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -66,19 +69,22 @@ class ModbusCollector:
                     "close_port_after_each_call": False,
                 }
             )
+            logger.info("Modbus instrument initialized: port=%s slave=%s", self._config.modbus_port, self._config.modbus_slave)
         except Exception:
+            logger.exception("Failed to initialize Modbus instrument")
             instrument = None
 
         while not self._stop_event.is_set():
             try:
                 if instrument is None:
+                    logger.warning("Modbus instrument is unavailable, retrying in %.2fs", self._config.modbus_interval)
                     time.sleep(self._config.modbus_interval)
                     continue
                 raw = poll_raw(instrument, address_offset=self._config.address_offset)
                 sample = {"created_at": datetime.now(), "raw": raw}
                 self._append(sample)
             except Exception:
-                pass
+                logger.exception("Unhandled error in Modbus polling loop")
             time.sleep(self._config.modbus_interval)
 
     def _append(self, sample: dict[str, Any]) -> None:
@@ -92,21 +98,21 @@ class ModbusCollector:
             self._flush(batch)
 
     def _flush(self, batch: list[dict[str, Any]]) -> None:
-        db = self._session_factory()
+        session = self._session_factory()
         try:
             for sample in batch:
                 created_at: datetime = sample["created_at"]
                 raw: dict[str, Any] = sample["raw"]
                 raw_bytes = json.dumps(raw, ensure_ascii=False).encode("utf-8")
-                db.add(Analogs(created_at=created_at, date=raw_bytes))
-                db.add(Discretes(created_at=created_at, date=raw_bytes))
+                session.add(Analogs(created_at=created_at, date=raw_bytes))
+                session.add(Discretes(created_at=created_at, date=raw_bytes))
 
                 processed = convert_raw(raw)
                 active_alarms = processed.get("active_alarms", [])
                 if isinstance(active_alarms, list):
                     for alarm_name in active_alarms:
                         payload = {"alarm": alarm_name, "created_at": created_at.isoformat()}
-                        db.add(
+                        session.add(
                             Alarms(
                                 created_at=created_at,
                                 date=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
@@ -114,11 +120,13 @@ class ModbusCollector:
                                 description="Alarm from converted Modbus data",
                             )
                         )
-            db.commit()
+            session.commit()
+            logger.info("Flushed %d samples from RAM buffer to database", len(batch))
         except Exception:
-            db.rollback()
+            session.rollback()
+            logger.exception("Database flush failed for %d samples", len(batch))
         finally:
-            db.close()
+            session.close()
 
     def flush_remaining(self) -> None:
         with self._lock:
@@ -144,6 +152,16 @@ def create_app() -> Flask:
     app.secret_key = config.secret_key
     app.config["SQLALCHEMY_DATABASE_URI"] = f"sqlite:///{config.db_path.replace(os.sep, '/')}"
     app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
+    app.config["PROPAGATE_EXCEPTIONS"] = True
+    app.config["TRAP_HTTP_EXCEPTIONS"] = True
+    app.config["TRAP_BAD_REQUEST_ERRORS"] = True
+
+    logging.basicConfig(
+        level=logging.DEBUG,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    )
+    app.logger.setLevel(logging.DEBUG)
+    logger.info("Starting web app with DB path: %s", config.db_path)
 
     db.init_app(app)
     Migrate(app, db, compare_type=True, render_as_batch=True)
@@ -328,4 +346,4 @@ app = create_app()
 
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, debug=False)
+    app.run(host="0.0.0.0", port=5000, debug=True)
