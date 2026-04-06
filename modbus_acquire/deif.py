@@ -204,6 +204,88 @@ STATUS_BITS: Dict[int, List[tuple]] = {
 }
 
 
+def raw_from_registers_and_bits(registers: List[int], bits: List[bool]) -> Dict[str, Any]:
+    """
+    Сформировать DEIF raw-словарь из сырых блоков Modbus:
+    - holding registers (90 слов)
+    - coils/bits (32 бита)
+    """
+    regs = list(registers or [])
+    coils = list(bits or [])
+    raw: Dict[str, Any] = {}
+
+    def r(idx: int, default: int = 0) -> int:
+        return int(regs[idx]) if 0 <= idx < len(regs) else default
+
+    def c(idx: int, default: bool = False) -> bool:
+        return bool(coils[idx]) if 0 <= idx < len(coils) else default
+
+    raw["UgenL1L2"] = r(0)
+    raw["UgenL2L3"] = r(1)
+    raw["UgenL3L1"] = r(2)
+    raw["UgenL1N"] = r(3)
+    raw["UgenL2N"] = r(4)
+    raw["UgenL3N"] = r(5)
+    raw["Fgen"] = r(6)
+    raw["IL1"] = r(7)
+    raw["IL2"] = r(8)
+    raw["IL3"] = r(9)
+    raw["PF"] = r(10)
+    raw["Pgen"] = r(11)
+    raw["Qgen"] = r(12)
+    raw["UbusL1L2"] = r(13)
+    raw["Fbus"] = r(14)
+    raw["UbusL2L3"] = r(30)
+    raw["UbusL3L1"] = r(31)
+    raw["UbusL1N"] = r(34)
+    raw["UbusL2N"] = r(35)
+    raw["UbusL3N"] = r(36)
+    raw["Usupply"] = r(46)
+    raw["Sgen"] = r(39)
+    raw["RPM"] = r(38)
+    raw["PT100_1"] = r(47)
+    raw["PT100_2"] = r(48)
+    raw["Analog_input_E4"] = r(58)
+    raw["Egen"] = (r(17) << 16) | r(18)
+    raw["Runhours_raw83"] = r(82)
+    raw["Runhours_raw84"] = r(83)
+    raw["Alarms_total"] = r(26)
+    raw["Alarms_non_ack"] = r(27)
+    raw["AlarmReg_20"] = r(19)
+    raw["AlarmReg_21"] = r(20)
+    raw["AlarmReg_22"] = r(21)
+    raw["AlarmReg_23"] = r(22)
+    raw["AlarmReg_26"] = r(25)
+    raw["AlarmReg_70"] = r(69)
+    raw["AlarmReg_71"] = r(70)
+    raw["AlarmReg_72"] = r(71)
+    raw["AlarmReg_73"] = r(72)
+    raw["AlarmReg_74"] = r(73)
+    raw["AlarmReg_79"] = r(78)
+    raw["Gov.Reg.Value"] = r(87)
+    raw["AVR Reg.Value"] = r(88)
+
+    raw["Engine_running"] = c(0)
+    raw["Engine_cooling_down"] = c(1)
+    raw["Engine_stopped"] = c(2)
+    raw["CB_Closed"] = c(3)
+    raw["CB_Opened"] = c(4)
+    raw["CB_Tripped"] = c(5)
+    raw["Warning"] = c(6)
+    raw["Shutdown"] = c(7)
+    raw["Avail_to_sync"] = c(8)
+    raw["Synchronizing"] = c(9)
+    raw["Auto_control_on"] = c(11)
+    raw["Local_control_on"] = c(13)
+    raw["ManMode"] = c(26)
+    raw["Peak Lopping"] = c(27)
+    raw["Base Load (P/PF)"] = c(28)
+    raw["Droop"] = c(29)
+    raw["Load Share"] = c(30)
+    raw["Base Load (P/var)"] = c(31)
+    return raw
+
+
 def poll_raw(
     instrument: minimalmodbus.Instrument,
     address_offset: int = 1,
@@ -211,80 +293,21 @@ def poll_raw(
 ) -> Dict[str, Any]:
     raw: Dict[str, Any] = {}
     base = address_offset - 1
+    regs: List[int] = []
+    coils: List[bool] = []
     try:
         regs = instrument.read_registers(base + 1, 90)
-        raw["UgenL1L2"] = regs[0]
-        raw["UgenL2L3"] = regs[1]
-        raw["UgenL3L1"] = regs[2]
-        raw["UgenL1N"] = regs[3]
-        raw["UgenL2N"] = regs[4]
-        raw["UgenL3N"] = regs[5]
-        raw["Fgen"] = regs[6]
-        raw["IL1"] = regs[7]
-        raw["IL2"] = regs[8]
-        raw["IL3"] = regs[9]
-        raw["PF"] = regs[10]
-        raw["Pgen"] = regs[11]
-        raw["Qgen"] = regs[12]
-        raw["UbusL1L2"] = regs[13]
-        raw["Fbus"] = regs[14]
-        raw["UbusL2L3"] = regs[30]
-        raw["UbusL3L1"] = regs[31]
-        raw["UbusL1N"] = regs[34]
-        raw["UbusL2N"] = regs[35]
-        raw["UbusL3N"] = regs[36]
-        raw["Usupply"] = regs[46]
-        raw["Sgen"] = regs[39]
-        raw["RPM"] = regs[38]
-        raw["PT100_1"] = regs[47]
-        raw["PT100_2"] = regs[48]
-        raw["Analog_input_E4"] = regs[58]
-        raw["Egen"] = (regs[17] << 16) | regs[18]
-        raw["Runhours_raw83"] = regs[82]
-        raw["Runhours_raw84"] = regs[83]
-        raw["Alarms_total"] = regs[26]
-        raw["Alarms_non_ack"] = regs[27]
-        raw["AlarmReg_20"] = regs[19]
-        raw["AlarmReg_21"] = regs[20]
-        raw["AlarmReg_22"] = regs[21]
-        raw["AlarmReg_23"] = regs[22]
-        raw["AlarmReg_26"] = regs[25]
-        raw["AlarmReg_70"] = regs[69]
-        raw["AlarmReg_71"] = regs[70]
-        raw["AlarmReg_72"] = regs[71]
-        raw["AlarmReg_73"] = regs[72]
-        raw["AlarmReg_74"] = regs[73]
-        raw["AlarmReg_79"] = regs[78] if len(regs) > 78 else 0
-        raw["Gov.Reg.Value"] = regs[87]
-        raw["AVR Reg.Value"] = regs[88]
     except BaseException as exc:
         if on_error:
             on_error("modbus_holdings", exc)
 
     try:
         coils = instrument.read_bits(base + 16, 32, functioncode=1)
-        raw["Engine_running"] = coils[0]
-        raw["Engine_cooling_down"] = coils[1]
-        raw["Engine_stopped"] = coils[2]
-        raw["CB_Closed"] = coils[3]
-        raw["CB_Opened"] = coils[4]
-        raw["CB_Tripped"] = coils[5]
-        raw["Warning"] = coils[6]
-        raw["Shutdown"] = coils[7]
-        raw["Avail_to_sync"] = coils[8]
-        raw["Synchronizing"] = coils[9]
-        raw["Auto_control_on"] = coils[11]
-        raw["Local_control_on"] = coils[13]
-        raw["ManMode"] = coils[26] if len(coils) > 26 else False
-        raw["Peak Lopping"] = coils[27] if len(coils) > 27 else False
-        raw["Base Load (P/PF)"] = coils[28] if len(coils) > 28 else False
-        raw["Droop"] = coils[29] if len(coils) > 29 else False
-        raw["Load Share"] = coils[30] if len(coils) > 30 else False
-        raw["Base Load (P/var)"] = coils[31] if len(coils) > 31 else False
     except BaseException as exc:
         if on_error:
             on_error("modbus_coils", exc)
 
+    raw.update(raw_from_registers_and_bits(regs, coils))
     return raw
 
 
@@ -336,6 +359,7 @@ __all__ = [
     "STATUS_BITS",
     "ANALOG_CSV_COLUMNS",
     "DISCRETE_CSV_COLUMNS",
+    "raw_from_registers_and_bits",
     "poll_raw",
     "convert_raw",
     "analog_discrete_for_csv",

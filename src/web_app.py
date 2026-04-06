@@ -6,6 +6,7 @@ import io
 import json
 import logging
 import os
+import struct
 import threading
 import time
 from dataclasses import dataclass
@@ -15,7 +16,13 @@ from typing import Any
 
 from flask import Flask, Response, redirect, render_template_string, request, session, url_for
 from flask_migrate import Migrate
-from modbus_acquire.deif import ANALOG_CSV_COLUMNS, DISCRETE_CSV_COLUMNS, analog_discrete_for_csv, convert_raw, poll_raw
+from modbus_acquire.deif import (
+    ANALOG_CSV_COLUMNS,
+    DISCRETE_CSV_COLUMNS,
+    analog_discrete_for_csv,
+    convert_raw,
+    raw_from_registers_and_bits,
+)
 from modbus_acquire.instrument import build_instrument
 from sqlalchemy import inspect
 from sqlalchemy.exc import OperationalError
@@ -86,8 +93,10 @@ class ModbusCollector:
                     logger.warning("Modbus instrument is unavailable, retrying in %.2fs", self._config.modbus_interval)
                     time.sleep(self._config.modbus_interval)
                     continue
-                raw = poll_raw(instrument, address_offset=self._config.address_offset)
-                sample = {"created_at": datetime.now(), "raw": raw}
+                base = self._config.address_offset - 1
+                registers = instrument.read_registers(base + 1, 90)
+                bits = instrument.read_bits(base + 16, 32, functioncode=1)
+                sample = {"created_at": datetime.now(), "registers": list(registers), "bits": [bool(v) for v in bits]}
                 self._append(sample)
             except Exception:
                 logger.exception("Unhandled error in Modbus polling loop")
@@ -109,8 +118,10 @@ class ModbusCollector:
             # Save raw analog/discrete payloads first.
             for sample in batch:
                 created_at: datetime = sample["created_at"]
-                raw: dict[str, Any] = sample["raw"]
-                raw_bytes = json.dumps(raw, ensure_ascii=False).encode("utf-8")
+                raw_bytes = _pack_snapshot(
+                    list(sample.get("registers", [])),
+                    list(sample.get("bits", [])),
+                )
                 session.add(Analogs(created_at=created_at, date=raw_bytes))
                 session.add(Discretes(created_at=created_at, date=raw_bytes))
             session.commit()
@@ -119,7 +130,10 @@ class ModbusCollector:
                 # Save alarms separately so missing alarms table does not drop raw samples.
                 for sample in batch:
                     created_at = sample["created_at"]
-                    raw = sample["raw"]
+                    raw = raw_from_registers_and_bits(
+                        list(sample.get("registers", [])),
+                        list(sample.get("bits", [])),
+                    )
                     processed = convert_raw(raw)
                     active_alarms = processed.get("active_alarms", [])
                     if not isinstance(active_alarms, list):
@@ -164,6 +178,68 @@ def _decode_raw(payload: bytes) -> dict[str, Any]:
     except Exception:
         pass
     return {}
+
+
+def _pack_snapshot(registers: list[int], bits: list[bool]) -> bytes:
+    """
+    Binary BLOB format (no backward compatibility):
+    - 2 bytes: register count (uint16, big-endian)
+    - N*2 bytes: registers (uint16 each, big-endian)
+    - 2 bytes: bit count (uint16, big-endian)
+    - ceil(bit_count/8) bytes: packed bits (LSB-first in each byte)
+    """
+    regs = [int(v) & 0xFFFF for v in registers]
+    bit_values = [1 if bool(v) else 0 for v in bits]
+
+    reg_part = b"".join(struct.pack(">H", v) for v in regs)
+    bit_count = len(bit_values)
+    bit_bytes = bytearray((bit_count + 7) // 8)
+    for idx, bit in enumerate(bit_values):
+        if bit:
+            bit_bytes[idx // 8] |= 1 << (idx % 8)
+
+    return (
+        struct.pack(">H", len(regs))
+        + reg_part
+        + struct.pack(">H", bit_count)
+        + bytes(bit_bytes)
+    )
+
+
+def _unpack_snapshot(blob: bytes) -> tuple[list[int], list[bool]]:
+    if len(blob) < 4:
+        raise ValueError("Snapshot blob is too short")
+
+    offset = 0
+    reg_count = struct.unpack_from(">H", blob, offset)[0]
+    offset += 2
+    reg_bytes_len = reg_count * 2
+    if len(blob) < offset + reg_bytes_len + 2:
+        raise ValueError("Invalid snapshot blob register section")
+
+    registers: list[int] = [
+        struct.unpack_from(">H", blob, offset + i * 2)[0]
+        for i in range(reg_count)
+    ]
+    offset += reg_bytes_len
+
+    bit_count = struct.unpack_from(">H", blob, offset)[0]
+    offset += 2
+    packed_len = (bit_count + 7) // 8
+    if len(blob) < offset + packed_len:
+        raise ValueError("Invalid snapshot blob bit section")
+
+    packed = blob[offset : offset + packed_len]
+    bits: list[bool] = []
+    for idx in range(bit_count):
+        bits.append(bool((packed[idx // 8] >> (idx % 8)) & 1))
+    return registers, bits
+
+
+def _decode_to_processed(payload: bytes) -> dict[str, Any]:
+    registers, bits = _unpack_snapshot(payload)
+    raw = raw_from_registers_and_bits(registers, bits)
+    return convert_raw(raw)
 
 
 def create_app() -> Flask:
@@ -288,8 +364,7 @@ def create_app() -> Flask:
 
         analog_table: list[dict[str, Any]] = []
         for item in analog_rows:
-            raw = _decode_raw(item.date)
-            processed = convert_raw(raw)
+            processed = _decode_to_processed(item.date)
             analog, _ = analog_discrete_for_csv(processed)
             analog_table.append(
                 {
@@ -300,8 +375,7 @@ def create_app() -> Flask:
 
         discrete_table: list[dict[str, Any]] = []
         for item in discrete_rows:
-            raw = _decode_raw(item.date)
-            processed = convert_raw(raw)
+            processed = _decode_to_processed(item.date)
             _, discrete = analog_discrete_for_csv(processed)
             discrete_table.append(
                 {
@@ -372,8 +446,7 @@ def create_app() -> Flask:
 
         line_no = 0
         for row in rows:
-            raw = _decode_raw(row.date)
-            processed = convert_raw(raw)
+            processed = _decode_to_processed(row.date)
             analog, discrete = analog_discrete_for_csv(processed)
             line_no += 1
             dt = row.created_at
