@@ -176,8 +176,8 @@ def create_app() -> Flask:
     app.config["SQLALCHEMY_DATABASE_URI"] = f"sqlite:///{db_uri_path}"
     app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
     app.config["PROPAGATE_EXCEPTIONS"] = True
-    app.config["TRAP_HTTP_EXCEPTIONS"] = True
-    app.config["TRAP_BAD_REQUEST_ERRORS"] = True
+    app.config["TRAP_HTTP_EXCEPTIONS"] = False
+    app.config["TRAP_BAD_REQUEST_ERRORS"] = False
 
     logging.basicConfig(
         level=logging.DEBUG,
@@ -221,6 +221,10 @@ def create_app() -> Flask:
 
     def is_auth() -> bool:
         return bool(session.get("auth"))
+
+    @app.get("/favicon.ico")
+    def favicon():
+        return Response(status=204)
 
     @app.route("/", methods=["GET", "POST"])
     def login():
