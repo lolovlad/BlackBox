@@ -2,7 +2,10 @@
 """
 DEIF GEMPAC: Modbus → почасовые CSV (analogs / discretes). Ошибки Modbus — только в лог.
 
-Пример:
+Пример (Linux):
+  python deif_modbus_csv_logger.py --port /dev/ttyUSB0 --output ./logs --prefix gempac1
+
+Пример (Windows):
   python deif_modbus_csv_logger.py --port COM3 --output ./logs --prefix gempac1
 """
 
@@ -24,13 +27,18 @@ from modbus_acquire import (
     convert_raw,
     poll_raw,
 )
+from modbus_acquire.serial_cli import validate_serial_port_for_platform
 
 logger = logging.getLogger(__name__)
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description="DEIF GEMPAC Modbus → почасовые CSV")
-    p.add_argument("--port", default="/dev/ttyAMA0", help="Последовательный порт (Windows: COMn)")
+    p.add_argument(
+        "--port",
+        default="/dev/ttyAMA0",
+        help="Порт: Linux /dev/ttyUSB0, /dev/ttyAMA0 …; Windows COMn",
+    )
     p.add_argument("--slave", type=int, default=1, help="Slave ID")
     p.add_argument("--baudrate", type=int, default=9600)
     p.add_argument("--timeout", type=float, default=0.35, help="Таймаут serial, сек")
@@ -44,6 +52,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
+    validate_serial_port_for_platform(args.port)
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.WARNING,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",

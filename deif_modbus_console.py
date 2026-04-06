@@ -6,6 +6,9 @@ DEIF GEMPAC: опрос Modbus и вывод в консоль (как legase/mo
   PORT=/dev/ttyAMA0, SLAVE_ID=1, BAUDRATE=9600, timeout=0.35, ADDRESS_OFFSET=1,
   POLL_INTERVAL=0.12, DISPLAY_INTERVAL=0.6, 8N1, clear_buffers=True
 
+Пример (Linux, USB‑адаптер RS‑485):
+  python deif_modbus_console.py --port /dev/ttyUSB0
+
 Пример (Windows):
   python deif_modbus_console.py --port COM3
 """
@@ -20,6 +23,7 @@ import time
 from datetime import datetime
 
 from modbus_acquire import build_instrument, convert_raw, poll_raw
+from modbus_acquire.serial_cli import validate_serial_port_for_platform
 
 # --- как в legase/modbus_opt_v3.py ---
 DEFAULT_PORT = "/dev/ttyAMA0"
@@ -125,7 +129,11 @@ def _display(data: dict, last_poll_time: float, modbus_errors: int, *, clear: bo
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description="DEIF GEMPAC — опрос Modbus, вывод в консоль (настройки как в legase)")
-    p.add_argument("--port", default=DEFAULT_PORT, help="Последовательный порт")
+    p.add_argument(
+        "--port",
+        default=DEFAULT_PORT,
+        help="Порт: Linux /dev/ttyUSB0, /dev/ttyAMA0 …; Windows COMn",
+    )
     p.add_argument("--slave", type=int, default=DEFAULT_SLAVE_ID, help="Slave ID")
     p.add_argument("--baudrate", type=int, default=DEFAULT_BAUDRATE)
     p.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT, help="Таймаут serial, сек (легаси 0.35)")
@@ -145,6 +153,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
+    validate_serial_port_for_platform(args.port)
     do_clear = not args.no_clear
 
     modbus_errors = 0
