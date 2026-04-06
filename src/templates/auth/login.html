@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="ru">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Вход</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/app.css') }}">
+</head>
+<body>
+<main class="login-page">
+    <section class="card">
+        <h2>Вход в систему</h2>
+        <form method="post">
+            {{ form.hidden_tag() }}
+            <label>{{ form.username.label }}{{ form.username(class_="input") }}</label>
+            <label>{{ form.password.label }}{{ form.password(class_="input") }}</label>
+            {{ form.submit(class_="btn") }}
+        </form>
+    </section>
+</main>
+</body>
+</html>

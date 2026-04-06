@@ -1,0 +1,9 @@
+{% extends "base.html" %}
+{% block title %}Dashboard{% endblock %}
+{% block content %}
+<section class="card">
+    <h2>Панель</h2>
+    <p>Сбор Modbus работает в фоне. Используйте раздел Data для просмотра и экспорта.</p>
+    <p><a class="btn" href="{{ url_for('data.page') }}">Открыть Data</a></p>
+</section>
+{% endblock %}

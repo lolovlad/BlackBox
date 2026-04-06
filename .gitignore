@@ -42,8 +42,10 @@ logs/
 
 # Project runtime data (local)
 data/
+instance/
 *.db
 blackbox.db
 alarms/
 backup/
+src/static/csv/*.csv
 
