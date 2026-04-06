@@ -1,4 +1,4 @@
-from blackbox import modbus_reader
+from modbus_acquire import instrument as modbus_reader
 
 
 class _FakeInstrument:
@@ -9,19 +9,19 @@ class _FakeInstrument:
     def read_register(self, registeraddress, number_of_decimals, functioncode, signed):
         self.calls.append(("reg", registeraddress, functioncode, signed))
         values = {
-            0: 2304,   # voltage_L1 -> 230.4
-            1: 2311,   # voltage_L2 -> 231.1
-            2: 2298,   # voltage_L3 -> 229.8
-            3: 5000,   # frequency -> 50.00
-            4: 1500,   # engine_rpm
-            20: 0b00000101,  # low_oil_pressure + overspeed
+            0: 2304,
+            1: 2311,
+            2: 2298,
+            3: 5000,
+            4: 1500,
+            20: 0b00000101,
         }
         return values[registeraddress]
 
     def read_long(self, registeraddress, functioncode, signed, byteorder):
         self.calls.append(("long", registeraddress, functioncode, signed, byteorder))
         if registeraddress == 10:
-            return 1234  # power -> 123.4
+            return 1234
         raise ValueError("unexpected address")
 
 

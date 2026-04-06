@@ -1,307 +1,106 @@
 # BlackBox
 
-Библиотека для сбора, нормализации и записи телеметрии (дискретные/аналоговые сигналы) с поддержкой аварийных событий и интеграции с Modbus RTU.
+Регистрация данных с дискретных/аналоговых входов, запись в CSV/JSON, аварийные срезы. Отдельно — **получение данных по Modbus** в пакете `modbus_acquire` (удобно подключать к Flask без всей логики записи).
 
-## Возможности
+## Зависимости
 
-- До 20 дискретных входов с обработкой изменений
-- Аналоговые входы (ток/напряжение) с периодическим опросом
-- Запись в `CSV` или `JSON` с ротацией по дням
-- Аварийные события: буфер до/после события и запись в отдельные файлы
-- Резервное хранение при ошибках записи
-- Гибкое чтение Modbus RTU (`minimalmodbus`): scaling, 16/32-bit, bitfield, byte order
+- **Работа на устройстве / опрос Modbus:** `minimalmodbus` (см. `requirements.txt`).
+- **Тесты:** `pytest`, `pytest-cov` (в том же файле как комментарии/список).
 
-## Установка
+Внешних ORM сейчас нет: запись ошибок Modbus в БД отключена; при появлении общей модели её можно добавить отдельно.
+
+---
+
+## Два слоя: «чтение» и «потребление»
+
+| Слой | Пакет / скрипт | Задача | Зависимости |
+|------|----------------|--------|-------------|
+| **Получение (Modbus)** | `modbus_acquire` | Собрать `Instrument`, прочитать регистры/биты, для DEIF — `poll_raw` → `convert_raw` | только `minimalmodbus` |
+| **Потребление** | `blackbox` | Буферы входов, `DataWriter`/`AlarmWriter`, маппинг Modbus → «виртуальные» входы, логи на диск | стандартная библиотека + при необходимости `modbus_acquire` |
+| **Склейка DEIF + CSV** | `deif_modbus_csv_logger.py` | Цикл опроса + `HourlySplitCsvWriter` | `modbus_acquire` + `blackbox.hourly_param_csv` |
+
+Для будущего **сайта на Flask** достаточно зависеть от `modbus_acquire`: в обработчике или фоновой задаче вызывайте `build_instrument`, `poll_raw`, `convert_raw` и отдавайте JSON на клиент. Писать CSV и крутить `DataLogger` для этого не обязательно.
+
+---
+
+## Пакет `modbus_acquire`
+
+### `modbus_acquire.instrument`
+
+- **`ModbusReader` / `read_all_data(config)`** — по списку полей из `config["fields"]` (или дефолтный демо-набор) читает регистры по одному, с **ретраями** и масштабированием (`scale`, `u16`/`s32`/`bitfield` и т.д.).
+- **`build_instrument(config)`** — создаёт `minimalmodbus.Instrument` с теми же настройками порта, что и у `ModbusReader`. Нужен для **пакетного** чтения (`read_registers`, `read_bits`), которое в универсальном `ModbusReader` не описано.
+
+Поток данных: **serial → Instrument → словарь Python** (числа, списки имён битов для `bitfield`).
+
+### `modbus_acquire.deif`
+
+Профиль **DEIF GEMPAC** (как в `legase/modbus_opt_v3.py`):
+
+1. **`poll_raw(instrument, address_offset=1, on_error=...)`** — одно чтение 90 holding-регистров и 32 coil; при ошибке вызывается `on_error("modbus_holdings"|"modbus_coils", exc)`, частичный словарь всё равно возвращается.
+2. **`convert_raw(raw)`** — масштабирование (частота ÷100, и т.д.), сбор `active_alarms` / статусов по таблицам битов.
+3. **`analog_discrete_for_csv(processed)`** — два словаря под колонки CSV: аналоги и дискреты (булевы → дальше в CSV пишутся как 0/1).
+
+Константы **`ANALOG_CSV_COLUMNS`**, **`DISCRETE_CSV_COLUMNS`** задают порядок колонок.
+
+---
+
+## Пакет `blackbox`
+
+### Идея
+
+- **`DiscreteInputs` / `AnalogInputs`** — логические входы регистратора (номер → значение).
+- **`DataWriter`** — обычная запись по дням (путь с датой), формат CSV/JSON из `DataLoggerConfig`.
+- **`AlarmWriter`** — при срабатывании условия выгружает окно до/после события в отдельный файл.
+- **`DataLogger`** — потоки опроса, связь с писателями, опционально периодический вызов **`read_all_data`** из `modbus_acquire.instrument` и разбор словаря в аналоги/дискреты по картам в `DataLoggerConfig` (`modbus_to_analog_map`, `modbus_alarm_bits_to_discrete_map`).
+
+То есть BlackBox отвечает за **где и как сохранить** и **как сопоставить каналы**, а не за низкоуровневый Modbus (это `modbus_acquire`).
+
+### Почасовые CSV параметров
+
+Класс **`blackbox.hourly_param_csv.HourlySplitCsvWriter`**:
+
+- каталоги `{base}/analogs/` и `{base}/discretes/`;
+- файл на каждый час: `{prefix}_{YYYY-MM-DD}_{HH}.csv`;
+- строка: `line_no`, `date`, `time`, затем значения колонок.
+
+Используется в `deif_modbus_csv_logger.py` вместе с `modbus_acquire`.
+
+---
+
+## Скрипт `deif_modbus_csv_logger.py`
+
+1. `build_instrument` — открытие порта.
+2. В цикле: `poll_raw` → `convert_raw` → `analog_discrete_for_csv` → `HourlySplitCsvWriter.write_sample`.
+3. Ошибки транзакций Modbus только **`logger.warning`** (флаг `--verbose` включает подробный лог).
+
+Запуск:
 
 ```bash
-pip install -r requirements.txt
+python deif_modbus_csv_logger.py --port COM3 --output ./logs --prefix unit1
 ```
 
-## Быстрый старт
+---
 
-### 1) Базовый DataLogger
+## Обратная совместимость
 
-```python
-from blackbox import DataLogger, DataLoggerConfig
+- `from modbus_reader import read_all_data` — корневой shim на `modbus_acquire.instrument`.
+- `from blackbox.modbus_reader import ...` — реэкспорт из `modbus_acquire.instrument`.
+- `from blackbox.deif_gempac import ...` — реэкспорт из `modbus_acquire.deif`.
 
-config = DataLoggerConfig(
-    data_directory="./data",
-    alarm_directory="./alarms",
-    analog_poll_interval=0.1,
-)
+---
 
-logger = DataLogger(config)
-logger.start()
+## Структура каталогов (логика)
 
-logger.set_discrete_value(0, True)
-logger.set_current_value(0, 5.5)
-logger.set_voltage_value(0, 220.0)
-
-logger.stop()
 ```
-
-### 2) Контекстный менеджер
-
-```python
-from blackbox import DataLogger, DataLoggerConfig
-
-with DataLogger(DataLoggerConfig()) as logger:
-    logger.set_discrete_value(0, True)
-    logger.set_current_value(0, 5.5)
+modbus_acquire/          # только чтение Modbus (+ DEIF)
+  instrument.py
+  deif.py
+blackbox/                # регистратор, писатели, входы
+  data_logger.py
+  data_writer.py
+  config.py
+  hourly_param_csv.py
+  ...
+deif_modbus_csv_logger.py
+legase/                  # старые скрипты, ориентир по карте регистров
 ```
-
-## Работа с Modbus RTU
-
-По умолчанию используется:
-
-- порт: `/dev/ttyAMA0`
-- режим: RTU
-- параметры: `9600 8N1`
-- slave id: `1`
-
-### 1) Простое чтение
-
-```python
-from modbus_reader import read_all_data
-
-data = read_all_data()
-print(data)
-```
-
-Ожидаемый формат:
-
-```python
-{
-    "voltage_L1": 230.4,
-    "frequency": 50.0,
-    "power": 125.6,
-    "engine_rpm": 1500,
-    "alarms": ["overspeed"]
-}
-```
-
-### 2) Кастомная карта регистров (`fields`)
-
-```python
-from modbus_reader import read_all_data
-
-data = read_all_data({
-    "fields": [
-        {"name": "freq", "address": 3, "reg_type": "input", "data_type": "u16", "scale": 0.01},
-        {"name": "power", "address": 10, "reg_type": "input", "data_type": "s32", "scale": 0.1, "byteorder": "big"},
-        {"name": "alarms", "address": 20, "reg_type": "input", "data_type": "bitfield",
-         "bit_labels": {0: "low_oil", 1: "high_temp"}},
-    ],
-    "include_raw": True,
-})
-
-print(data)
-```
-
-Поддерживаемые поля:
-
-- `reg_type`: `input` или `holding`
-- `data_type`: `u16`, `s16`, `u32`, `s32`, `bitfield`
-- `byteorder`: `big`, `little`, `big_swap`, `little_swap` (для 32-bit)
-- `scale`, `decimals`
-
-### 3) Пример Holding Registers
-
-```python
-from modbus_reader import read_all_data
-
-data = read_all_data({
-    "fields": [
-        {"name": "oil_pressure", "address": 100, "reg_type": "holding", "data_type": "u16", "scale": 0.1},
-        {"name": "coolant_temp", "address": 101, "reg_type": "holding", "data_type": "s16", "scale": 0.1},
-    ]
-})
-```
-
-### 4) 32-bit с другим порядком слов/байтов
-
-```python
-from modbus_reader import read_all_data
-
-data = read_all_data({
-    "fields": [
-        {
-            "name": "energy_total_kwh",
-            "address": 300,
-            "reg_type": "input",
-            "data_type": "u32",
-            "byteorder": "little_swap",
-            "scale": 0.01,
-            "decimals": 2,
-        }
-    ]
-})
-
-print(data["energy_total_kwh"])
-```
-
-## Интеграция Modbus в DataLogger
-
-### Автоматический опрос в отдельном потоке
-
-```python
-from blackbox import DataLogger, DataLoggerConfig
-
-config = DataLoggerConfig(
-    modbus_enabled=True,
-    modbus_poll_interval=0.5,
-    modbus_reader_config={
-        "slave_id": 1,
-        # "fields": [...]  # при необходимости переопределите карту регистров
-    },
-)
-
-logger = DataLogger(config)
-logger.start()
-```
-
-### Ручное обновление (без фонового Modbus-потока)
-
-```python
-from blackbox import DataLogger, DataLoggerConfig
-from modbus_reader import read_all_data
-
-logger = DataLogger(DataLoggerConfig(modbus_enabled=False))
-logger.start()
-
-data = read_all_data()
-logger.update_from_modbus_data(data)
-```
-
-### Подмена источника Modbus (максимальная гибкость)
-
-```python
-from blackbox import DataLogger, DataLoggerConfig
-from modbus_reader import read_all_data
-
-logger = DataLogger(DataLoggerConfig(modbus_enabled=True))
-
-def my_modbus_reader():
-    return read_all_data({
-        "slave_id": 2,
-        "timeout": 1.5,
-        "retry_count": 5,
-        "fields": [
-            {"name": "frequency", "address": 3, "reg_type": "input", "data_type": "u16", "scale": 0.01},
-            {"name": "power", "address": 10, "reg_type": "input", "data_type": "s32", "scale": 0.1},
-            {"name": "alarms", "address": 20, "reg_type": "input", "data_type": "bitfield",
-             "bit_labels": {0: "low_oil_pressure", 1: "high_coolant_temp"}},
-        ],
-    })
-
-logger.set_modbus_reader(my_modbus_reader)
-logger.start()
-```
-
-## Конфигурация `DataLoggerConfig`
-
-Базовые параметры:
-
-- `data_directory`, `alarm_directory`, `backup_directory`, `log_directory`
-- `max_discrete_inputs` (1..20)
-- `analog_current_inputs`, `analog_voltage_inputs`
-- `analog_poll_interval`
-- `data_format` (`CSV` / `JSON`)
-- `overwrite_data`, `overwrite_alarms`
-- `alarm_pre_time`, `alarm_post_time`
-- `enable_backup_storage`
-- `log_level`, `log_to_console`
-
-Параметры Modbus-интеграции:
-
-- `modbus_enabled`
-- `modbus_poll_interval`
-- `modbus_reader_config`
-- `modbus_to_analog_map`
-- `modbus_alarm_bits_to_discrete_map`
-
-Пример:
-
-```python
-from blackbox import DataLoggerConfig, DataFormat
-
-config = DataLoggerConfig(
-    data_directory="./data",
-    alarm_directory="./alarms",
-    data_format=DataFormat.CSV,
-    analog_poll_interval=0.1,
-    modbus_enabled=True,
-    modbus_poll_interval=0.5,
-)
-```
-
-## Аварийные события
-
-### Простое условие по дискретному входу
-
-```python
-from blackbox import DataLogger, DataLoggerConfig, AlarmCondition
-
-logger = DataLogger(DataLoggerConfig())
-
-alarm = AlarmCondition(
-    name="Авария_Датчик_1",
-    discrete_inputs=[0],
-    discrete_condition=lambda d: d.get(0, False) is True,
-)
-
-logger.add_alarm_condition(alarm)
-logger.start()
-```
-
-### Порог по аналоговому входу
-
-```python
-from blackbox import AlarmCondition
-
-alarm = AlarmCondition(
-    name="Перегрузка_Ток",
-    analog_inputs=[0],
-    threshold_max=10.0,
-)
-```
-
-## Формат хранения данных
-
-Обычные данные:
-
-```text
-data/
-  2026-03-19/
-    data.csv
-```
-
-Аварийные события:
-
-```text
-alarms/
-  alarm_ИмяСобытия_YYYYMMDD_HHMMSS.csv
-```
-
-Каждый аварийный файл включает данные:
-
-- за `alarm_pre_time` секунд до события
-- во время события
-- за `alarm_post_time` секунд после события
-
-## Ограничения и примечания
-
-- Библиотека не читает физические датчики напрямую: это делает ваш код, а затем передает значения в `DataLogger`.
-- Для Modbus требуется `minimalmodbus` (уже в `requirements.txt`).
-- Потокобезопасность обеспечивается внутри модулей (`threading.Lock`).
-
-## API (кратко)
-
-- `DataLogger`: `start()`, `stop()`, `update_from_modbus_data()`, `set_modbus_reader()`, методы `set/get` входов
-- `DataLoggerConfig`: конфигурация логгера/хранилища/Modbus
-- `AlarmCondition`: условия аварийных событий
-- `read_all_data()`: быстрое чтение Modbus данных
-
-## Лицензия
-
-MIT

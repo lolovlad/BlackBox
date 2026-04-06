@@ -150,7 +150,7 @@ class DataLogger:
 
     def _modbus_poll_loop(self):
         """Цикл опроса данных с Modbus RTU."""
-        from .modbus_reader import read_all_data
+        from modbus_acquire.instrument import read_all_data
 
         if self._modbus_read_fn is None:
             self._modbus_read_fn = lambda: read_all_data(self.config.modbus_reader_config)

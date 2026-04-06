@@ -9,7 +9,7 @@ from .analog_inputs import AnalogInputs
 from .data_writer import DataWriter, AlarmWriter
 
 try:
-    from .modbus_reader import read_all_data
+    from modbus_acquire.instrument import read_all_data
 except Exception:  # pragma: no cover - безопасный fallback при отсутствии зависимости
     def read_all_data(*args, **kwargs):
         raise RuntimeError(
