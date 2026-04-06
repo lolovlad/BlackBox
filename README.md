@@ -40,6 +40,8 @@ $env:RAM_BATCH_SIZE="60"
 $env:APP_USERNAME="admin"
 $env:APP_PASSWORD="admin"
 $env:SECRET_KEY="change-me"
+$env:HOST="10.109.114.106"
+$env:PORT="5000"
 ```
 
 4) Настройка Flask CLI для миграций:
@@ -69,13 +71,13 @@ uv run flask db upgrade
 8) Запуск сервера (Uvicorn, полный лог в консоль):
 
 ```powershell
-uv run uvicorn src.web_app:app --host 0.0.0.0 --port 5000 --interface wsgi --log-level debug --access-log
+uv run uvicorn src.web_app:app --host 10.109.114.106 --port 5000 --interface wsgi --log-level debug --access-log
 ```
 
 9) Открыть в браузере:
 
 ```text
-http://127.0.0.1:5000/
+http://10.109.114.106:5000/
 ```
 
 ### Полезные команды Flask-Migrate

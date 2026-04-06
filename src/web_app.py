@@ -36,6 +36,8 @@ class RuntimeConfig:
     app_username: str = os.getenv("APP_USERNAME", "admin")
     app_password: str = os.getenv("APP_PASSWORD", "admin")
     secret_key: str = os.getenv("SECRET_KEY", "change-me")
+    host: str = os.getenv("HOST", "10.109.114.106")
+    port: int = int(os.getenv("PORT", "5000"))
 
 
 class ModbusCollector:
@@ -346,4 +348,5 @@ app = create_app()
 
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    cfg = RuntimeConfig()
+    app.run(host=cfg.host, port=cfg.port, debug=True)

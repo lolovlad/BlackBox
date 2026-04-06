@@ -30,7 +30,7 @@ export APP_USERNAME="${APP_USERNAME:-admin}"
 export APP_PASSWORD="${APP_PASSWORD:-admin}"
 export SECRET_KEY="${SECRET_KEY:-change-me}"
 export FLASK_APP="${FLASK_APP:-src.web_app:app}"
-export HOST="${HOST:-0.0.0.0}"
+export HOST="${HOST:-10.109.114.106}"
 export PORT="${PORT:-5000}"
 
 echo "[3/5] Preparing Flask-Migrate repository..."
@@ -42,6 +42,6 @@ echo "[4/5] Applying database migrations..."
 uv run flask db upgrade
 
 echo "[5/5] Starting web application..."
-echo "Open: http://127.0.0.1:${PORT}/"
+echo "Open: http://${HOST}:${PORT}/"
 echo "Uvicorn logs: access=on level=debug"
 exec uv run uvicorn src.web_app:app --host "$HOST" --port "$PORT" --interface wsgi --log-level debug --access-log
