@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class RuntimeConfig:
-    db_path: str = os.getenv("BLACKBOX_DB_PATH", "data/blackbox.db")
+    db_path: str = os.getenv("BLACKBOX_DB_PATH", "instance/blackbox.db")
     modbus_port: str = os.getenv("MODBUS_PORT", "/dev/ttyAMA0")
     modbus_slave: int = int(os.getenv("MODBUS_SLAVE", "1"))
     modbus_baudrate: int = int(os.getenv("MODBUS_BAUDRATE", "9600"))
@@ -169,6 +169,7 @@ def _decode_raw(payload: bytes) -> dict[str, Any]:
 def create_app() -> Flask:
     config = RuntimeConfig()
     db_file = Path(config.db_path).resolve()
+    db_file.parent.mkdir(parents=True, exist_ok=True)
     app = Flask(__name__)
     app.secret_key = config.secret_key
     app.config["SQLALCHEMY_DATABASE_URI"] = f"sqlite:///{config.db_path.replace(os.sep, '/')}"
