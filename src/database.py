@@ -52,6 +52,5 @@ class Discretes(db.Model, DateMixin):
 
 class Alarms(db.Model, DateMixin):
     __tablename__ = 'alarms'
-    id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[str] = mapped_column(String(255), nullable=True)
