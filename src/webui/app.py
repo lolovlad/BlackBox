@@ -8,6 +8,7 @@ from pathlib import Path
 
 from flask import Flask
 from flask_migrate import Migrate
+from jinja2 import ChoiceLoader, FileSystemLoader
 from sqlalchemy import inspect
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import sessionmaker
@@ -39,6 +40,8 @@ def _build_runtime_config(static_csv_dir: Path) -> RuntimeConfig:
 def create_app() -> Flask:
     base_dir = Path(__file__).resolve().parents[1]
     template_dir = base_dir / "templates"
+    alt_template_dir = base_dir / "webui" / "templates"
+    project_template_dir = base_dir.parent / "templates"
     static_dir = base_dir / "static"
     static_csv_dir = static_dir / "csv"
     instance_dir = Path(os.getenv("FLASK_INSTANCE_PATH", str(Path.cwd() / "instance"))).resolve()
@@ -78,7 +81,12 @@ def create_app() -> Flask:
     logging.basicConfig(level=logging.DEBUG, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
     logger.info("Starting web app with DB path: %s", db_file)
     logger.info("Template dir: %s (exists=%s)", template_dir, template_dir.exists())
+    logger.info("Alt template dir: %s (exists=%s)", alt_template_dir, alt_template_dir.exists())
+    logger.info("Project template dir: %s (exists=%s)", project_template_dir, project_template_dir.exists())
     logger.info("Static dir: %s (exists=%s)", static_dir, static_dir.exists())
+
+    template_paths = [str(template_dir), str(alt_template_dir), str(project_template_dir)]
+    app.jinja_loader = ChoiceLoader([FileSystemLoader(template_paths)])
 
     db.init_app(app)
     Migrate(app, db, compare_type=True, render_as_batch=True)
