@@ -330,14 +330,14 @@ def create_app() -> Flask:
             <table border="1" cellspacing="0" cellpadding="4">
                 <tr><th>created_at</th>{% for col in analog_cols %}<th>{{ col }}</th>{% endfor %}</tr>
                 {% for row in analog_table %}
-                    <tr><td>{{ row.created_at }}</td>{% for v in row.values %}<td>{{ v }}</td>{% endfor %}</tr>
+                    <tr><td>{{ row.created_at }}</td>{% for v in row["values"] %}<td>{{ v }}</td>{% endfor %}</tr>
                 {% endfor %}
             </table>
             <h2>Discretes (CSV-вид)</h2>
             <table border="1" cellspacing="0" cellpadding="4">
                 <tr><th>created_at</th>{% for col in discrete_cols %}<th>{{ col }}</th>{% endfor %}</tr>
                 {% for row in discrete_table %}
-                    <tr><td>{{ row.created_at }}</td>{% for v in row.values %}<td>{{ v }}</td>{% endfor %}</tr>
+                    <tr><td>{{ row.created_at }}</td>{% for v in row["values"] %}<td>{{ v }}</td>{% endfor %}</tr>
                 {% endfor %}
             </table>
             <h2>Alarms</h2>
