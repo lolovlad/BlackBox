@@ -42,6 +42,8 @@ logs/
 
 # Project runtime data (local)
 data/
+*.db
+blackbox.db
 alarms/
 backup/
 

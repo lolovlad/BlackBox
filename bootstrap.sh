@@ -18,7 +18,7 @@ echo "[1/6] Installing dependencies with uv..."
 uv sync
 
 echo "[2/6] Exporting default environment variables..."
-export BLACKBOX_DB_PATH="${BLACKBOX_DB_PATH:-blackbox.db}"
+export BLACKBOX_DB_PATH="${BLACKBOX_DB_PATH:-data/blackbox.db}"
 export MODBUS_PORT="${MODBUS_PORT:-/dev/ttyAMA0}"
 export MODBUS_SLAVE="${MODBUS_SLAVE:-1}"
 export MODBUS_BAUDRATE="${MODBUS_BAUDRATE:-9600}"
@@ -32,6 +32,7 @@ export SECRET_KEY="${SECRET_KEY:-change-me}"
 export FLASK_APP="${FLASK_APP:-src.web_app:app}"
 export HOST="${HOST:-0.0.0.0}"
 export PORT="${PORT:-5000}"
+mkdir -p "$(dirname "$BLACKBOX_DB_PATH")"
 
 echo "[3/5] Preparing Flask-Migrate repository..."
 if [ ! -d "migrations" ] || [ ! -f "migrations/env.py" ]; then
@@ -47,7 +48,7 @@ import os
 import sqlite3
 import sys
 
-db_path = os.getenv("BLACKBOX_DB_PATH", "blackbox.db")
+db_path = os.getenv("BLACKBOX_DB_PATH", "data/blackbox.db")
 conn = sqlite3.connect(db_path)
 cur = conn.cursor()
 cur.execute("SELECT name FROM sqlite_master WHERE type='table'")
@@ -73,7 +74,7 @@ import os
 import sqlite3
 import sys
 
-db_path = os.getenv("BLACKBOX_DB_PATH", "blackbox.db")
+db_path = os.getenv("BLACKBOX_DB_PATH", "data/blackbox.db")
 conn = sqlite3.connect(db_path)
 cur = conn.cursor()
 cur.execute("SELECT name FROM sqlite_master WHERE type='table'")

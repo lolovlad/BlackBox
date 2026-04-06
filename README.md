@@ -29,7 +29,7 @@ uv lock
 3) Настройка переменных окружения (пример):
 
 ```powershell
-$env:BLACKBOX_DB_PATH="blackbox.db"
+$env:BLACKBOX_DB_PATH="data/blackbox.db"
 $env:MODBUS_PORT="/dev/ttyAMA0"
 $env:MODBUS_SLAVE="1"
 $env:MODBUS_BAUDRATE="9600"
