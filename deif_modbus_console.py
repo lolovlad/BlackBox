@@ -2,6 +2,9 @@
 """
 DEIF GEMPAC: опрос Modbus и вывод в консоль (как legase/modbus_opt_v3.py, без CSV).
 
+В обычном режиме экран обновляется «на месте» (ANSI clear + один кадр текста), как docker stats,
+а не бесконечной прокруткой. Для лога в файл используйте --no-clear.
+
 Настройки по умолчанию совпадают с легаси:
   PORT=/dev/ttyAMA0, SLAVE_ID=1, BAUDRATE=9600, timeout=0.35, ADDRESS_OFFSET=1,
   POLL_INTERVAL=0.12, DISPLAY_INTERVAL=0.6, 8N1, clear_buffers=True
@@ -17,7 +20,6 @@ from __future__ import annotations
 
 import argparse
 import os
-import platform
 import sys
 import time
 from datetime import datetime
@@ -34,52 +36,75 @@ DEFAULT_POLL_INTERVAL = 0.12
 DEFAULT_DISPLAY_INTERVAL = 0.6
 DEFAULT_TIMEOUT = 0.35
 
-
-def _clear_screen() -> None:
-    if platform.system() == "Windows":
-        os.system("cls")
-    else:
-        os.system("clear")
+# Полный сброс видимой области и курсор в (1,1) — как docker stats / htop (без прокрутки вниз)
+_ANSI_CLEAR_HOME = "\033[2J\033[H"
 
 
-def _display(data: dict, last_poll_time: float, modbus_errors: int, *, clear: bool = True) -> None:
-    if clear:
-        _clear_screen()
-    print("=== DEIF GEMPAC — ВСЕ ПЕРЕМЕННЫЕ ===", datetime.now().strftime("%H:%M:%S"))
-    print(f"Last poll time = {last_poll_time:.3f} сек | Modbus errors = {modbus_errors}")
-    print("=" * 100)
-    print("ИЗМЕРЕНИЯ")
-    print(f" UgenL1L2 = {data.get('UgenL1L2', 0):5} В")
-    print(f" UgenL2L3 = {data.get('UgenL2L3', 0):5} В")
-    print(f" UgenL3L1 = {data.get('UgenL3L1', 0):5} В")
-    print(f" UgenL1N = {data.get('UgenL1N', 0):5} В")
-    print(f" UgenL2N = {data.get('UgenL2N', 0):5} В")
-    print(f" UgenL3N = {data.get('UgenL3N', 0):5} В")
-    print(f" UbusL1L2 = {data.get('UbusL1L2', 0):5} В")
-    print(f" UbusL2L3 = {data.get('UbusL2L3', 0):5} В")
-    print(f" UbusL3L1 = {data.get('UbusL3L1', 0):5} В")
-    print(f" UbusL1N = {data.get('UbusL1N', 0):5} В")
-    print(f" UbusL2N = {data.get('UbusL2N', 0):5} В")
-    print(f" UbusL3N = {data.get('UbusL3N', 0):5} В")
-    print(f" Usupply = {data.get('Usupply', 0):.1f} В")
-    print(f" IL1 = {data.get('IL1', 0):.1f} А")
-    print(f" IL2 = {data.get('IL2', 0):.1f} А")
-    print(f" IL3 = {data.get('IL3', 0):.1f} А")
-    print(f" Fgen = {data.get('Fgen', 0):.2f} Гц")
-    print(f" Fbus = {data.get('Fbus', 0):.2f} Гц")
-    print(f" Pgen = {data.get('Pgen', 0):.1f} кВт")
-    print(f" Qgen = {data.get('Qgen', 0):.1f} кВар")
-    print(f" Sgen = {data.get('Sgen', 0):.1f} кВА")
-    print(f" PF = {data.get('PF', 0):.2f}")
-    print(f" RPM = {data.get('RPM', 0)} об/мин")
-    print(f" PT100_1 = {data.get('PT100_1', 0):.2f} °C")
-    print(f" PT100_2 = {data.get('PT100_2', 0):.2f} °C")
-    print(f" Egen = {data.get('Egen', 0):,} кВт·ч")
-    print(f" Runhours = {data.get('Runhours_hours', 0):.0f} часов")
-    print(f" Gov.Reg.Value = {data.get('Gov.Reg.Value', 0):.2f} %")
-    print(f" AVR Reg.Value = {data.get('AVR Reg.Value', 0):.2f} %")
-    print(f" Analog_input_E4 = {data.get('Analog_input_E4', 0)}")
-    print("\nДИСКРЕТНЫЕ ПЕРЕМЕННЫЕ")
+def _enable_windows_vt() -> bool:
+    if sys.platform != "win32":
+        return True
+    try:
+        import ctypes
+
+        handle = ctypes.windll.kernel32.GetStdHandle(-11)
+        mode = ctypes.c_uint32()
+        if not ctypes.windll.kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
+            return False
+        ENABLE_VIRTUAL_TERMINAL_PROCESSING = 0x0004
+        if ctypes.windll.kernel32.SetConsoleMode(handle, mode.value | ENABLE_VIRTUAL_TERMINAL_PROCESSING):
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def _terminal_inplace_capable() -> bool:
+    """TTY + ANSI очистка экрана (один кадр без прокрутки), на Windows — включение VT100."""
+    if not sys.stdout.isatty():
+        return False
+    if sys.platform == "win32":
+        return _enable_windows_vt()
+    return os.environ.get("TERM", "xterm") != "dumb"
+
+
+def _format_dashboard(data: dict, last_poll_time: float, modbus_errors: int) -> str:
+    lines: list[str] = []
+    lines.append("=== DEIF GEMPAC — ВСЕ ПЕРЕМЕННЫЕ === " + datetime.now().strftime("%H:%M:%S"))
+    lines.append(f"Last poll time = {last_poll_time:.3f} сек | Modbus errors = {modbus_errors}")
+    lines.append("=" * 100)
+    lines.append("ИЗМЕРЕНИЯ")
+    lines.append(f" UgenL1L2 = {data.get('UgenL1L2', 0):5} В")
+    lines.append(f" UgenL2L3 = {data.get('UgenL2L3', 0):5} В")
+    lines.append(f" UgenL3L1 = {data.get('UgenL3L1', 0):5} В")
+    lines.append(f" UgenL1N = {data.get('UgenL1N', 0):5} В")
+    lines.append(f" UgenL2N = {data.get('UgenL2N', 0):5} В")
+    lines.append(f" UgenL3N = {data.get('UgenL3N', 0):5} В")
+    lines.append(f" UbusL1L2 = {data.get('UbusL1L2', 0):5} В")
+    lines.append(f" UbusL2L3 = {data.get('UbusL2L3', 0):5} В")
+    lines.append(f" UbusL3L1 = {data.get('UbusL3L1', 0):5} В")
+    lines.append(f" UbusL1N = {data.get('UbusL1N', 0):5} В")
+    lines.append(f" UbusL2N = {data.get('UbusL2N', 0):5} В")
+    lines.append(f" UbusL3N = {data.get('UbusL3N', 0):5} В")
+    lines.append(f" Usupply = {data.get('Usupply', 0):.1f} В")
+    lines.append(f" IL1 = {data.get('IL1', 0):.1f} А")
+    lines.append(f" IL2 = {data.get('IL2', 0):.1f} А")
+    lines.append(f" IL3 = {data.get('IL3', 0):.1f} А")
+    lines.append(f" Fgen = {data.get('Fgen', 0):.2f} Гц")
+    lines.append(f" Fbus = {data.get('Fbus', 0):.2f} Гц")
+    lines.append(f" Pgen = {data.get('Pgen', 0):.1f} кВт")
+    lines.append(f" Qgen = {data.get('Qgen', 0):.1f} кВар")
+    lines.append(f" Sgen = {data.get('Sgen', 0):.1f} кВА")
+    lines.append(f" PF = {data.get('PF', 0):.2f}")
+    lines.append(f" RPM = {data.get('RPM', 0)} об/мин")
+    lines.append(f" PT100_1 = {data.get('PT100_1', 0):.2f} °C")
+    lines.append(f" PT100_2 = {data.get('PT100_2', 0):.2f} °C")
+    lines.append(f" Egen = {data.get('Egen', 0):,} кВт·ч")
+    lines.append(f" Runhours = {data.get('Runhours_hours', 0):.0f} часов")
+    lines.append(f" Gov.Reg.Value = {data.get('Gov.Reg.Value', 0):.2f} %")
+    lines.append(f" AVR Reg.Value = {data.get('AVR Reg.Value', 0):.2f} %")
+    lines.append(f" Analog_input_E4 = {data.get('Analog_input_E4', 0)}")
+    lines.append("")
+    lines.append("ДИСКРЕТНЫЕ ПЕРЕМЕННЫЕ")
     for key in [
         "Engine_running",
         "Engine_cooling_down",
@@ -101,14 +126,16 @@ def _display(data: dict, last_poll_time: float, modbus_errors: int, *, clear: bo
         "Base Load (P/var)",
     ]:
         state = "ВКЛ" if data.get(key, False) else "ВЫКЛ"
-        print(f" {key} = {state}")
-    print("\nАКТИВНЫЕ АВАРИИ")
-    print(f" Alarms_total = {data.get('Alarms_total', 0)} Alarms_non_ack = {data.get('Alarms_non_ack', 0)}")
+        lines.append(f" {key} = {state}")
+    lines.append("")
+    lines.append("АКТИВНЫЕ АВАРИИ")
+    lines.append(f" Alarms_total = {data.get('Alarms_total', 0)} Alarms_non_ack = {data.get('Alarms_non_ack', 0)}")
     alarms = data.get("active_alarms", [])
-    print(f" Активных аварий: {len(alarms)}")
+    lines.append(f" Активных аварий: {len(alarms)}")
     for a in alarms:
-        print(f" • {a}")
-    print("\nАКТИВНЫЕ СТАТУСЫ")
+        lines.append(f" • {a}")
+    lines.append("")
+    lines.append("АКТИВНЫЕ СТАТУСЫ")
     for key in [
         "Sync.Start",
         "Mode1",
@@ -121,10 +148,35 @@ def _display(data: dict, last_poll_time: float, modbus_errors: int, *, clear: bo
         "GB Pos On",
     ]:
         state = "ВКЛ" if data.get(key, False) else "ВЫКЛ"
-        print(f" {key} = {state}")
-    print(f"\nLast poll time = {last_poll_time:.3f} сек")
-    print(f"Modbus errors = {modbus_errors}")
-    print("=" * 100)
+        lines.append(f" {key} = {state}")
+    lines.append("")
+    lines.append(f"Last poll time = {last_poll_time:.3f} сек")
+    lines.append(f"Modbus errors = {modbus_errors}")
+    lines.append("=" * 100)
+    return "\n".join(lines)
+
+
+def _display(
+    data: dict,
+    last_poll_time: float,
+    modbus_errors: int,
+    *,
+    refresh: bool,
+    inplace: bool,
+) -> None:
+    text = _format_dashboard(data, last_poll_time, modbus_errors)
+    if not refresh:
+        print(text)
+        return
+    if inplace:
+        sys.stdout.write(_ANSI_CLEAR_HOME + text + "\n")
+        sys.stdout.flush()
+        return
+    if sys.platform == "win32":
+        os.system("cls")
+    else:
+        os.system("clear")
+    print(text)
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -146,7 +198,11 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         dest="display_interval",
         help="Период обновления экрана, сек (легаси 0.6)",
     )
-    p.add_argument("--no-clear", action="store_true", help="Не очищать экран (удобно в логах Windows)")
+    p.add_argument(
+        "--no-clear",
+        action="store_true",
+        help="Режим прокрутки: каждое обновление добавляет текст вниз (без очистки экрана)",
+    )
     p.add_argument("--once", action="store_true", help="Один опрос и выход")
     return p.parse_args(argv)
 
@@ -154,7 +210,8 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
     validate_serial_port_for_platform(args.port)
-    do_clear = not args.no_clear
+    refresh = not args.no_clear
+    inplace = refresh and _terminal_inplace_capable()
 
     modbus_errors = 0
 
@@ -185,12 +242,12 @@ def main(argv: list[str] | None = None) -> int:
             last_poll_time = time.perf_counter() - start
 
             if args.once:
-                _display(processed, last_poll_time, modbus_errors, clear=do_clear)
+                _display(processed, last_poll_time, modbus_errors, refresh=refresh, inplace=inplace)
                 break
 
             now = time.time()
             if now - last_display >= args.display_interval:
-                _display(processed, last_poll_time, modbus_errors, clear=do_clear)
+                _display(processed, last_poll_time, modbus_errors, refresh=refresh, inplace=inplace)
                 last_display = now
 
             time.sleep(args.poll_interval)
