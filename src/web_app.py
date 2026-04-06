@@ -16,6 +16,8 @@ from flask import Flask, Response, redirect, render_template_string, request, se
 from flask_migrate import Migrate
 from modbus_acquire.deif import ANALOG_CSV_COLUMNS, DISCRETE_CSV_COLUMNS, analog_discrete_for_csv, convert_raw, poll_raw
 from modbus_acquire.instrument import build_instrument
+from sqlalchemy import inspect
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import sessionmaker
 
 from src.database import Alarms, Analogs, Discretes, db
@@ -36,14 +38,15 @@ class RuntimeConfig:
     app_username: str = os.getenv("APP_USERNAME", "admin")
     app_password: str = os.getenv("APP_PASSWORD", "admin")
     secret_key: str = os.getenv("SECRET_KEY", "change-me")
-    host: str = os.getenv("HOST", "10.109.114.106")
+    host: str = os.getenv("HOST", "0.0.0.0")
     port: int = int(os.getenv("PORT", "5000"))
 
 
 class ModbusCollector:
-    def __init__(self, session_factory, config: RuntimeConfig) -> None:
+    def __init__(self, session_factory, config: RuntimeConfig, alarms_enabled: bool = True) -> None:
         self._session_factory = session_factory
         self._config = config
+        self._alarms_enabled = alarms_enabled
         self._lock = threading.Lock()
         self._ram_buffer: list[dict[str, Any]] = []
         self._stop_event = threading.Event()
@@ -102,16 +105,25 @@ class ModbusCollector:
     def _flush(self, batch: list[dict[str, Any]]) -> None:
         session = self._session_factory()
         try:
+            # Save raw analog/discrete payloads first.
             for sample in batch:
                 created_at: datetime = sample["created_at"]
                 raw: dict[str, Any] = sample["raw"]
                 raw_bytes = json.dumps(raw, ensure_ascii=False).encode("utf-8")
                 session.add(Analogs(created_at=created_at, date=raw_bytes))
                 session.add(Discretes(created_at=created_at, date=raw_bytes))
+            session.commit()
 
-                processed = convert_raw(raw)
-                active_alarms = processed.get("active_alarms", [])
-                if isinstance(active_alarms, list):
+            if self._alarms_enabled:
+                # Save alarms separately so missing alarms table does not drop raw samples.
+                for sample in batch:
+                    created_at = sample["created_at"]
+                    raw = sample["raw"]
+                    processed = convert_raw(raw)
+                    active_alarms = processed.get("active_alarms", [])
+                    if not isinstance(active_alarms, list):
+                        continue
+
                     for alarm_name in active_alarms:
                         payload = {"alarm": alarm_name, "created_at": created_at.isoformat()}
                         session.add(
@@ -122,8 +134,13 @@ class ModbusCollector:
                                 description="Alarm from converted Modbus data",
                             )
                         )
-            session.commit()
+                session.commit()
             logger.info("Flushed %d samples from RAM buffer to database", len(batch))
+        except OperationalError:
+            session.rollback()
+            logger.exception(
+                "Database flush failed. Most likely missing migration. Run: flask db upgrade"
+            )
         except Exception:
             session.rollback()
             logger.exception("Database flush failed for %d samples", len(batch))
@@ -168,8 +185,12 @@ def create_app() -> Flask:
     db.init_app(app)
     Migrate(app, db, compare_type=True, render_as_batch=True)
     with app.app_context():
+        table_inspector = inspect(db.engine)
+        alarms_enabled = table_inspector.has_table("alarms")
+        if not alarms_enabled:
+            logger.error("Table 'alarms' is missing. Run migrations: flask db upgrade")
         session_factory = sessionmaker(bind=db.engine, autoflush=False, autocommit=False, expire_on_commit=False)
-    collector = ModbusCollector(session_factory, config)
+    collector = ModbusCollector(session_factory, config, alarms_enabled=alarms_enabled)
     collector.start()
     atexit.register(collector.stop)
 
@@ -230,7 +251,9 @@ def create_app() -> Flask:
         try:
             analog_rows = db.query(Analogs).order_by(Analogs.created_at.desc()).limit(100).all()
             discrete_rows = db.query(Discretes).order_by(Discretes.created_at.desc()).limit(100).all()
-            alarm_rows = db.query(Alarms).order_by(Alarms.created_at.desc()).limit(100).all()
+            alarm_rows = []
+            if collector._alarms_enabled:
+                alarm_rows = db.query(Alarms).order_by(Alarms.created_at.desc()).limit(100).all()
         finally:
             db.close()
 
