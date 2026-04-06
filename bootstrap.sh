@@ -41,6 +41,53 @@ fi
 echo "[4/6] Applying database migrations..."
 uv run flask db upgrade
 
+echo "[4.1/6] Verifying required tables..."
+if ! uv run python - <<'PY'
+import os
+import sqlite3
+import sys
+
+db_path = os.getenv("BLACKBOX_DB_PATH", "blackbox.db")
+conn = sqlite3.connect(db_path)
+cur = conn.cursor()
+cur.execute("SELECT name FROM sqlite_master WHERE type='table'")
+tables = {row[0] for row in cur.fetchall()}
+conn.close()
+
+required = {"analogs", "discretes", "alarms", "type_user", "user"}
+missing = sorted(required - tables)
+if missing:
+    print("Missing tables:", ",".join(missing))
+    sys.exit(1)
+print("Schema check OK")
+PY
+then
+  echo "Schema mismatch detected. Forcing migration replay (stamp base -> upgrade)..."
+  uv run flask db stamp base
+  uv run flask db upgrade
+fi
+
+echo "[4.2/6] Final schema check..."
+uv run python - <<'PY'
+import os
+import sqlite3
+import sys
+
+db_path = os.getenv("BLACKBOX_DB_PATH", "blackbox.db")
+conn = sqlite3.connect(db_path)
+cur = conn.cursor()
+cur.execute("SELECT name FROM sqlite_master WHERE type='table'")
+tables = {row[0] for row in cur.fetchall()}
+conn.close()
+
+required = {"analogs", "discretes", "alarms", "type_user", "user"}
+missing = sorted(required - tables)
+if missing:
+    print(f"ERROR: required tables still missing in {db_path}: {','.join(missing)}")
+    sys.exit(2)
+print("Final schema check OK")
+PY
+
 echo "[5/6] Seeding initial users and roles..."
 DISABLE_MODBUS_COLLECTOR=1 uv run python -m src.seed
 
