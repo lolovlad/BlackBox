@@ -1,0 +1,31 @@
+[build-system]
+requires = ["hatchling>=1.18"]
+build-backend = "hatchling.build"
+
+[project]
+name = "blackbox"
+version = "1.0.0"
+description = "Регистрация данных и опрос Modbus (blackbox + modbus_acquire)"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "minimalmodbus>=3.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=5.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["blackbox", "modbus_acquire"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-q"
+
+[tool.coverage.run]
+source = ["blackbox", "modbus_acquire"]
+omit = ["*/tests/*"]

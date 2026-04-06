@@ -4,10 +4,24 @@
 
 ## Зависимости
 
-- **Работа на устройстве / опрос Modbus:** `minimalmodbus` (см. `requirements.txt`).
-- **Тесты:** `pytest`, `pytest-cov` (в том же файле как комментарии/список).
+- **Источник правды для версий пакетов:** `pyproject.toml` (рекомендуется [uv](https://docs.astral.sh/uv/)).
+- **Без uv:** можно по-прежнему `pip install -r requirements.txt` (минимальный список).
 
 Внешних ORM сейчас нет: запись ошибок Modbus в БД отключена; при появлении общей модели её можно добавить отдельно.
+
+### uv
+
+В корне проекта: `pyproject.toml`, `.python-version` (Python 3.12), группа зависимостей `dev` (pytest, pytest-cov).
+
+```bash
+uv sync
+uv run pytest
+uv run python deif_modbus_console.py --port COM3 --once
+```
+
+После изменения зависимостей: `uv lock` (фиксирует версии в `uv.lock`; файл стоит коммитить для воспроизводимых сборок).
+
+Чтобы не ставить dev-зависимости: `uv sync --no-dev`.
 
 ---
 
