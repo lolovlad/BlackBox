@@ -77,6 +77,8 @@ def create_app() -> Flask:
 
     logging.basicConfig(level=logging.DEBUG, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
     logger.info("Starting web app with DB path: %s", db_file)
+    logger.info("Template dir: %s (exists=%s)", template_dir, template_dir.exists())
+    logger.info("Static dir: %s (exists=%s)", static_dir, static_dir.exists())
 
     db.init_app(app)
     Migrate(app, db, compare_type=True, render_as_batch=True)

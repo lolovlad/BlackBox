@@ -2,10 +2,11 @@ from __future__ import annotations
 
 from flask import Blueprint, flash, redirect, render_template, session, url_for
 
-from src.database import User
 from src.webui.forms import LoginForm
+from src.webui.services.auth_service import AuthService
 
 bp = Blueprint("auth", __name__)
+auth_service = AuthService()
 
 
 @bp.get("/login")
@@ -16,8 +17,8 @@ def login():
 
     form = LoginForm()
     if form.validate_on_submit():
-        user = User.query.filter_by(username=form.username.data, is_deleted=False).first()
-        if user and user.password == form.password.data:
+        user = auth_service.authenticate(form.username.data or "", form.password.data or "")
+        if user:
             session["auth"] = True
             session["user_id"] = user.id
             session["username"] = user.username
