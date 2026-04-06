@@ -18,7 +18,8 @@ echo "[1/6] Installing dependencies with uv..."
 uv sync
 
 echo "[2/6] Exporting default environment variables..."
-export BLACKBOX_DB_PATH="${BLACKBOX_DB_PATH:-instance/blackbox.db}"
+DEFAULT_DB_PATH="$PROJECT_ROOT/instance/blackbox.db"
+export BLACKBOX_DB_PATH="${BLACKBOX_DB_PATH:-$DEFAULT_DB_PATH}"
 export MODBUS_PORT="${MODBUS_PORT:-/dev/ttyAMA0}"
 export MODBUS_SLAVE="${MODBUS_SLAVE:-1}"
 export MODBUS_BAUDRATE="${MODBUS_BAUDRATE:-9600}"

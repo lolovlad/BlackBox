@@ -170,9 +170,10 @@ def create_app() -> Flask:
     config = RuntimeConfig()
     db_file = Path(config.db_path).resolve()
     db_file.parent.mkdir(parents=True, exist_ok=True)
+    db_uri_path = db_file.as_posix()
     app = Flask(__name__)
     app.secret_key = config.secret_key
-    app.config["SQLALCHEMY_DATABASE_URI"] = f"sqlite:///{config.db_path.replace(os.sep, '/')}"
+    app.config["SQLALCHEMY_DATABASE_URI"] = f"sqlite:///{db_uri_path}"
     app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
     app.config["PROPAGATE_EXCEPTIONS"] = True
     app.config["TRAP_HTTP_EXCEPTIONS"] = True
@@ -188,18 +189,25 @@ def create_app() -> Flask:
     db.init_app(app)
     Migrate(app, db, compare_type=True, render_as_batch=True)
     with app.app_context():
-        table_inspector = inspect(db.engine)
         required_tables = ("analogs", "discretes")
-        missing_required = [t for t in required_tables if not table_inspector.has_table(t)]
-        if missing_required:
-            logger.error(
-                "Missing required tables %s in DB %s. Run migrations: flask db upgrade",
-                ",".join(missing_required),
-                db_file,
-            )
-        alarms_enabled = table_inspector.has_table("alarms")
-        if not alarms_enabled:
-            logger.error("Table 'alarms' is missing. Run migrations: flask db upgrade")
+        missing_required: list[str] = []
+        alarms_enabled = False
+        try:
+            table_inspector = inspect(db.engine)
+            missing_required = [t for t in required_tables if not table_inspector.has_table(t)]
+            if missing_required:
+                logger.error(
+                    "Missing required tables %s in DB %s. Run migrations: flask db upgrade",
+                    ",".join(missing_required),
+                    db_file,
+                )
+            alarms_enabled = table_inspector.has_table("alarms")
+            if not alarms_enabled:
+                logger.error("Table 'alarms' is missing. Run migrations: flask db upgrade")
+        except OperationalError:
+            missing_required = list(required_tables)
+            alarms_enabled = False
+            logger.exception("Cannot inspect DB schema at %s", db_file)
         session_factory = sessionmaker(bind=db.engine, autoflush=False, autocommit=False, expire_on_commit=False)
     collector_enabled = not missing_required
     collector = ModbusCollector(session_factory, config, alarms_enabled=alarms_enabled)
