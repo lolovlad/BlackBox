@@ -30,7 +30,7 @@ uv lock
 
 ```powershell
 $env:BLACKBOX_DB_PATH="blackbox.db"
-$env:MODBUS_PORT="COM3"
+$env:MODBUS_PORT="/dev/ttyAMA0"
 $env:MODBUS_SLAVE="1"
 $env:MODBUS_BAUDRATE="9600"
 $env:MODBUS_TIMEOUT="0.35"
@@ -106,7 +106,7 @@ uv run flask db downgrade -1
 ```bash
 uv sync
 uv run pytest
-uv run python deif_modbus_console.py --port COM3 --once
+uv run python deif_modbus_console.py --port /dev/ttyAMA0 --once
 ```
 
 После изменения зависимостей: `uv lock` (фиксирует версии в `uv.lock`; файл стоит коммитить для воспроизводимых сборок).
@@ -180,7 +180,7 @@ uv run python deif_modbus_console.py --port COM3 --once
 Запуск:
 
 ```bash
-python deif_modbus_csv_logger.py --port COM3 --output ./logs --prefix unit1
+python deif_modbus_csv_logger.py --port /dev/ttyAMA0 --output ./logs --prefix unit1
 ```
 
 ---

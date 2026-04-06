@@ -19,7 +19,7 @@ uv sync
 
 echo "[2/5] Exporting default environment variables..."
 export BLACKBOX_DB_PATH="${BLACKBOX_DB_PATH:-blackbox.db}"
-export MODBUS_PORT="${MODBUS_PORT:-COM3}"
+export MODBUS_PORT="${MODBUS_PORT:-/dev/ttyAMA0}"
 export MODBUS_SLAVE="${MODBUS_SLAVE:-1}"
 export MODBUS_BAUDRATE="${MODBUS_BAUDRATE:-9600}"
 export MODBUS_TIMEOUT="${MODBUS_TIMEOUT:-0.35}"

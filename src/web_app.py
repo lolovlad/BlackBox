@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class RuntimeConfig:
     db_path: str = os.getenv("BLACKBOX_DB_PATH", "blackbox.db")
-    modbus_port: str = os.getenv("MODBUS_PORT", "COM3")
+    modbus_port: str = os.getenv("MODBUS_PORT", "/dev/ttyAMA0")
     modbus_slave: int = int(os.getenv("MODBUS_SLAVE", "1"))
     modbus_baudrate: int = int(os.getenv("MODBUS_BAUDRATE", "9600"))
     modbus_timeout: float = float(os.getenv("MODBUS_TIMEOUT", "0.35"))
