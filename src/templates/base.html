@@ -9,11 +9,14 @@
 </head>
 <body>
 <header class="topbar">
-    <h1>BlackBox</h1>
+    <h1>BlackBox{% if display_username %}<span class="topbar-user">{{ display_username }}</span>{% endif %}</h1>
     <nav>
-        <a href="{{ url_for('main.dashboard') }}">Dashboard</a>
-        <a href="{{ url_for('data.page') }}">Data</a>
-        <a href="{{ url_for('auth.logout') }}">Logout</a>
+        {% for item in nav_menu %}
+            <a href="{{ url_for(item.endpoint) }}">{{ item.title }}</a>
+        {% endfor %}
+        {% if display_username %}
+            <a href="{{ url_for('auth_blueprint.logout') }}">Выход</a>
+        {% endif %}
     </nav>
 </header>
 <main class="page">

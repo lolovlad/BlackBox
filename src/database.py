@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
+from flask_login import UserMixin
 from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy import DateTime, ForeignKey, Integer, LargeBinary, String
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
@@ -34,7 +35,7 @@ class TypeUser(db.Model, SystemMixin):
     __tablename__ = 'type_user'
 
 
-class User(db.Model, DeleteMixin):
+class User(db.Model, UserMixin, DeleteMixin):
     __tablename__ = 'user'
     username: Mapped[str] = mapped_column(String(255), nullable=False)
     password: Mapped[str] = mapped_column(String(255), nullable=False)

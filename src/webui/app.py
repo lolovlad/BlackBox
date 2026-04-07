@@ -7,18 +7,19 @@ from datetime import timedelta
 from pathlib import Path
 
 from flask import Flask
+from flask_login import current_user
 from flask_migrate import Migrate
-from jinja2 import ChoiceLoader, FileSystemLoader
 from sqlalchemy import inspect
 from sqlalchemy.exc import OperationalError
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import joinedload, sessionmaker
 
-from src.database import db
-from src.webui.blueprints.auth import bp as auth_bp
-from src.webui.blueprints.data import bp as data_bp
-from src.webui.blueprints.main import bp as main_bp
-from src.webui.extensions import csrf, server_session
+from src.database import User, db
+from src.webui.blueprints.auth import auth_router
+from src.webui.blueprints.data import data_router
+from src.webui.blueprints.main import main_router
+from src.webui.extensions import csrf, login_manager, server_session
 from src.webui.modbus_service import ModbusCollector, RuntimeConfig
+from src.webui.paths import SRC_DIR, STATIC_DIR, TEMPLATES_DIR
 
 logger = logging.getLogger(__name__)
 
@@ -38,11 +39,10 @@ def _build_runtime_config(static_csv_dir: Path) -> RuntimeConfig:
 
 
 def create_app() -> Flask:
-    base_dir = Path(__file__).resolve().parents[1]
-    template_dir = base_dir / "templates"
-    alt_template_dir = base_dir / "webui" / "templates"
-    project_template_dir = base_dir.parent / "templates"
-    static_dir = base_dir / "static"
+    template_dir = TEMPLATES_DIR
+    alt_template_dir = SRC_DIR / "webui" / "templates"
+    project_template_dir = SRC_DIR.parent / "templates"
+    static_dir = STATIC_DIR
     static_csv_dir = static_dir / "csv"
     instance_dir = Path(os.getenv("FLASK_INSTANCE_PATH", str(Path.cwd() / "instance"))).resolve()
     session_dir = instance_dir / "sessions"
@@ -85,13 +85,44 @@ def create_app() -> Flask:
     logger.info("Project template dir: %s (exists=%s)", project_template_dir, project_template_dir.exists())
     logger.info("Static dir: %s (exists=%s)", static_dir, static_dir.exists())
 
-    template_paths = [str(template_dir), str(alt_template_dir), str(project_template_dir)]
-    app.jinja_loader = ChoiceLoader([FileSystemLoader(template_paths)])
-
     db.init_app(app)
     Migrate(app, db, compare_type=True, render_as_batch=True)
     csrf.init_app(app)
     server_session.init_app(app)
+
+    login_manager.init_app(app)
+    login_manager.login_view = "auth_blueprint.login"
+    login_manager.login_message = "Требуется вход в систему."
+    login_manager.login_message_category = "error"
+
+    @login_manager.user_loader
+    def load_user(user_id: str):  # noqa: WPS430
+        if user_id is None:
+            return None
+        try:
+            uid = int(user_id)
+        except (TypeError, ValueError):
+            return None
+        return (
+            User.query.options(joinedload(User.type_user))
+            .filter_by(id=uid, is_deleted=False)
+            .first()
+        )
+
+    @app.context_processor
+    def inject_nav() -> dict:
+        if not current_user.is_authenticated:
+            return {"nav_menu": [], "display_username": None, "is_admin": False}
+        tu = getattr(current_user, "type_user", None)
+        role = tu.system_name if tu is not None else "user"
+        menu = [{"endpoint": "main_blueprint.dashboard", "title": "Панель"}]
+        if role == "admin":
+            menu.append({"endpoint": "data_blueprint.page", "title": "Данные"})
+        return {
+            "nav_menu": menu,
+            "display_username": current_user.username,
+            "is_admin": role == "admin",
+        }
 
     with app.app_context():
         required_tables = ("analogs", "discretes")
@@ -121,7 +152,7 @@ def create_app() -> Flask:
     app.extensions["modbus_collector"] = collector
     app.extensions["static_csv_dir"] = static_csv_dir
 
-    app.register_blueprint(auth_bp)
-    app.register_blueprint(main_bp)
-    app.register_blueprint(data_bp)
+    app.register_blueprint(auth_router, name="auth_blueprint")
+    app.register_blueprint(main_router, name="main_blueprint")
+    app.register_blueprint(data_router, name="data_blueprint")
     return app

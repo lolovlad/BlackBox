@@ -3,7 +3,12 @@
 {% block content %}
 <section class="card">
     <h2>Панель</h2>
-    <p>Сбор Modbus работает в фоне. Используйте раздел Data для просмотра и экспорта.</p>
-    <p><a class="btn" href="{{ url_for('data.page') }}">Открыть Data</a></p>
+    <p>Сбор Modbus работает в фоне.</p>
+    {% if is_admin %}
+        <p>Используйте раздел «Данные» для просмотра и экспорта.</p>
+        <p><a class="btn" href="{{ url_for('data_blueprint.page') }}">Открыть данные</a></p>
+    {% else %}
+        <p>Раздел «Данные» и экспорт CSV доступны только администраторам.</p>
+    {% endif %}
 </section>
 {% endblock %}
