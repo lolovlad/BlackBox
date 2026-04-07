@@ -23,6 +23,7 @@ from src.webui.repositories.data_repository import DataRepository
 
 # Таблица на экране: фиксированный размер страницы (экспорт без лимита строк)
 TABLE_PAGE_SIZE = 1000
+DATETIME_UI_FORMAT = "%d.%m.%Y %H:%M:%S"
 
 
 @dataclass(frozen=True)
@@ -153,7 +154,7 @@ class DataService:
                 analog, _ = analog_discrete_for_csv(processed)
                 out_rows.append(
                     {
-                        "time": item.created_at.strftime("%Y-%m-%d %H:%M:%S"),
+                        "time": item.created_at.strftime(DATETIME_UI_FORMAT),
                         "cells": [analog.get(k, "") for k in keys],
                     }
                 )
@@ -188,7 +189,7 @@ class DataService:
                 _, discrete = analog_discrete_for_csv(processed)
                 out_rows.append(
                     {
-                        "time": item.created_at.strftime("%Y-%m-%d %H:%M:%S"),
+                        "time": item.created_at.strftime(DATETIME_UI_FORMAT),
                         "cells": [1 if bool(discrete.get(k, False)) else 0 for k in keys],
                     }
                 )
@@ -216,7 +217,7 @@ class DataService:
         )
         out_rows = [
             {
-                "time": item.created_at.strftime("%Y-%m-%d %H:%M:%S"),
+                "time": item.created_at.strftime(DATETIME_UI_FORMAT),
                 "name": item.name,
             }
             for item in rows_db
