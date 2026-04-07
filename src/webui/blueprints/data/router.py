@@ -114,7 +114,7 @@ def charts_render():
         else repo.list_discretes(created_from=date_from, created_to=date_to, sort_desc=False, limit=1000)
     )
 
-    requested_cols = request.args.getlist("col")
+    requested_cols = request.args.getlist("analog_col") if table == "analog" else request.args.getlist("discrete_col")
     columns = (
         filter_valid_analog(requested_cols if requested_cols else None)
         if table == "analog"

@@ -46,7 +46,7 @@
     <div id="chart-panel"
          hx-get="{{ url_for('data_blueprint.charts_render') }}"
          hx-trigger="load, click from:#btn-render-chart"
-         hx-vals="js:window.buildChartQuery()"
+         hx-include="#chart-form"
          hx-swap="innerHTML">
         <p class="hint">Загрузка графика...</p>
     </div>
@@ -60,24 +60,6 @@
         var root = document.getElementById('chart-col-root');
         root.dataset.cols = t;
     }
-
-    window.buildChartQuery = function () {
-        var form = document.getElementById('chart-form');
-        var table = form.querySelector('[name="table"]').value;
-        var vals = {
-            table: table,
-            date_from: form.querySelector('[name="date_from"]').value,
-            date_to: form.querySelector('[name="date_to"]').value
-        };
-        var selected = [];
-        if (table === 'analog') {
-            form.querySelectorAll('input[name="analog_col"]:checked').forEach(function (el) { selected.push(el.value); });
-        } else {
-            form.querySelectorAll('input[name="discrete_col"]:checked').forEach(function (el) { selected.push(el.value); });
-        }
-        vals.col = selected;
-        return vals;
-    };
 
     document.getElementById('chart-table').addEventListener('change', syncColPanels);
     syncColPanels();
