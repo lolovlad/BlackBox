@@ -26,9 +26,9 @@
         <p class="hint">По умолчанию выбраны все поля таблицы. Пустые «Дата с/по» — без ограничения по периоду (в пределах лимита строк).</p>
 
         <div class="tabs" role="tablist">
-            <label class="tab-label"><input type="radio" name="active_tab" value="analog" checked> Аналоги</label>
-            <label class="tab-label"><input type="radio" name="active_tab" value="discrete"> Дискреты</label>
-            <label class="tab-label"><input type="radio" name="active_tab" value="alarms"> Аварии</label>
+            <label class="tab-label"><input type="radio" name="active_tab" value="analog" class="data-tab-radio" checked> Аналоги</label>
+            <label class="tab-label"><input type="radio" name="active_tab" value="discrete" class="data-tab-radio"> Дискреты</label>
+            <label class="tab-label"><input type="radio" name="active_tab" value="alarms" class="data-tab-radio"> Аварии</label>
         </div>
 
         <div id="filter-root" class="filter-root" data-cols="analog">
@@ -57,13 +57,19 @@
         </div>
     </form>
 
-    <p id="tab-loading" class="htmx-indicator hint">Загрузка…</p>
-    <div id="tab-panel"
-         hx-get="{{ url_for('data_blueprint.tables') }}"
-         hx-include="#data-filter-form"
-         hx-trigger="load delay:200ms"
-         hx-indicator="#tab-loading">
-        <p>Загрузка таблицы…</p>
+    <div class="tab-panel-host">
+        <div id="tab-loader-overlay" class="tab-loader-overlay htmx-indicator" aria-live="polite" aria-busy="false">
+            <div class="tab-spinner" aria-hidden="true"></div>
+            <span class="tab-loader-text">Загрузка данных…</span>
+        </div>
+        <div id="tab-panel"
+             class="tab-panel"
+             hx-get="{{ url_for('data_blueprint.tables') }}"
+             hx-include="#data-filter-form"
+             hx-trigger="load delay:200ms, click from:#btn-refresh-table, change from:input.data-tab-radio"
+             hx-indicator="#tab-loader-overlay">
+            <p class="tab-panel-placeholder">Загрузка таблицы…</p>
+        </div>
     </div>
 </section>
 
@@ -86,7 +92,6 @@
 
 <script>
 (function () {
-    const tablesUrl = {{ url_for('data_blueprint.tables') | tojson }};
     const defaultLimit = {{ default_row_limit | int | tojson }};
 
     function syncColPanels() {
@@ -102,21 +107,11 @@
         });
     }
 
-    function refreshTable() {
-        syncColPanels();
-        htmx.ajax('GET', tablesUrl, {
-            source: document.getElementById('data-filter-form'),
-            target: '#tab-panel',
-            swap: 'innerHTML'
-        });
-    }
-
-    document.getElementById('btn-refresh-table').addEventListener('click', refreshTable);
-    document.querySelectorAll('input[name="active_tab"]').forEach(function (el) {
-        el.addEventListener('change', function () {
+    document.body.addEventListener('htmx:beforeRequest', function (evt) {
+        var t = evt.detail.target;
+        if (t && t.id === 'tab-panel') {
             syncColPanels();
-            refreshTable();
-        });
+        }
     });
     syncColPanels();
 

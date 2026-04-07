@@ -1,0 +1,20 @@
+htmx (офлайн-копия для BlackBox)
+================================
+
+Файл в проекте:
+  src/static/vendor/htmx.min.js
+
+Подключение в шаблонах (уже сделано в base.html):
+  <script src="{{ url_for('static', filename='vendor/htmx.min.js') }}"></script>
+
+Если нужно обновить вручную без интернета на машине разработки:
+  1) Скачайте тот же релиз с официального CDN (например):
+     https://unpkg.com/htmx.org@1.9.12/dist/htmx.min.js
+  2) Положите содержимое в:
+     src/static/vendor/htmx.min.js
+  3) Закоммитьте файл — на устройстве без сети будет использоваться локальная копия.
+
+Официальный сайт: https://htmx.org/
+Репозиторий: https://github.com/bigskysoftware/htmx
+
+Версия в репозитории: 1.9.12
