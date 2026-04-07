@@ -135,9 +135,10 @@
         chartEl.style.display = '';
         chartMeta.textContent = 'Записей: ' + payload.row_count + '. Для online-режима показывается только текущий день.';
         var x = payload.points.map(function (p) { return p.label; });
+        var labels = payload.column_labels || {};
         var series = payload.columns.map(function (col) {
             return {
-                name: col,
+                name: labels[col] || col,
                 type: 'line',
                 showSymbol: false,
                 data: payload.points.map(function (p) { return p.values[col]; })
@@ -164,8 +165,14 @@
         if (!option || !option.series || option.series.length === 0) return;
         payload.points.forEach(function (p) {
             option.xAxis[0].data.push(p.label);
+            var labels = payload.column_labels || {};
             option.series.forEach(function (s) {
-                s.data.push(p.values[s.name]);
+                var key = null;
+                for (var k in labels) {
+                    if ((labels[k] || k) === s.name) { key = k; break; }
+                }
+                if (!key) key = s.name;
+                s.data.push(p.values[key]);
             });
         });
         chart.setOption(option, false);

@@ -7,7 +7,6 @@ import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime
-from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +17,7 @@ from sqlalchemy.orm import sessionmaker
 from src.database import Alarms, Samples
 
 logger = logging.getLogger(__name__)
+SETTINGS_PATH = Path("settings/settings.json")
 
 
 @dataclass
@@ -33,10 +33,42 @@ class RuntimeConfig:
     static_csv_dir: Path
 
 
-@lru_cache(maxsize=1)
-def _load_settings() -> dict[str, Any]:
-    with open("settings/settings.json", "r", encoding="utf-8") as f:
-        return json.load(f)
+class SettingsCache:
+    def __init__(self, path: Path, check_interval_sec: float = 1.0) -> None:
+        self._path = path
+        self._check_interval_sec = check_interval_sec
+        self._lock = threading.Lock()
+        self._cached: dict[str, Any] | None = None
+        self._mtime_ns: int | None = None
+        self._last_check_monotonic = 0.0
+
+    def get(self, *, force_reload: bool = False) -> dict[str, Any]:
+        now = time.monotonic()
+        with self._lock:
+            should_check = force_reload or self._cached is None or (
+                now - self._last_check_monotonic >= self._check_interval_sec
+            )
+            if should_check:
+                current_mtime_ns = self._path.stat().st_mtime_ns
+                if force_reload or self._cached is None or self._mtime_ns != current_mtime_ns:
+                    with self._path.open("r", encoding="utf-8") as f:
+                        self._cached = json.load(f)
+                    self._mtime_ns = current_mtime_ns
+                self._last_check_monotonic = now
+            if self._cached is None:
+                raise RuntimeError("Settings cache is not initialized")
+            return self._cached
+
+
+_SETTINGS_CACHE = SettingsCache(SETTINGS_PATH)
+
+
+def _load_settings(*, force_reload: bool = False) -> dict[str, Any]:
+    return _SETTINGS_CACHE.get(force_reload=force_reload)
+
+
+def reload_settings_cache() -> dict[str, Any]:
+    return _load_settings(force_reload=True)
 
 
 def _eval_expr(expr: str, context: dict[str, Any]) -> Any:

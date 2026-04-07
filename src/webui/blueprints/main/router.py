@@ -61,22 +61,24 @@ def _build_live_dashboard_context(
 
     analog_items: list[dict] = []
     analog_time = None
+    analog_label_map = dict(analog_labels_for(analog_columns))
     if analog_row:
         row = analog_row[0]
         processed = decode_to_processed(row.date)
         analog_map, _ = analog_discrete_for_csv(processed)
         analog_time = row.created_at.strftime(DATETIME_UI_FORMAT)
-        analog_items = [{"name": k, "value": analog_map.get(k, "")} for k in analog_columns]
+        analog_items = [{"name": analog_label_map.get(k, k), "value": analog_map.get(k, "")} for k in analog_columns]
 
     discrete_items: list[dict] = []
     discrete_time = None
+    discrete_label_map = dict(discrete_labels_for(discrete_columns))
     if discrete_row:
         row = discrete_row[0]
         processed = decode_to_processed(row.date)
         _, discrete_map = analog_discrete_for_csv(processed)
         discrete_time = row.created_at.strftime(DATETIME_UI_FORMAT)
         discrete_items = [
-            {"name": k, "is_on": bool(discrete_map.get(k, False))}
+            {"name": discrete_label_map.get(k, k), "is_on": bool(discrete_map.get(k, False))}
             for k in discrete_columns
         ]
 

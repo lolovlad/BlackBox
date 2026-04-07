@@ -19,7 +19,7 @@ from src.webui.blueprints.auth import auth_router
 from src.webui.blueprints.data import data_router
 from src.webui.blueprints.main import main_router
 from src.webui.extensions import csrf, login_manager, server_session
-from src.webui.modbus_service import ModbusCollector, RuntimeConfig
+from src.webui.modbus_service import ModbusCollector, RuntimeConfig, reload_settings_cache
 from src.webui.paths import SRC_DIR, STATIC_DIR, TEMPLATES_DIR
 
 logger = logging.getLogger(__name__)
@@ -60,6 +60,8 @@ def create_app() -> Flask:
     )
 
     config = _build_runtime_config(static_csv_dir)
+    # Preload settings at startup; runtime updates are picked automatically by mtime.
+    reload_settings_cache()
     db_file = Path(config.db_path).resolve()
     db_file.parent.mkdir(parents=True, exist_ok=True)
 

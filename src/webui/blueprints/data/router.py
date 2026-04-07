@@ -176,10 +176,12 @@ def charts_api_init():
 
     columns = _requested_chart_columns(table)
     points = _collect_second_points(rows, table, columns)
+    labels = dict(analog_labels_for(columns) if table == "analog" else discrete_labels_for(columns))
     return jsonify(
         {
             "table": table,
             "columns": columns,
+            "column_labels": labels,
             "points": points,
             "last_ts": points[-1]["ts"] if points else None,
             "row_count": len(points),
@@ -219,10 +221,12 @@ def charts_api_update():
                 filtered.append(point)
         points = filtered
 
+    labels = dict(analog_labels_for(columns) if table == "analog" else discrete_labels_for(columns))
     return jsonify(
         {
             "table": table,
             "columns": columns,
+            "column_labels": labels,
             "points": points,
             "last_ts": points[-1]["ts"] if points else (since.strftime(DATETIME_API_FORMAT) if since else None),
             "row_count": len(points),
