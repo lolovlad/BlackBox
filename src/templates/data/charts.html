@@ -46,7 +46,7 @@
                         <button type="button" class="btn secondary btn-fields" data-action="all" data-target="analog_col">Все</button>
                         <button type="button" class="btn secondary btn-fields" data-action="none" data-target="analog_col">Снять</button>
                     </div>
-                    <div class="checkbox-grid">
+                    <div class="checkbox-grid chart-field-list">
                         {% for key, ru in analog_options %}
                             <label class="chk" data-label="{{ (ru ~ ' ' ~ key)|lower }}"><input type="checkbox" name="analog_col" value="{{ key }}" checked> {{ ru }}</label>
                         {% endfor %}
@@ -59,7 +59,7 @@
                         <button type="button" class="btn secondary btn-fields" data-action="all" data-target="discrete_col">Все</button>
                         <button type="button" class="btn secondary btn-fields" data-action="none" data-target="discrete_col">Снять</button>
                     </div>
-                    <div class="checkbox-grid">
+                    <div class="checkbox-grid chart-field-list">
                         {% for key, ru in discrete_options %}
                             <label class="chk" data-label="{{ (ru ~ ' ' ~ key)|lower }}"><input type="checkbox" name="discrete_col" value="{{ key }}" checked> {{ ru }}</label>
                         {% endfor %}
