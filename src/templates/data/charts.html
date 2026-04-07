@@ -2,7 +2,10 @@
 {% block title %}Графики{% endblock %}
 {% block content %}
 <section class="card charts-page">
-    <h2>Графики</h2>
+    <div class="charts-head">
+        <h2>Графики</h2>
+        <p class="hint charts-subtitle">Выберите таблицу, период и поля. Без дат включается online-обновление раз в секунду.</p>
+    </div>
     <div class="row actions">
         <button type="button" class="btn secondary" id="btn-open-filters">Фильтры</button>
         <button type="button" class="btn secondary" id="btn-reset-filters">Сбросить фильтры</button>
@@ -15,7 +18,7 @@
             <h3>Фильтры графика</h3>
             <button type="button" class="btn secondary" id="btn-close-filters">Закрыть</button>
         </div>
-        <form id="chart-form" onsubmit="return false;">
+        <form id="chart-form" class="chart-form" onsubmit="return false;">
             <div class="filter-grid">
                 <label class="filter-field">Таблица
                     <select name="table" id="chart-table">
@@ -31,7 +34,11 @@
                 </label>
             </div>
 
-            <div id="chart-col-root" data-cols="analog">
+            <div class="chart-filter-hint">
+                Отметьте нужные поля ниже. Если ничего не выбрано, график не строится.
+            </div>
+
+            <div id="chart-col-root" data-cols="analog" class="chart-col-root">
                 <fieldset class="col-panel col-panel-analog">
                     <legend>Поля (аналоги)</legend>
                     <div class="checkbox-grid">
@@ -52,9 +59,9 @@
         </form>
     </aside>
 
-    <section class="card">
-        <p class="hint" id="chart-meta">График пуст. Выберите поля и нажмите "Построить график".</p>
-        <div id="echarts-main" style="height: 520px; width: 100%; display:none;"></div>
+    <section class="card chart-card">
+        <p class="hint chart-meta" id="chart-meta">График пуст. Выберите поля и нажмите "Построить график".</p>
+        <div id="echarts-main" class="echarts-main" style="display:none;"></div>
     </section>
 </section>
 
