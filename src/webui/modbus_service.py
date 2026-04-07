@@ -364,7 +364,7 @@ class ModbusCollector:
                     analog_snapshot, _ = analog_discrete_for_csv(processed)
                     # Show a compact health snapshot for operator visibility.
                     logger.info(
-                        "Modbus poll: ok=%s polls=%d errors=%d alarms=%d sample={Fgen=%s, Pgen=%s, RPM=%s}",
+                        "Modbus poll: ok=%s poll_count=%d read_errors=%d active_alarms=%d sample={Fgen=%s, Pgen=%s, RPM=%s}",
                         not had_error,
                         total_polls,
                         total_errors,
@@ -396,6 +396,8 @@ class ModbusCollector:
 
     def _flush(self, batch: list[dict[str, Any]]) -> None:
         session = self._session_factory()
+        flush_started = time.monotonic()
+        alarms_written = 0
         try:
             for sample in batch:
                 created_at = sample["created_at"]
@@ -419,7 +421,15 @@ class ModbusCollector:
                                 description="Alarm from converted Modbus data",
                             )
                         )
+                        alarms_written += 1
                 session.commit()
+            elapsed_ms = (time.monotonic() - flush_started) * 1000.0
+            logger.info(
+                "DB flush: samples_written=%d alarms_written=%d elapsed_ms=%.1f",
+                len(batch),
+                alarms_written,
+                elapsed_ms,
+            )
         except OperationalError:
             session.rollback()
             logger.exception("Database flush failed. Run migrations: flask db upgrade")
