@@ -40,8 +40,8 @@ Thumbs.db
 *.log
 logs/
 
-# Project runtime data (local)
-data/
+# Project runtime data (local) — только каталог в корне репозитория
+/data/
 instance/
 *.db
 blackbox.db

@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block title %}Data{% endblock %}
+{% block content %}
+<section class="card">
+    <h2>Данные</h2>
+    <div class="row">
+        <button
+            class="btn"
+            hx-get="{{ url_for('data_blueprint.export_link') }}"
+            hx-target="#export-result"
+            hx-swap="innerHTML"
+        >Создать CSV экспорт</button>
+        <button
+            class="btn secondary"
+            hx-get="{{ url_for('data_blueprint.tables') }}"
+            hx-target="#tables-container"
+            hx-swap="innerHTML"
+        >Обновить таблицы</button>
+    </div>
+    <div id="export-result"></div>
+</section>
+
+<section
+    id="tables-container"
+    hx-get="{{ url_for('data_blueprint.tables') }}"
+    hx-trigger="load, every 10s"
+    hx-swap="innerHTML"
+>
+    <p>Загрузка таблиц...</p>
+</section>
+{% endblock %}

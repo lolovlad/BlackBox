@@ -1,0 +1,70 @@
+<section class="card">
+    <h3>Analogs</h3>
+    <div class="table-wrap">
+        <table>
+            <tr><th>created_at</th>{% for col in analog_cols %}<th>{{ col }}</th>{% endfor %}</tr>
+            {% for row in analog_table %}
+                <tr><td>{{ row.created_at }}</td>{% for v in row["values"] %}<td>{{ v }}</td>{% endfor %}</tr>
+            {% endfor %}
+        </table>
+    </div>
+</section>
+
+<section class="card">
+    <h3>Discretes</h3>
+    <div class="table-wrap">
+        <table>
+            <tr><th>created_at</th>{% for col in discrete_cols %}<th>{{ col }}</th>{% endfor %}</tr>
+            {% for row in discrete_table %}
+                <tr><td>{{ row.created_at }}</td>{% for v in row["values"] %}<td>{{ v }}</td>{% endfor %}</tr>
+            {% endfor %}
+        </table>
+    </div>
+</section>
+
+<section class="card">
+    <h3>Alarms</h3>
+    <div class="table-wrap">
+        <table>
+            <tr><th>created_at</th><th>name</th><th>description</th><th>payload</th></tr>
+            {% for row in alarms_table %}
+                <tr><td>{{ row.created_at }}</td><td>{{ row.name }}</td><td>{{ row.description }}</td><td>{{ row.payload }}</td></tr>
+            {% endfor %}
+        </table>
+    </div>
+</section>
+<section class="card">
+    <h3>Analogs</h3>
+    <div class="table-wrap">
+        <table>
+            <tr><th>created_at</th>{% for col in analog_cols %}<th>{{ col }}</th>{% endfor %}</tr>
+            {% for row in analog_table %}
+                <tr><td>{{ row.created_at }}</td>{% for v in row["values"] %}<td>{{ v }}</td>{% endfor %}</tr>
+            {% endfor %}
+        </table>
+    </div>
+</section>
+
+<section class="card">
+    <h3>Discretes</h3>
+    <div class="table-wrap">
+        <table>
+            <tr><th>created_at</th>{% for col in discrete_cols %}<th>{{ col }}</th>{% endfor %}</tr>
+            {% for row in discrete_table %}
+                <tr><td>{{ row.created_at }}</td>{% for v in row["values"] %}<td>{{ v }}</td>{% endfor %}</tr>
+            {% endfor %}
+        </table>
+    </div>
+</section>
+
+<section class="card">
+    <h3>Alarms</h3>
+    <div class="table-wrap">
+        <table>
+            <tr><th>created_at</th><th>name</th><th>description</th><th>payload</th></tr>
+            {% for row in alarms_table %}
+                <tr><td>{{ row.created_at }}</td><td>{{ row.name }}</td><td>{{ row.description }}</td><td>{{ row.payload }}</td></tr>
+            {% endfor %}
+        </table>
+    </div>
+</section>
