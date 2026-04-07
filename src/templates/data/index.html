@@ -1,31 +1,161 @@
 {% extends "base.html" %}
-{% block title %}Data{% endblock %}
+{% block title %}Данные{% endblock %}
 {% block content %}
-<section class="card">
+<section class="card data-page">
     <h2>Данные</h2>
-    <div class="row">
-        <button
-            class="btn"
-            hx-get="{{ url_for('data_blueprint.export_link') }}"
-            hx-target="#export-result"
-            hx-swap="innerHTML"
-        >Создать CSV экспорт</button>
-        <button
-            class="btn secondary"
-            hx-get="{{ url_for('data_blueprint.tables') }}"
-            hx-target="#tables-container"
-            hx-swap="innerHTML"
-        >Обновить таблицы</button>
+    <form id="data-filter-form" onsubmit="return false;">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+        <div class="filter-grid">
+            <label class="filter-field">Дата с
+                <input type="datetime-local" name="date_from" autocomplete="off">
+            </label>
+            <label class="filter-field">Дата по
+                <input type="datetime-local" name="date_to" autocomplete="off">
+            </label>
+            <label class="filter-field">Сортировка по времени
+                <select name="sort">
+                    <option value="desc" selected>Новые сверху</option>
+                    <option value="asc">Старые сверху</option>
+                </select>
+            </label>
+            <label class="filter-field">Макс. строк
+                <input type="number" name="limit" min="1" max="50000" placeholder="{{ default_row_limit }}"
+                       title="Пустое поле — по умолчанию {{ default_row_limit }}">
+            </label>
+        </div>
+        <p class="hint">По умолчанию выбраны все поля таблицы. Пустые «Дата с/по» — без ограничения по периоду (в пределах лимита строк).</p>
+
+        <div class="tabs" role="tablist">
+            <label class="tab-label"><input type="radio" name="active_tab" value="analog" checked> Аналоги</label>
+            <label class="tab-label"><input type="radio" name="active_tab" value="discrete"> Дискреты</label>
+            <label class="tab-label"><input type="radio" name="active_tab" value="alarms"> Аварии</label>
+        </div>
+
+        <div id="filter-root" class="filter-root" data-cols="analog">
+            <fieldset class="col-panel col-panel-analog">
+                <legend>Поля (аналоги)</legend>
+                <div class="checkbox-grid">
+                    {% for key, ru in analog_options %}
+                        <label class="chk"><input type="checkbox" name="analog_col" value="{{ key }}" checked> {{ ru }}</label>
+                    {% endfor %}
+                </div>
+            </fieldset>
+            <fieldset class="col-panel col-panel-discrete">
+                <legend>Поля (дискреты)</legend>
+                <div class="checkbox-grid">
+                    {% for key, ru in discrete_options %}
+                        <label class="chk"><input type="checkbox" name="discrete_col" value="{{ key }}" checked> {{ ru }}</label>
+                    {% endfor %}
+                </div>
+            </fieldset>
+            <p class="col-panel col-panel-alarms hint">Вкладка «Аварии»: в таблице и в CSV выводятся только <strong>время</strong> и <strong>название</strong>.</p>
+        </div>
+
+        <div class="row actions">
+            <button type="button" class="btn secondary" id="btn-refresh-table">Обновить таблицу</button>
+            <button type="button" class="btn" id="btn-export-open">Экспорт CSV…</button>
+        </div>
+    </form>
+
+    <p id="tab-loading" class="htmx-indicator hint">Загрузка…</p>
+    <div id="tab-panel"
+         hx-get="{{ url_for('data_blueprint.tables') }}"
+         hx-include="#data-filter-form"
+         hx-trigger="load delay:200ms"
+         hx-indicator="#tab-loading">
+        <p>Загрузка таблицы…</p>
     </div>
-    <div id="export-result"></div>
 </section>
 
-<section
-    id="tables-container"
-    hx-get="{{ url_for('data_blueprint.tables') }}"
-    hx-trigger="load, every 10s"
-    hx-swap="innerHTML"
->
-    <p>Загрузка таблиц...</p>
-</section>
+<dialog id="export-modal" class="modal-dialog">
+    <div class="modal-inner">
+        <h3>Подтверждение экспорта CSV</h3>
+        <p class="hint">Будет создан файл с теми же фильтрами и полями, что на экране.</p>
+        <pre id="export-summary" class="export-summary" aria-live="polite"></pre>
+        <div id="export-outcome"></div>
+        <div class="modal-actions">
+            <button type="button" class="btn secondary" id="export-cancel">Отмена</button>
+            <button type="button" class="btn" id="export-confirm-btn"
+                    hx-post="{{ url_for('data_blueprint.export_submit') }}"
+                    hx-include="#data-filter-form"
+                    hx-target="#export-outcome"
+                    hx-swap="innerHTML">Экспортировать</button>
+        </div>
+    </div>
+</dialog>
+
+<script>
+(function () {
+    const tablesUrl = {{ url_for('data_blueprint.tables') | tojson }};
+    const defaultLimit = {{ default_row_limit | int | tojson }};
+
+    function syncColPanels() {
+        const tab = document.querySelector('input[name="active_tab"]:checked');
+        const root = document.getElementById('filter-root');
+        if (tab && root) root.dataset.cols = tab.value;
+        const t = tab ? tab.value : 'analog';
+        document.querySelectorAll('.col-panel-analog input[name="analog_col"]').forEach(function (i) {
+            i.disabled = t !== 'analog';
+        });
+        document.querySelectorAll('.col-panel-discrete input[name="discrete_col"]').forEach(function (i) {
+            i.disabled = t !== 'discrete';
+        });
+    }
+
+    function refreshTable() {
+        syncColPanels();
+        htmx.ajax('GET', tablesUrl, {
+            source: document.getElementById('data-filter-form'),
+            target: '#tab-panel',
+            swap: 'innerHTML'
+        });
+    }
+
+    document.getElementById('btn-refresh-table').addEventListener('click', refreshTable);
+    document.querySelectorAll('input[name="active_tab"]').forEach(function (el) {
+        el.addEventListener('change', function () {
+            syncColPanels();
+            refreshTable();
+        });
+    });
+    syncColPanels();
+
+    function tabRu(v) {
+        return ({analog: 'Аналоги', discrete: 'Дискреты', alarms: 'Аварии'})[v] || v;
+    }
+
+    function buildExportSummary() {
+        const f = document.getElementById('data-filter-form');
+        const fd = new FormData(f);
+        const lines = [];
+        lines.push('Таблица: ' + tabRu(fd.get('active_tab')));
+        const df = fd.get('date_from');
+        const dt = fd.get('date_to');
+        lines.push(df ? ('С: ' + df) : 'С: (не ограничено)');
+        lines.push(dt ? ('По: ' + dt) : 'По: (не ограничено)');
+        lines.push(fd.get('sort') === 'asc' ? 'Сортировка: старые сверху' : 'Сортировка: новые сверху');
+        const lim = (fd.get('limit') || '').toString().trim();
+        lines.push('Макс. строк: ' + (lim ? lim : String(defaultLimit)));
+        const tab = fd.get('active_tab');
+        if (tab === 'analog') {
+            lines.push('Полей аналогов (отмечено): ' + f.querySelectorAll('input[name="analog_col"]:checked').length);
+        } else if (tab === 'discrete') {
+            lines.push('Полей дискретов (отмечено): ' + f.querySelectorAll('input[name="discrete_col"]:checked').length);
+        } else {
+            lines.push('Колонки CSV: время и название');
+        }
+        document.getElementById('export-summary').textContent = lines.join('\n');
+    }
+
+    const modal = document.getElementById('export-modal');
+    document.getElementById('btn-export-open').addEventListener('click', function () {
+        buildExportSummary();
+        document.getElementById('export-outcome').innerHTML = '';
+        modal.showModal();
+    });
+    document.getElementById('export-cancel').addEventListener('click', function () {
+        modal.close();
+    });
+})();
+</script>
 {% endblock %}

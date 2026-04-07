@@ -1,8 +1,8 @@
+{% if error %}
+<div class="flash error">{{ error }}</div>
+{% else %}
 <div class="flash success">
-    CSV готов:
-    <a href="{{ download_url }}" target="_blank" rel="noopener noreferrer">{{ download_url }}</a>
+    Файл CSV готов:
+    <a href="{{ download_url }}" download target="_blank" rel="noopener noreferrer">скачать</a>
 </div>
-<div class="flash success">
-    CSV готов:
-    <a href="{{ download_url }}" target="_blank" rel="noopener noreferrer">{{ download_url }}</a>
-</div>
+{% endif %}

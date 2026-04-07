@@ -8,6 +8,7 @@ from pathlib import Path
 
 from flask import Flask
 from flask_login import current_user
+from flask_wtf.csrf import generate_csrf
 from flask_migrate import Migrate
 from sqlalchemy import inspect
 from sqlalchemy.exc import OperationalError
@@ -111,14 +112,16 @@ def create_app() -> Flask:
 
     @app.context_processor
     def inject_nav() -> dict:
+        base = {"csrf_token": generate_csrf}
         if not current_user.is_authenticated:
-            return {"nav_menu": [], "display_username": None, "is_admin": False}
+            return {**base, "nav_menu": [], "display_username": None, "is_admin": False}
         tu = getattr(current_user, "type_user", None)
         role = tu.system_name if tu is not None else "user"
         menu = [{"endpoint": "main_blueprint.dashboard", "title": "Панель"}]
         if role == "admin":
             menu.append({"endpoint": "data_blueprint.page", "title": "Данные"})
         return {
+            **base,
             "nav_menu": menu,
             "display_username": current_user.username,
             "is_admin": role == "admin",

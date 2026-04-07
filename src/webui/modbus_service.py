@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import csv
 import json
 import logging
 import struct
@@ -185,29 +184,3 @@ class ModbusCollector:
             self._flush(batch)
 
 
-def create_export_csv(session_factory: sessionmaker, output_dir: Path) -> Path:
-    output_dir.mkdir(parents=True, exist_ok=True)
-    path = output_dir / f"export_{datetime.now():%Y%m%d_%H%M%S}.csv"
-    session = session_factory()
-    try:
-        rows = session.query(Analogs).order_by(Analogs.created_at.asc()).all()
-    finally:
-        session.close()
-
-    with path.open("w", newline="", encoding="utf-8") as f:
-        writer = csv.writer(f, delimiter=",")
-        writer.writerow(["line_no", "date", "time", *ANALOG_CSV_COLUMNS, *DISCRETE_CSV_COLUMNS])
-        for i, row in enumerate(rows, start=1):
-            processed = decode_to_processed(row.date)
-            analog, discrete = analog_discrete_for_csv(processed)
-            dt = row.created_at
-            writer.writerow(
-                [
-                    i,
-                    dt.strftime("%Y-%m-%d"),
-                    dt.strftime("%H:%M:%S.%f")[:12],
-                    *[analog.get(k, "") for k in ANALOG_CSV_COLUMNS],
-                    *[1 if bool(discrete.get(k, False)) else 0 for k in DISCRETE_CSV_COLUMNS],
-                ]
-            )
-    return path
