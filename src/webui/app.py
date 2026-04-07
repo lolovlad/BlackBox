@@ -117,9 +117,12 @@ def create_app() -> Flask:
             return {**base, "nav_menu": [], "display_username": None, "is_admin": False}
         tu = getattr(current_user, "type_user", None)
         role = tu.system_name if tu is not None else "user"
-        menu = [{"endpoint": "main_blueprint.dashboard", "title": "Панель"}]
+        menu = [
+            {"endpoint": "main_blueprint.dashboard", "title": "Панель"},
+            {"endpoint": "data_blueprint.page", "title": "Данные"},
+        ]
         if role == "admin":
-            menu.append({"endpoint": "data_blueprint.page", "title": "Данные"})
+            menu.append({"endpoint": "main_blueprint.settings", "title": "Настройки"})
         return {
             **base,
             "nav_menu": menu,

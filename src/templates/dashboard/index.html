@@ -31,8 +31,6 @@
         <p class="tab-panel-placeholder">Загрузка данных...</p>
     </div>
 
-    {% if is_admin %}
-        <p><a class="btn" href="{{ url_for('data_blueprint.page') }}">Открыть расширенные таблицы</a></p>
-    {% endif %}
+    <p><a class="btn" href="{{ url_for('data_blueprint.page') }}">Открыть расширенные таблицы</a></p>
 </section>
 {% endblock %}

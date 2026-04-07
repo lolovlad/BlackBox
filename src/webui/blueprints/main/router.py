@@ -3,6 +3,7 @@ from __future__ import annotations
 from flask import Blueprint, current_app, redirect, render_template, request, url_for
 from flask_login import current_user, login_required
 
+from src.webui.auth_utils import admin_required
 from src.webui.data_labels import (
     all_analog_keys,
     all_discrete_keys,
@@ -36,6 +37,12 @@ def dashboard():
         analog_options=analog_opts,
         discrete_options=discrete_opts,
     )
+
+
+@main_router.route("/settings", methods=["GET"])
+@admin_required
+def settings():
+    return render_template("settings/index.html")
 
 
 def _build_live_dashboard_context(

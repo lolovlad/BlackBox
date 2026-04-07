@@ -3,8 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 
 from flask import Blueprint, current_app, render_template, request, url_for
+from flask_login import login_required
 
-from src.webui.auth_utils import admin_required
 from src.webui.data_labels import all_analog_keys, all_discrete_keys, analog_labels_for, discrete_labels_for
 from src.webui.paths import TEMPLATES_DIR
 from src.webui.repositories.data_repository import DataRepository
@@ -21,7 +21,7 @@ def _service() -> DataService:
 
 
 @data_router.route("/", methods=["GET"])
-@admin_required
+@login_required
 def page():
     analog_opts = analog_labels_for(all_analog_keys())
     discrete_opts = discrete_labels_for(all_discrete_keys())
@@ -34,7 +34,7 @@ def page():
 
 
 @data_router.route("/tables", methods=["GET"])
-@admin_required
+@login_required
 def tables():
     flt = parse_data_filter(request.args)
     ctx = _service().collect_tab(flt)
@@ -42,7 +42,7 @@ def tables():
 
 
 @data_router.route("/export", methods=["POST"])
-@admin_required
+@login_required
 def export_submit():
     flt = parse_data_filter(request.form)
     static_csv_dir: Path = current_app.extensions["static_csv_dir"]
