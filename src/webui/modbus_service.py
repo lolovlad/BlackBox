@@ -10,6 +10,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+import minimalmodbus
 from modbus_acquire.instrument import build_instrument
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import sessionmaker
@@ -264,41 +265,91 @@ class ModbusCollector:
         self.stop()
         self.start()
 
+    def _create_instrument(self):
+        return build_instrument(
+            {
+                "port": self._config.modbus_port,
+                "slave_id": self._config.modbus_slave,
+                "baudrate": self._config.modbus_baudrate,
+                "timeout": self._config.modbus_timeout,
+                "clear_buffers_before_each_transaction": True,
+                # More robust on noisy/contended links (opens/closes each call).
+                "close_port_after_each_call": True,
+            }
+        )
+
     def _loop(self) -> None:
         try:
-            instrument = build_instrument(
-                {
-                    "port": self._config.modbus_port,
-                    "slave_id": self._config.modbus_slave,
-                    "baudrate": self._config.modbus_baudrate,
-                    "timeout": self._config.modbus_timeout,
-                    "clear_buffers_before_each_transaction": True,
-                    "close_port_after_each_call": False,
-                }
-            )
+            instrument = self._create_instrument()
         except Exception:
             logger.exception("Failed to initialize Modbus instrument")
             instrument = None
 
+        consecutive_failures = 0
+        last_error_log = 0.0
         while not self._stop_event.is_set():
             try:
                 if instrument is None:
+                    try:
+                        instrument = self._create_instrument()
+                        consecutive_failures = 0
+                        logger.info("Modbus instrument reinitialized")
+                    except Exception:
+                        now = time.monotonic()
+                        if now - last_error_log >= 3.0:
+                            logger.exception("Failed to reinitialize Modbus instrument")
+                            last_error_log = now
                     time.sleep(self._config.modbus_interval)
                     continue
                 config = _load_settings()
                 source_values: dict[str, list[Any]] = {}
+                had_error = False
                 for req in config.get("requests", []):
                     req_name = req["name"]
                     fc = int(req["fc"])
                     address = int(req["address"])
                     count = int(req["count"])
-                    if fc == 3:
-                        source_values[req_name] = list(instrument.read_registers(address, count))
-                    elif fc == 1:
-                        source_values[req_name] = [bool(v) for v in instrument.read_bits(address, count, functioncode=1)]
-                    else:
+                    last_exc: Exception | None = None
+                    for _attempt in range(2):
+                        try:
+                            if fc == 3:
+                                source_values[req_name] = list(instrument.read_registers(address, count))
+                            elif fc == 1:
+                                source_values[req_name] = [
+                                    bool(v) for v in instrument.read_bits(address, count, functioncode=1)
+                                ]
+                            else:
+                                source_values[req_name] = []
+                            last_exc = None
+                            break
+                        except (minimalmodbus.InvalidResponseError, OSError) as exc:
+                            last_exc = exc
+                            time.sleep(0.02)
+                        except Exception as exc:
+                            last_exc = exc
+                            break
+                    if last_exc is not None:
+                        had_error = True
                         source_values[req_name] = []
+                        now = time.monotonic()
+                        if now - last_error_log >= 2.0:
+                            logger.warning(
+                                "Modbus read failed for '%s': %s: %s",
+                                req_name,
+                                type(last_exc).__name__,
+                                last_exc,
+                            )
+                            last_error_log = now
+
                 self._append({"created_at": datetime.now(), "sources": source_values})
+                if had_error:
+                    consecutive_failures += 1
+                else:
+                    consecutive_failures = 0
+                if consecutive_failures >= 5:
+                    logger.warning("Too many Modbus errors in a row, reinitializing instrument")
+                    instrument = None
+                    consecutive_failures = 0
             except Exception:
                 logger.exception("Unhandled error in Modbus polling loop")
             time.sleep(self._config.modbus_interval)

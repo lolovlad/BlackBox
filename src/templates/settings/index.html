@@ -5,31 +5,51 @@
     <h2>Настройки системы</h2>
     <p class="hint">Здесь доступны только параметры чтения данных и JSON-настройки парсера. Параметры web-интерфейса не редактируются.</p>
 
-    <form method="post" class="settings-form">
+    <form method="post" class="settings-form" enctype="multipart/form-data">
         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <fieldset>
+            <legend>Импорт настроек</legend>
+            <div class="settings-grid">
+                <label class="filter-field">JSON-файл настроек
+                    <input type="file" name="import_file" accept=".json,application/json">
+                    <small class="field-help">Поддерживаются структуры: { "runtime": {...}, "parser": {...} } или просто parser JSON с requests/fields.</small>
+                </label>
+            </div>
+            <div class="row actions">
+                <button type="submit" class="btn secondary" name="action" value="import">Импортировать из файла</button>
+            </div>
+        </fieldset>
+
         <fieldset>
             <legend>Параметры Modbus / чтения данных</legend>
             <div class="settings-grid">
                 <label class="filter-field">MODBUS_PORT
                     <input type="text" name="MODBUS_PORT" value="{{ env_values.MODBUS_PORT }}">
+                    <small class="field-help">Порт устройства, например `/dev/ttyAMA0` или `COM3`.</small>
                 </label>
                 <label class="filter-field">MODBUS_SLAVE
-                    <input type="number" name="MODBUS_SLAVE" value="{{ env_values.MODBUS_SLAVE }}">
+                    <input type="number" name="MODBUS_SLAVE" min="1" max="247" step="1" value="{{ env_values.MODBUS_SLAVE }}">
+                    <small class="field-help">Допустимо: 1..247.</small>
                 </label>
                 <label class="filter-field">MODBUS_BAUDRATE
-                    <input type="number" name="MODBUS_BAUDRATE" value="{{ env_values.MODBUS_BAUDRATE }}">
+                    <input type="number" name="MODBUS_BAUDRATE" min="1200" max="115200" step="1" value="{{ env_values.MODBUS_BAUDRATE }}">
+                    <small class="field-help">Допустимо: 1200..115200.</small>
                 </label>
                 <label class="filter-field">MODBUS_TIMEOUT
-                    <input type="text" name="MODBUS_TIMEOUT" value="{{ env_values.MODBUS_TIMEOUT }}">
+                    <input type="number" name="MODBUS_TIMEOUT" min="0.01" max="10" step="0.01" value="{{ env_values.MODBUS_TIMEOUT }}">
+                    <small class="field-help">Таймаут, секунды. Диапазон: 0.01..10.</small>
                 </label>
                 <label class="filter-field">MODBUS_INTERVAL
-                    <input type="text" name="MODBUS_INTERVAL" value="{{ env_values.MODBUS_INTERVAL }}">
+                    <input type="number" name="MODBUS_INTERVAL" min="0.05" max="60" step="0.01" value="{{ env_values.MODBUS_INTERVAL }}">
+                    <small class="field-help">Интервал опроса, секунды. Диапазон: 0.05..60.</small>
                 </label>
                 <label class="filter-field">MODBUS_ADDRESS_OFFSET
-                    <input type="number" name="MODBUS_ADDRESS_OFFSET" value="{{ env_values.MODBUS_ADDRESS_OFFSET }}">
+                    <input type="number" name="MODBUS_ADDRESS_OFFSET" min="0" max="10000" step="1" value="{{ env_values.MODBUS_ADDRESS_OFFSET }}">
+                    <small class="field-help">Смещение адресов. Диапазон: 0..10000.</small>
                 </label>
                 <label class="filter-field">RAM_BATCH_SIZE
-                    <input type="number" name="RAM_BATCH_SIZE" value="{{ env_values.RAM_BATCH_SIZE }}">
+                    <input type="number" name="RAM_BATCH_SIZE" min="1" max="10000" step="1" value="{{ env_values.RAM_BATCH_SIZE }}">
+                    <small class="field-help">Размер буфера записи в БД. Диапазон: 1..10000.</small>
                 </label>
             </div>
         </fieldset>

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 
 from flask import Blueprint, current_app, flash, redirect, render_template, request, url_for
@@ -82,6 +83,61 @@ def settings_save():
     parser_text = request.form.get("parser_json") or ""
     action = (request.form.get("action") or "test").strip().lower()
 
+    if action == "import":
+        uploaded = request.files.get("import_file")
+        if uploaded is None or not uploaded.filename:
+            flash("Выберите JSON-файл для импорта.", "error")
+            return render_template("settings/index.html", env_values=posted_env, parser_text=parser_text), 400
+        try:
+            raw = uploaded.read().decode("utf-8")
+            payload = json.loads(raw)
+        except Exception as exc:
+            flash(f"Ошибка чтения файла импорта: {exc}", "error")
+            return render_template("settings/index.html", env_values=posted_env, parser_text=parser_text), 400
+
+        if not isinstance(payload, dict):
+            flash("Файл импорта должен быть JSON-объектом.", "error")
+            return render_template("settings/index.html", env_values=posted_env, parser_text=parser_text), 400
+
+        imported_env = dict(posted_env)
+        env_block = payload.get("runtime") or payload.get("env") or payload
+        if isinstance(env_block, dict):
+            for key in ENV_DEFAULTS:
+                if key in env_block:
+                    imported_env[key] = str(env_block[key]).strip()
+
+        parser_block = payload.get("parser") or payload.get("settings") or payload
+        if isinstance(parser_block, dict) and "requests" in parser_block and "fields" in parser_block:
+            imported_parser_text = json.dumps(parser_block, ensure_ascii=False, indent=2)
+        else:
+            imported_parser_text = parser_text
+
+        parser_cfg_import, err = validate_parser_json(imported_parser_text)
+        if err:
+            flash(f"Импортирован JSON, но parser-секция невалидна: {err}", "error")
+            return render_template(
+                "settings/index.html",
+                env_values=imported_env,
+                parser_text=imported_parser_text,
+            ), 400
+        try:
+            _ = effective_runtime_from_env(static_csv_dir, imported_env)
+        except Exception as exc:
+            flash(f"Импортирован JSON, но runtime-секция невалидна: {exc}", "error")
+            return render_template(
+                "settings/index.html",
+                env_values=imported_env,
+                parser_text=imported_parser_text,
+            ), 400
+
+        _ = parser_cfg_import
+        flash("Импорт выполнен. Проверьте значения и нажмите 'Проверить' или 'Сохранить и применить'.", "success")
+        return render_template(
+            "settings/index.html",
+            env_values=imported_env,
+            parser_text=imported_parser_text,
+        )
+
     parser_cfg, err = validate_parser_json(parser_text)
     if err:
         flash(err, "error")
@@ -93,12 +149,16 @@ def settings_save():
         flash(f"Некорректные значения runtime: {exc}", "error")
         return render_template("settings/index.html", env_values=posted_env, parser_text=parser_text), 400
 
+    # Avoid serial-port contention: stop background collector during active test.
+    collector.stop()
     ok, msg = test_modbus_settings(runtime, parser_cfg)
     if not ok:
+        collector.start()
         flash(msg, "error")
         return render_template("settings/index.html", env_values=posted_env, parser_text=parser_text), 400
 
     if action == "test":
+        collector.start()
         flash(msg, "success")
         return render_template("settings/index.html", env_values=posted_env, parser_text=parser_text)
 
