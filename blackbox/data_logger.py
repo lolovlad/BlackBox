@@ -8,6 +8,8 @@ from datetime import datetime
 from typing import Callable, Dict, Optional
 import logging
 import os
+import multiprocessing as mp
+import queue
 
 from .config import DataLoggerConfig, AlarmCondition
 from .discrete_inputs import DiscreteInputs
@@ -15,6 +17,37 @@ from .analog_inputs import AnalogInputs
 from .data_writer import DataWriter, AlarmWriter
 
 logger = logging.getLogger(__name__)
+
+_QUEUE_POLL_TIMEOUT_SECONDS = 0.2
+
+
+def _modbus_process_worker(
+    running_flag: "mp.synchronize.Event",
+    out_queue: "mp.Queue[Dict[str, object]]",
+    reader_config: Dict[str, object],
+    poll_interval: float,
+) -> None:
+    """Воркер-процесс для циклического чтения Modbus."""
+    from modbus_acquire.instrument import read_all_data
+
+    while running_flag.is_set():
+        try:
+            data = read_all_data(reader_config)
+            try:
+                out_queue.put_nowait(data)
+            except queue.Full:
+                try:
+                    out_queue.get_nowait()
+                except queue.Empty:
+                    pass
+                out_queue.put_nowait(data)
+        except Exception:
+            # Передаём только факт ошибки, чтобы не падал процесс-читатель.
+            try:
+                out_queue.put_nowait({"__modbus_process_error__": True})
+            except queue.Full:
+                pass
+        time.sleep(poll_interval)
 
 
 class DataLogger:
@@ -49,6 +82,9 @@ class DataLogger:
         self._alarm_thread: Optional[threading.Thread] = None
         self._modbus_thread: Optional[threading.Thread] = None
         self._modbus_read_fn: Optional[Callable[[], Dict[str, object]]] = None
+        self._modbus_process: Optional[mp.Process] = None
+        self._modbus_process_event: Optional["mp.synchronize.Event"] = None
+        self._modbus_data_queue: Optional["mp.Queue[Dict[str, object]]"] = None
         
         # Регистрация callback для дискретных входов
         self._setup_discrete_callbacks()
@@ -124,6 +160,17 @@ class DataLogger:
             self._alarm_thread.join(timeout=2.0)
         if self._modbus_thread:
             self._modbus_thread.join(timeout=2.0)
+        if self._modbus_process_event:
+            self._modbus_process_event.clear()
+        if self._modbus_process and self._modbus_process.is_alive():
+            self._modbus_process.join(timeout=2.0)
+            if self._modbus_process.is_alive():
+                self._modbus_process.terminate()
+        if self._modbus_data_queue:
+            self._modbus_data_queue.close()
+            self._modbus_data_queue = None
+        self._modbus_process = None
+        self._modbus_process_event = None
         
         # Закрываем файлы
         self.data_writer.close()
@@ -150,18 +197,45 @@ class DataLogger:
 
     def _modbus_poll_loop(self):
         """Цикл опроса данных с Modbus RTU."""
-        from modbus_acquire.instrument import read_all_data
+        # Кастомный reader может быть непиклируемым, для него оставляем потоковый fallback.
+        if self._modbus_read_fn is not None:
+            while self._running:
+                try:
+                    data = self._modbus_read_fn()
+                    self.update_from_modbus_data(data)
+                except Exception as e:
+                    logger.exception("Ошибка в цикле опроса Modbus: %s", e)
+                time.sleep(self.config.modbus_poll_interval)
+            return
 
-        if self._modbus_read_fn is None:
-            self._modbus_read_fn = lambda: read_all_data(self.config.modbus_reader_config)
+        self._modbus_process_event = mp.Event()
+        self._modbus_process_event.set()
+        self._modbus_data_queue = mp.Queue(maxsize=1)
+        self._modbus_process = mp.Process(
+            target=_modbus_process_worker,
+            args=(
+                self._modbus_process_event,
+                self._modbus_data_queue,
+                self.config.modbus_reader_config,
+                self.config.modbus_poll_interval,
+            ),
+            daemon=True,
+        )
+        self._modbus_process.start()
 
         while self._running:
+            if self._modbus_data_queue is None:
+                break
             try:
-                data = self._modbus_read_fn()
+                data = self._modbus_data_queue.get(timeout=_QUEUE_POLL_TIMEOUT_SECONDS)
+                if data.get("__modbus_process_error__"):
+                    logger.warning("Ошибка чтения Modbus в subprocess")
+                    continue
                 self.update_from_modbus_data(data)
+            except queue.Empty:
+                continue
             except Exception as e:
-                logger.exception("Ошибка в цикле опроса Modbus: %s", e)
-            time.sleep(self.config.modbus_poll_interval)
+                logger.exception("Ошибка в цикле приёма данных Modbus: %s", e)
     
     def _alarm_monitor_loop(self):
         """Цикл мониторинга аварийных событий"""

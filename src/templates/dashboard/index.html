@@ -1,14 +1,39 @@
 {% extends "base.html" %}
 {% block title %}Dashboard{% endblock %}
 {% block content %}
-<section class="card">
-    <h2>Панель</h2>
-    <p>Сбор Modbus работает в фоне.</p>
+<section class="card dashboard-page">
+    <h2>Главная панель</h2>
+    <p class="hint">Данные обновляются автоматически в реальном времени (HTMX polling).</p>
+
+    <form id="dashboard-live-form" class="dashboard-controls" onsubmit="return false;" lang="ru">
+        <fieldset>
+            <legend>Поля аналогов</legend>
+            <div class="checkbox-grid">
+                {% for key, ru in analog_options %}
+                    <label class="chk"><input type="checkbox" name="analog_col" value="{{ key }}" checked> {{ ru }}</label>
+                {% endfor %}
+            </div>
+        </fieldset>
+        <fieldset>
+            <legend>Поля дискретов</legend>
+            <div class="checkbox-grid">
+                {% for key, ru in discrete_options %}
+                    <label class="chk"><input type="checkbox" name="discrete_col" value="{{ key }}" checked> {{ ru }}</label>
+                {% endfor %}
+            </div>
+        </fieldset>
+    </form>
+
+    <div id="dashboard-live-root"
+         hx-get="{{ url_for('main_blueprint.dashboard_live') }}"
+         hx-include="#dashboard-live-form"
+         hx-trigger="load, every 2s, change from:#dashboard-live-form"
+         hx-swap="innerHTML">
+        <p class="tab-panel-placeholder">Загрузка данных...</p>
+    </div>
+
     {% if is_admin %}
-        <p>Используйте раздел «Данные» для просмотра и экспорта.</p>
-        <p><a class="btn" href="{{ url_for('data_blueprint.page') }}">Открыть данные</a></p>
-    {% else %}
-        <p>Раздел «Данные» и экспорт CSV доступны только администраторам.</p>
+        <p><a class="btn" href="{{ url_for('data_blueprint.page') }}">Открыть расширенные таблицы</a></p>
     {% endif %}
 </section>
 {% endblock %}

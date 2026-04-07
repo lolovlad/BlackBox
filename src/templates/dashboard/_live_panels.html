@@ -1,0 +1,54 @@
+<div class="dashboard-grid">
+    <section class="card">
+        <h3>Аналоговые данные</h3>
+        <p class="hint">Последнее обновление: {{ analog_time or "нет данных" }}</p>
+        {% if analog_items %}
+            <div class="analog-bars">
+                {% for item in analog_items %}
+                    <div class="analog-row">
+                        <span class="analog-name">{{ item.name }}</span>
+                        <progress class="analog-progress" max="100" value="100"></progress>
+                        <strong class="analog-value">{{ item.value }}</strong>
+                    </div>
+                {% endfor %}
+            </div>
+        {% else %}
+            <p class="hint">Аналоговые записи еще не поступали.</p>
+        {% endif %}
+    </section>
+
+    <section class="card">
+        <h3>Дискретные состояния</h3>
+        <p class="hint">Последнее обновление: {{ discrete_time or "нет данных" }}</p>
+        {% if discrete_items %}
+            <ul class="discrete-list">
+                {% for item in discrete_items %}
+                    <li class="{{ 'state-on' if item.is_on else 'state-off' }}">
+                        <span>{{ item.name }}</span>
+                        <strong>{{ "ВКЛ" if item.is_on else "ВЫКЛ" }}</strong>
+                    </li>
+                {% endfor %}
+            </ul>
+        {% else %}
+            <p class="hint">Дискретные записи еще не поступали.</p>
+        {% endif %}
+    </section>
+</div>
+
+<section class="card">
+    <h3>Сообщения аварий</h3>
+    {% if not alarms_enabled %}
+        <p class="hint">Таблица аварий недоступна. Выполните миграции БД.</p>
+    {% elif alarm_rows %}
+        <ul class="alarm-list">
+            {% for row in alarm_rows %}
+                <li>
+                    <span class="alarm-time">{{ row.time }}</span>
+                    <span class="alarm-text">{{ row.name }}</span>
+                </li>
+            {% endfor %}
+        </ul>
+    {% else %}
+        <p class="hint">Активных аварийных сообщений нет.</p>
+    {% endif %}
+</section>
