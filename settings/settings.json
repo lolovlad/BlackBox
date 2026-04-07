@@ -4,27 +4,126 @@
     {"name": "coils", "fc": 1, "address": 16, "count": 32}
   ],
   "fields": [
-    {"name": "UgenL1L2", "source": "hr", "address": 0, "type": "uint16"},
-    {"name": "UgenL2L3", "source": "hr", "address": 1, "type": "uint16"},
-    {"name": "UgenL3L1", "source": "hr", "address": 2, "type": "uint16"},
-    {"name": "UgenL1N", "source": "hr", "address": 3, "type": "uint16"},
-    {"name": "UgenL2N", "source": "hr", "address": 4, "type": "uint16"},
-    {"name": "UgenL3N", "source": "hr", "address": 5, "type": "uint16"},
-    {"name": "Fgen", "source": "hr", "address": 6, "type": "uint16", "expr": "x / 100"},
-    {"name": "IL1", "source": "hr", "address": 7, "type": "uint16"},
-    {"name": "IL2", "source": "hr", "address": 8, "type": "uint16"},
-    {"name": "IL3", "source": "hr", "address": 9, "type": "uint16"},
-    {"name": "PF", "source": "hr", "address": 10, "type": "uint16", "expr": "x / 100"},
-    {"name": "Pgen", "source": "hr", "address": 11, "type": "uint16"},
-    {"name": "Qgen", "source": "hr", "address": 12, "type": "uint16"},
-    {"name": "UbusL1L2", "source": "hr", "address": 13, "type": "uint16"},
-    {"name": "Fbus", "source": "hr", "address": 14, "type": "uint16", "expr": "x / 100"},
-    {"name": "Egen", "source": "hr", "address": 17, "type": "uint32_be"},
-    {"name": "AlarmReg_20", "source": "hr", "address": 19, "type": "uint16"},
-    {"name": "AlarmReg_21", "source": "hr", "address": 20, "type": "uint16"},
-    {"name": "AlarmReg_22", "source": "hr", "address": 21, "type": "uint16"},
-    {"name": "AlarmReg_23", "source": "hr", "address": 22, "type": "uint16"},
-    {"name": "AlarmReg_26", "source": "hr", "address": 25, "type": "uint16"},
+    {"name": "UgenL1L2", "display_name": "Напряжение генератора L1-L2", "source": "hr", "address": 0, "type": "uint16"},
+    {"name": "UgenL2L3", "display_name": "Напряжение генератора L2-L3", "source": "hr", "address": 1, "type": "uint16"},
+    {"name": "UgenL3L1", "display_name": "Напряжение генератора L3-L1", "source": "hr", "address": 2, "type": "uint16"},
+    {"name": "UgenL1N", "display_name": "Напряжение генератора L1-N", "source": "hr", "address": 3, "type": "uint16"},
+    {"name": "UgenL2N", "display_name": "Напряжение генератора L2-N", "source": "hr", "address": 4, "type": "uint16"},
+    {"name": "UgenL3N", "display_name": "Напряжение генератора L3-N", "source": "hr", "address": 5, "type": "uint16"},
+    {"name": "Fgen", "display_name": "Частота генератора", "source": "hr", "address": 6, "type": "uint16", "expr": "x / 100"},
+    {"name": "IL1", "display_name": "Ток L1", "source": "hr", "address": 7, "type": "uint16"},
+    {"name": "IL2", "display_name": "Ток L2", "source": "hr", "address": 8, "type": "uint16"},
+    {"name": "IL3", "display_name": "Ток L3", "source": "hr", "address": 9, "type": "uint16"},
+    {"name": "PF", "display_name": "Коэффициент мощности", "source": "hr", "address": 10, "type": "uint16", "expr": "x / 100"},
+    {"name": "Pgen", "display_name": "Активная мощность генератора", "source": "hr", "address": 11, "type": "uint16"},
+    {"name": "Qgen", "display_name": "Реактивная мощность генератора", "source": "hr", "address": 12, "type": "uint16"},
+    {"name": "UbusL1L2", "display_name": "Напряжение шины L1-L2", "source": "hr", "address": 13, "type": "uint16"},
+    {"name": "Fbus", "display_name": "Частота шины", "source": "hr", "address": 14, "type": "uint16", "expr": "x / 100"},
+    {"name": "Egen", "display_name": "Энергия генератора", "source": "hr", "address": 17, "type": "uint32_be"},
+    {
+      "name": "AlarmReg_20",
+      "source": "hr",
+      "address": 19,
+      "type": "bitfield",
+      "bits": {
+        "0": "1010 BUS High Volt 1",
+        "1": "1020 BUS High Volt 2",
+        "2": "1030 BUS Low Volt 1",
+        "3": "1040 BUS Low Volt 2",
+        "4": "1050 BUS High freq 1",
+        "5": "1060 BUS High freq 2",
+        "6": "1070 BUS Low freq 1",
+        "7": "1080 BUS Low freq 2",
+        "8": "1090 Reverse power",
+        "9": "1100 Over Current 1",
+        "10": "1110 Over Current 2",
+        "11": "1120 High power 1",
+        "12": "1130 High Power 2",
+        "13": "1220 Unbalance current",
+        "14": "1230 Unbalance voltage"
+      }
+    },
+    {
+      "name": "StatusReg_20",
+      "source": "hr",
+      "address": 19,
+      "type": "bitfield",
+      "bits": {
+        "12": "2160 Sync Window"
+      }
+    },
+    {
+      "name": "AlarmReg_21",
+      "source": "hr",
+      "address": 20,
+      "type": "bitfield",
+      "bits": {
+        "0": "Q import",
+        "1": "Q export",
+        "2": "df/dt",
+        "3": "1270 Vector jump",
+        "4": "2030 Sync. fail",
+        "5": "4220 Battery Low V",
+        "6": "CB close failure",
+        "7": "CB open failure",
+        "8": "CB position feedback failure",
+        "9": "Phase sequence error",
+        "10": "2170 GOV Reg.Fail",
+        "11": "AVR Reg.fail",
+        "13": "2181 Power Ramp Down"
+      }
+    },
+    {
+      "name": "AlarmReg_22",
+      "source": "hr",
+      "address": 21,
+      "type": "bitfield",
+      "bits": {
+        "0": "1310 Gen High Volt 1",
+        "1": "1320 Gen High Volt 2",
+        "2": "1330 Gen Low Volt 1",
+        "3": "1340 Gen Low Volt 2",
+        "4": "1350 Gen High freq 1",
+        "5": "1360 Gen High freq 2",
+        "6": "1370 Gen Low freq 1",
+        "7": "1380 Gen Low freq 2",
+        "8": "1400 Fast Overcurrent",
+        "9": "1410 High Overcurrent"
+      }
+    },
+    {
+      "name": "AlarmReg_23",
+      "source": "hr",
+      "address": 22,
+      "type": "bitfield",
+      "bits": {
+        "0": "4-20mA In.1 step 1",
+        "1": "4-20mA In.2 step 1",
+        "2": "4-20mA In.3 step 1",
+        "3": "4-20mA In.4 step 1",
+        "6": "1630 Overspeed 23",
+        "10": "Status relay DI4",
+        "11": "DI5"
+      }
+    },
+    {
+      "name": "StatusReg_26",
+      "source": "hr",
+      "address": 25,
+      "type": "bitfield",
+      "bits": {
+        "0": "Mode1",
+        "1": "Mode2",
+        "2": "Mode3",
+        "3": "Mode4",
+        "4": "Mode5",
+        "5": "Mode6",
+        "7": "Sync.Start",
+        "8": "Alarm inhibit",
+        "9": "GB Pos On",
+        "15": "Synchronising"
+      }
+    },
     {"name": "Alarms_total", "source": "hr", "address": 26, "type": "uint16"},
     {"name": "Alarms_non_ack", "source": "hr", "address": 27, "type": "uint16"},
     {"name": "UbusL2L3", "source": "hr", "address": 30, "type": "uint16"},
@@ -38,12 +137,108 @@
     {"name": "PT100_1", "source": "hr", "address": 47, "type": "uint16"},
     {"name": "PT100_2", "source": "hr", "address": 48, "type": "uint16"},
     {"name": "Analog_input_E4", "source": "hr", "address": 58, "type": "uint16"},
-    {"name": "AlarmReg_70", "source": "hr", "address": 69, "type": "uint16"},
-    {"name": "AlarmReg_71", "source": "hr", "address": 70, "type": "uint16"},
-    {"name": "AlarmReg_72", "source": "hr", "address": 71, "type": "uint16"},
-    {"name": "AlarmReg_73", "source": "hr", "address": 72, "type": "uint16"},
-    {"name": "AlarmReg_74", "source": "hr", "address": 73, "type": "uint16"},
-    {"name": "AlarmReg_79", "source": "hr", "address": 78, "type": "uint16"},
+    {
+      "name": "AlarmReg_70",
+      "source": "hr",
+      "address": 69,
+      "type": "bitfield",
+      "bits": {
+        "0": "1510 AI1 level 1",
+        "1": "1520 AI1 level 2",
+        "2": "1530 AI2 level 1",
+        "3": "1540 AI2 level 2",
+        "4": "1550 Alt RTD3 Warn.",
+        "5": "1560 Alt RTD3 Shutd.",
+        "6": "1570 Low Fuel level",
+        "7": "1580 High Fuel Level",
+        "8": "AI1 Connect fail",
+        "9": "AI1 Sensor fail",
+        "10": "AI2 Connect fail",
+        "11": "AI2 Sensor fail",
+        "12": "RTD3 Connect fail",
+        "13": "RTD3 Sensor fail",
+        "14": "Fuel Level AI4 Connect fail",
+        "15": "Fuel Level AI4 Sensor fail"
+      }
+    },
+    {
+      "name": "AlarmReg_71",
+      "source": "hr",
+      "address": 70,
+      "type": "bitfield",
+      "bits": {
+        "0": "1800 AI1 L1",
+        "1": "1810 AI1 L2",
+        "2": "1820 AI2 L1",
+        "3": "1830 AI2 L2",
+        "4": "1840 AI3 L3",
+        "5": "1850 AI3 L3",
+        "6": "AI4 L1",
+        "7": "AI4 L2",
+        "8": "Fuel level Connect fail",
+        "9": "Fuel level Sensor fail"
+      }
+    },
+    {
+      "name": "AlarmReg_72",
+      "source": "hr",
+      "address": 71,
+      "type": "bitfield",
+      "bits": {
+        "0": "1590 PT100.1 L1",
+        "1": "1600 PT100.1 L2",
+        "2": "1610 PT100.2 L1",
+        "3": "1620 PT100.2 L2",
+        "4": "1630 Tacho overspeed L1",
+        "5": "1640 Tacho overspeed L2",
+        "6": "1650 Tacho underspeed L1",
+        "7": "1660 Tacho underspeed L2"
+      }
+    },
+    {
+      "name": "AlarmReg_73",
+      "source": "hr",
+      "address": 72,
+      "type": "bitfield",
+      "bits": {
+        "0": "1710 AVR Overvoltage DI45",
+        "1": "1720 Excitation Loss DI46",
+        "2": "1730 Fuel Spillage DI47",
+        "3": "1740 Fan Fail DI117",
+        "4": "1750 Spare DI118",
+        "5": "CB tripped DI23",
+        "6": "1670 EmergStop DI24",
+        "7": "1680 Earth Leakage DI43",
+        "8": "1690 Spare Term.44",
+        "9": "1700 Air Flops Close DI27",
+        "10": "Air flaps fail",
+        "11": "1760 High Water Temp DI91",
+        "12": "1770 Low Oil Press. DI92",
+        "13": "1780 Low Water Press. DI93"
+      }
+    },
+    {
+      "name": "AlarmReg_74",
+      "source": "hr",
+      "address": 73,
+      "type": "bitfield",
+      "bits": {
+        "0": "Engine stop failure",
+        "1": "Emergency stop failure",
+        "2": "Shutdown fail",
+        "3": "CB trip failure persist",
+        "4": "Start Fail"
+      }
+    },
+    {
+      "name": "AlarmReg_79",
+      "source": "hr",
+      "address": 78,
+      "type": "bitfield",
+      "bits": {
+        "0": "External Communication Alarm"
+      }
+    },
     {"name": "Runhours_raw83", "source": "hr", "address": 82, "type": "uint16"},
     {"name": "Runhours_raw84", "source": "hr", "address": 83, "type": "uint16"},
     {"name": "Gov.Reg.Value", "source": "hr", "address": 87, "type": "uint16", "expr": "x / 10"},
@@ -66,26 +261,8 @@
     {"name": "Droop", "source": "coils", "address": 29, "type": "bool"},
     {"name": "Load Share", "source": "coils", "address": 30, "type": "bool"},
     {"name": "Base Load (P/var)", "source": "coils", "address": 31, "type": "bool"},
-    {"name": "Runhours_hours", "type": "expr", "expr": "Runhours_raw84 * 1000 + Runhours_raw83"},
-    {"name": "active_alarms", "type": "bit_aggregate", "register_prefix": "AlarmReg_", "map_ref": "alarm_bits"},
-    {"name": "active_status", "type": "bit_aggregate", "register_prefix": "AlarmReg_", "map_ref": "status_bits"}
-  ],
-  "bit_maps": {
-    "alarm_bits": {
-      "20": {"0": "1010 BUS High Volt 1", "1": "1020 BUS High Volt 2", "2": "1030 BUS Low Volt 1", "3": "1040 BUS Low Volt 2", "4": "1050 BUS High freq 1", "5": "1060 BUS High freq 2", "6": "1070 BUS Low freq 1", "7": "1080 BUS Low freq 2", "8": "1090 Reverse power", "9": "1100 Over Current 1", "10": "1110 Over Current 2", "11": "1120 High power 1", "12": "1130 High Power 2", "13": "1220 Unbalance current", "14": "1230 Unbalance voltage"},
-      "21": {"0": "Q import", "1": "Q export", "2": "df/dt", "3": "1270 Vector jump", "4": "2030 Sync. fail", "5": "4220 Battery Low V", "6": "CB close failure", "7": "CB open failure", "8": "CB position feedback failure", "9": "Phase sequence error", "10": "2170 GOV Reg.Fail", "11": "AVR Reg.fail", "13": "2181 Power Ramp Down"},
-      "22": {"0": "1310 Gen High Volt 1", "1": "1320 Gen High Volt 2", "2": "1330 Gen Low Volt 1", "3": "1340 Gen Low Volt 2", "4": "1350 Gen High freq 1", "5": "1360 Gen High freq 2", "6": "1370 Gen Low freq 1", "7": "1380 Gen Low freq 2", "8": "1400 Fast Overcurrent", "9": "1410 High Overcurrent"},
-      "23": {"0": "4-20mA In.1 step 1", "1": "4-20mA In.2 step 1", "2": "4-20mA In.3 step 1", "3": "4-20mA In.4 step 1", "6": "1630 Overspeed 23", "10": "Status relay DI4", "11": "DI5"},
-      "70": {"0": "1510 AI1 level 1", "1": "1520 AI1 level 2", "2": "1530 AI2 level 1", "3": "1540 AI2 level 2", "4": "1550 Alt RTD3 Warn.", "5": "1560 Alt RTD3 Shutd.", "6": "1570 Low Fuel level", "7": "1580 High Fuel Level", "8": "AI1 Connect fail", "9": "AI1 Sensor fail", "10": "AI2 Connect fail", "11": "AI2 Sensor fail", "12": "RTD3 Connect fail", "13": "RTD3 Sensor fail", "14": "Fuel Level AI4 Connect fail", "15": "Fuel Level AI4 Sensor fail"},
-      "71": {"0": "1800 AI1 L1", "1": "1810 AI1 L2", "2": "1820 AI2 L1", "3": "1830 AI2 L2", "4": "1840 AI3 L3", "5": "1850 AI3 L3", "6": "AI4 L1", "7": "AI4 L2", "8": "Fuel level Connect fail", "9": "Fuel level Sensor fail"},
-      "72": {"0": "1590 PT100.1 L1", "1": "1600 PT100.1 L2", "2": "1610 PT100.2 L1", "3": "1620 PT100.2 L2", "4": "1630 Tacho overspeed L1", "5": "1640 Tacho overspeed L2", "6": "1650 Tacho underspeed L1", "7": "1660 Tacho underspeed L2"},
-      "73": {"0": "1710 AVR Overvoltage DI45", "1": "1720 Excitation Loss DI46", "2": "1730 Fuel Spillage DI47", "3": "1740 Fan Fail DI117", "4": "1750 Spare DI118", "5": "CB tripped DI23", "6": "1670 EmergStop DI24", "7": "1680 Earth Leakage DI43", "8": "1690 Spare Term.44", "9": "1700 Air Flops Close DI27", "10": "Air flaps fail", "11": "1760 High Water Temp DI91", "12": "1770 Low Oil Press. DI92", "13": "1780 Low Water Press. DI93"},
-      "74": {"0": "Engine stop failure", "1": "Emergency stop failure", "2": "Shutdown fail", "3": "CB trip failure persist", "4": "Start Fail"},
-      "79": {"0": "External Communication Alarm"}
-    },
-    "status_bits": {
-      "20": {"12": "2160 Sync Window"},
-      "26": {"0": "Mode1", "1": "Mode2", "2": "Mode3", "3": "Mode4", "4": "Mode5", "5": "Mode6", "7": "Sync.Start", "8": "Alarm inhibit", "9": "GB Pos On", "15": "Synchronising"}
-    }
-  }
+    {"name": "Runhours", "display_name": "Моточасы", "type": "expr", "expr": "Runhours_raw84 * 1000 + Runhours_raw83"},
+    {"name": "active_alarms", "display_name": "Активные аварии", "type": "expr", "expr": "AlarmReg_20 + AlarmReg_21 + AlarmReg_22 + AlarmReg_23 + AlarmReg_70 + AlarmReg_71 + AlarmReg_72 + AlarmReg_73 + AlarmReg_74 + AlarmReg_79"},
+    {"name": "active_status", "display_name": "Активные статусы", "type": "expr", "expr": "StatusReg_20 + StatusReg_26"}
+  ]
 }

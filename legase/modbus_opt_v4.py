@@ -1,5 +1,4 @@
 import argparse
-import ast
 import json
 import time
 from pathlib import Path
@@ -8,86 +7,8 @@ import minimalmodbus
 import serial
 
 
-class SafeExprEvaluator(ast.NodeVisitor):
-    ALLOWED_NODES = (
-        ast.Expression,
-        ast.BinOp,
-        ast.UnaryOp,
-        ast.Add,
-        ast.Sub,
-        ast.Mult,
-        ast.Div,
-        ast.FloorDiv,
-        ast.Mod,
-        ast.Pow,
-        ast.USub,
-        ast.UAdd,
-        ast.Load,
-        ast.Name,
-        ast.Constant,
-        ast.Call,
-    )
-
-    ALLOWED_CALLS = {"int": int, "float": float, "round": round, "abs": abs, "max": max, "min": min}
-
-    def __init__(self, variables):
-        self.variables = variables
-
-    def visit(self, node):
-        if not isinstance(node, self.ALLOWED_NODES):
-            raise ValueError(f"Unsupported expression element: {type(node).__name__}")
-        return super().visit(node)
-
-    def visit_Expression(self, node):
-        return self.visit(node.body)
-
-    def visit_Constant(self, node):
-        return node.value
-
-    def visit_Name(self, node):
-        return self.variables.get(node.id, 0)
-
-    def visit_UnaryOp(self, node):
-        operand = self.visit(node.operand)
-        if isinstance(node.op, ast.USub):
-            return -operand
-        if isinstance(node.op, ast.UAdd):
-            return +operand
-        raise ValueError("Unsupported unary operation")
-
-    def visit_BinOp(self, node):
-        left = self.visit(node.left)
-        right = self.visit(node.right)
-        op = node.op
-        if isinstance(op, ast.Add):
-            return left + right
-        if isinstance(op, ast.Sub):
-            return left - right
-        if isinstance(op, ast.Mult):
-            return left * right
-        if isinstance(op, ast.Div):
-            return left / right
-        if isinstance(op, ast.FloorDiv):
-            return left // right
-        if isinstance(op, ast.Mod):
-            return left % right
-        if isinstance(op, ast.Pow):
-            return left ** right
-        raise ValueError("Unsupported binary operation")
-
-    def visit_Call(self, node):
-        if not isinstance(node.func, ast.Name):
-            raise ValueError("Only direct function calls are allowed")
-        fn_name = node.func.id
-        if fn_name not in self.ALLOWED_CALLS:
-            raise ValueError(f"Call '{fn_name}' is not allowed")
-        args = [self.visit(arg) for arg in node.args]
-        return self.ALLOWED_CALLS[fn_name](*args)
-
-
-def eval_expr(expr, variables):
-    parsed = ast.parse(expr, mode="eval")
-    return SafeExprEvaluator(variables).visit(parsed)
+def eval_expr(expr, context):
+    return eval(expr, {"__builtins__": {}}, context)
 
 
 def load_config(path):
@@ -158,6 +79,19 @@ def parse_fields(config, raw_sources):
             result[name] = active
             continue
 
+        if f_type == "bitfield":
+            source = field.get("source")
+            address = int(field.get("address", 0))
+            values = raw_sources.get(source, [])
+            reg_value = int(values[address]) if address < len(values) else 0
+            bits_map = field.get("bits", {})
+            active = []
+            for bit_idx, label in bits_map.items():
+                if reg_value & (1 << int(bit_idx)):
+                    active.append(label)
+            result[name] = active
+            continue
+
         source = field.get("source")
         address = int(field.get("address", 0))
         values = raw_sources.get(source, [])
@@ -188,25 +122,47 @@ def parse_fields(config, raw_sources):
     return result
 
 
-def print_snapshot(data, errors):
+def build_display_map(config):
+    display_map = {}
+    for field in config.get("fields", []):
+        name = field.get("name")
+        if not name:
+            continue
+        display_name = (
+            field.get("display_name")
+            or field.get("title")
+            or field.get("ru_name")
+            or field.get("label")
+            or name
+        )
+        display_map[name] = display_name
+    return display_map
+
+
+def print_snapshot(data, errors, display_map):
     print("=" * 80)
     print("DEIF GEMPAC snapshot")
     print(f"Poll errors: {len(errors)}")
     print("-" * 80)
     for key in sorted(data.keys()):
-        print(f"{key}: {data[key]}")
+        pretty_key = display_map.get(key, key)
+        if pretty_key != key:
+            print(f"{pretty_key} ({key}): {data[key]}")
+        else:
+            print(f"{key}: {data[key]}")
     print("=" * 80)
 
 
 def run_loop(args):
     config = load_config(args.config)
+    display_map = build_display_map(config)
     instrument = build_instrument(args.port, args.slave_id, args.baudrate, args.timeout)
 
     iteration = 0
     while True:
         raw_sources, errors = poll_requests(instrument, config["requests"], args.verbose)
         parsed = parse_fields(config, raw_sources)
-        print_snapshot(parsed, errors)
+        print_snapshot(parsed, errors, display_map)
 
         iteration += 1
         if args.once or (args.iterations and iteration >= args.iterations):
