@@ -41,17 +41,27 @@
             <div id="chart-col-root" data-cols="analog" class="chart-col-root">
                 <fieldset class="col-panel col-panel-analog">
                     <legend>Поля (аналоги)</legend>
+                    <div class="field-tools">
+                        <input type="text" class="field-search" data-target="analog_col" placeholder="Поиск поля...">
+                        <button type="button" class="btn secondary btn-fields" data-action="all" data-target="analog_col">Все</button>
+                        <button type="button" class="btn secondary btn-fields" data-action="none" data-target="analog_col">Снять</button>
+                    </div>
                     <div class="checkbox-grid">
                         {% for key, ru in analog_options %}
-                            <label class="chk"><input type="checkbox" name="analog_col" value="{{ key }}"> {{ ru }}</label>
+                            <label class="chk" data-label="{{ (ru ~ ' ' ~ key)|lower }}"><input type="checkbox" name="analog_col" value="{{ key }}" checked> {{ ru }}</label>
                         {% endfor %}
                     </div>
                 </fieldset>
                 <fieldset class="col-panel col-panel-discrete">
                     <legend>Поля (дискреты)</legend>
+                    <div class="field-tools">
+                        <input type="text" class="field-search" data-target="discrete_col" placeholder="Поиск поля...">
+                        <button type="button" class="btn secondary btn-fields" data-action="all" data-target="discrete_col">Все</button>
+                        <button type="button" class="btn secondary btn-fields" data-action="none" data-target="discrete_col">Снять</button>
+                    </div>
                     <div class="checkbox-grid">
                         {% for key, ru in discrete_options %}
-                            <label class="chk"><input type="checkbox" name="discrete_col" value="{{ key }}"> {{ ru }}</label>
+                            <label class="chk" data-label="{{ (ru ~ ' ' ~ key)|lower }}"><input type="checkbox" name="discrete_col" value="{{ key }}" checked> {{ ru }}</label>
                         {% endfor %}
                     </div>
                 </fieldset>
@@ -75,6 +85,15 @@
         var t = document.getElementById('chart-table').value;
         var root = document.getElementById('chart-col-root');
         root.dataset.cols = t;
+    }
+    function filterFieldList(targetName, query) {
+        var normalized = (query || '').trim().toLowerCase();
+        form.querySelectorAll('input[name="' + targetName + '"]').forEach(function (input) {
+            var row = input.closest('.chk');
+            if (!row) return;
+            var text = row.getAttribute('data-label') || row.textContent.toLowerCase();
+            row.style.display = (!normalized || text.indexOf(normalized) !== -1) ? '' : 'none';
+        });
     }
 
     var panel = document.getElementById('chart-filters-panel');
@@ -226,8 +245,11 @@
         form.querySelector('[name="table"]').value = 'analog';
         form.querySelector('[name="date_from"]').value = '';
         form.querySelector('[name="date_to"]').value = '';
-        form.querySelectorAll('input[name="analog_col"]').forEach(function (el) { el.checked = false; });
-        form.querySelectorAll('input[name="discrete_col"]').forEach(function (el) { el.checked = false; });
+        form.querySelectorAll('input[name="analog_col"]').forEach(function (el) { el.checked = true; });
+        form.querySelectorAll('input[name="discrete_col"]').forEach(function (el) { el.checked = true; });
+        form.querySelectorAll('.field-search').forEach(function (el) { el.value = ''; });
+        filterFieldList('analog_col', '');
+        filterFieldList('discrete_col', '');
         syncColPanels();
         if (pollTimer) {
             clearInterval(pollTimer);
@@ -235,6 +257,22 @@
         }
         lastTs = null;
         renderEmpty('График пуст. Выберите поля и нажмите "Построить график".');
+    });
+
+    form.addEventListener('click', function (ev) {
+        var btn = ev.target.closest('.btn-fields');
+        if (!btn) return;
+        var target = btn.getAttribute('data-target');
+        var action = btn.getAttribute('data-action');
+        form.querySelectorAll('input[name="' + target + '"]').forEach(function (el) {
+            if (el.closest('.chk') && el.closest('.chk').style.display === 'none') return;
+            el.checked = action === 'all';
+        });
+    });
+    form.querySelectorAll('.field-search').forEach(function (input) {
+        input.addEventListener('input', function () {
+            filterFieldList(input.getAttribute('data-target'), input.value);
+        });
     });
 
     document.getElementById('chart-table').addEventListener('change', syncColPanels);
