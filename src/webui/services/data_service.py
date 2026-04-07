@@ -9,8 +9,6 @@ from typing import Any
 from werkzeug.datastructures import ImmutableMultiDict, MultiDict
 
 from src.webui.data_labels import (
-    RU_ANALOG_LABELS,
-    RU_DISCRETE_LABELS,
     analog_labels_for,
     discrete_labels_for,
     filter_valid_analog,
@@ -186,7 +184,7 @@ class DataService:
                 limit=flt.limit,
             )
             keys = flt.analog_columns
-            headers = ["№", "Дата", "Время", *[RU_ANALOG_LABELS.get(k, k) for k in keys]]
+            headers = ["№", "Дата", "Время", *keys]
             with path.open("w", newline="", encoding="utf-8") as f:
                 w = csv.writer(f, delimiter=";")
                 w.writerow(headers)
@@ -207,7 +205,7 @@ class DataService:
                 limit=flt.limit,
             )
             keys = flt.discrete_columns
-            headers = ["№", "Дата", "Время", *[RU_DISCRETE_LABELS.get(k, k) for k in keys]]
+            headers = ["№", "Дата", "Время", *keys]
             with path.open("w", newline="", encoding="utf-8") as f:
                 w = csv.writer(f, delimiter=";")
                 w.writerow(headers)
