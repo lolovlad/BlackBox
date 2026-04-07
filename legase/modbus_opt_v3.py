@@ -284,8 +284,23 @@ last_poll_time = 0.0
 
 
 alarm_bits = {
-       20: [("1010 BUS High Volt 1",0),("1020 BUS High Volt 2",1),("1030 BUS Low Volt 1",2),("1040 BUS Low Volt 2",3),("1050 BUS High freq 1",4),("1060 BUS High freq 2",5),("1070 BUS Low freq 1",6),
-             ("1080 BUS Low freq 2", 7),("1090 Reverse power",8),("1100 Over Current 1",9),("1110 Over Current 2",10),("1120 High power 1",11),("1130 High Power 2",12),("1220 Unbalance current",13),("1230 Unbalance voltage",14) ],
+       20: [
+           ("1010 BUS High Volt 1",0),
+           ("1020 BUS High Volt 2",1),
+           ("1030 BUS Low Volt 1",2),
+           ("1040 BUS Low Volt 2",3),
+           ("1050 BUS High freq 1",4),
+           ("1060 BUS High freq 2",5),
+           ("1070 BUS Low freq 1",6),
+           ("1080 BUS Low freq 2", 7),
+           ("1090 Reverse power",8),
+           ("1100 Over Current 1",9),
+           ("1110 Over Current 2",10),
+           ("1120 High power 1",11),
+           ("1130 High Power 2",12),
+           ("1220 Unbalance current",13),
+           ("1230 Unbalance voltage",14)
+       ],
         21: [("Q import",0),("Q export",1),("df/dt",2),("1270 Vector jump",3),("2030 Sync. fail",4),("4220 Battery Low V",5),("CB close failure",6),("CB open failure",7),("CB position feedback failure",8),("Phase sequence error",9),
              ("2170 GOV Reg.Fail",10),("AVR Reg.fail",11),("2181 Power Ramp Down",13)],
         22: [("1310 Gen High Volt 1",0),("1320 Gen High Volt 2",1),("1330 Gen Low Volt 1",2),("1340 Gen Low Volt 2",3),("1350 Gen High freq 1",4),("1360 Gen High freq 2",5),("1370 Gen Low freq 1",6),("1380 Gen Low freq 2",7),

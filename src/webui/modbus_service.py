@@ -121,9 +121,11 @@ class ModbusCollector:
                 if instrument is None:
                     time.sleep(self._config.modbus_interval)
                     continue
+
                 base = self._config.address_offset - 1
                 registers = instrument.read_registers(base + 1, 90)
                 bits = instrument.read_bits(base + 16, 32, functioncode=1)
+
                 self._append({"created_at": datetime.now(), "registers": list(registers), "bits": [bool(v) for v in bits]})
             except Exception:
                 logger.exception("Unhandled error in Modbus polling loop")

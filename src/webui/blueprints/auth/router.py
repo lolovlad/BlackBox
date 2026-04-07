@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from flask import Blueprint, flash, redirect, render_template, url_for
+from flask import Blueprint, current_app, flash, redirect, render_template, url_for
 from flask_login import current_user, login_required, login_user, logout_user
 
 from src.webui.forms import LoginForm
@@ -18,7 +18,11 @@ def login():
 
     form = LoginForm()
     if form.validate_on_submit():
-        user = auth_service.authenticate(form.username.data or "", form.password.data or "")
+        user = auth_service.authenticate(
+            form.username.data or "",
+            form.password.data or "",
+            session_factory=current_app.extensions["session_factory"],
+        )
         if user:
             login_user(user, remember=False)
             return redirect(url_for("main_blueprint.dashboard"))
