@@ -2,26 +2,19 @@ from __future__ import annotations
 
 import json
 import logging
-import struct
 import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-from modbus_acquire.deif import (
-    ANALOG_CSV_COLUMNS,
-    DISCRETE_CSV_COLUMNS,
-    analog_discrete_for_csv,
-    convert_raw,
-    raw_from_registers_and_bits,
-)
 from modbus_acquire.instrument import build_instrument
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import sessionmaker
 
-from src.database import Alarms, Analogs, Discretes
+from src.database import Alarms, Samples
 
 logger = logging.getLogger(__name__)
 
@@ -39,45 +32,109 @@ class RuntimeConfig:
     static_csv_dir: Path
 
 
-def pack_snapshot(registers: list[int], bits: list[bool]) -> bytes:
-    regs = [int(v) & 0xFFFF for v in registers]
-    bit_values = [1 if bool(v) else 0 for v in bits]
-
-    reg_part = b"".join(struct.pack(">H", v) for v in regs)
-    bit_count = len(bit_values)
-    bit_bytes = bytearray((bit_count + 7) // 8)
-    for idx, bit in enumerate(bit_values):
-        if bit:
-            bit_bytes[idx // 8] |= 1 << (idx % 8)
-
-    return struct.pack(">H", len(regs)) + reg_part + struct.pack(">H", bit_count) + bytes(bit_bytes)
+@lru_cache(maxsize=1)
+def _load_settings() -> dict[str, Any]:
+    with open("settings/settings.json", "r", encoding="utf-8") as f:
+        return json.load(f)
 
 
-def unpack_snapshot(blob: bytes) -> tuple[list[int], list[bool]]:
-    if len(blob) < 4:
-        raise ValueError("Snapshot blob is too short")
-    offset = 0
-    reg_count = struct.unpack_from(">H", blob, offset)[0]
-    offset += 2
-    reg_bytes_len = reg_count * 2
-    if len(blob) < offset + reg_bytes_len + 2:
-        raise ValueError("Invalid snapshot blob register section")
-    registers = [struct.unpack_from(">H", blob, offset + i * 2)[0] for i in range(reg_count)]
-    offset += reg_bytes_len
-    bit_count = struct.unpack_from(">H", blob, offset)[0]
-    offset += 2
-    packed_len = (bit_count + 7) // 8
-    if len(blob) < offset + packed_len:
-        raise ValueError("Invalid snapshot blob bit section")
-    packed = blob[offset : offset + packed_len]
-    bits = [bool((packed[i // 8] >> (i % 8)) & 1) for i in range(bit_count)]
-    return registers, bits
+def _eval_expr(expr: str, context: dict[str, Any]) -> Any:
+    return eval(expr, {"__builtins__": {}}, context)
+
+
+def pack_snapshot(source_values: dict[str, list[Any]]) -> bytes:
+    payload = {
+        "version": 2,
+        "sources": {k: list(v) for k, v in source_values.items()},
+    }
+    return json.dumps(payload, ensure_ascii=False).encode("utf-8")
+
+
+def parse_fields(config: dict[str, Any], source_values: dict[str, list[Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for field in config.get("fields", []):
+        f_type = field.get("type", "uint16")
+        name = field["name"]
+
+        if f_type == "expr":
+            try:
+                result[name] = _eval_expr(field["expr"], result)
+            except Exception:
+                result[name] = 0
+            continue
+
+        if f_type == "bitfield":
+            source = field.get("source")
+            address = int(field.get("address", 0))
+            values = source_values.get(source, [])
+            reg_value = int(values[address]) if address < len(values) else 0
+            bits_map = field.get("bits", {})
+            active: list[str] = []
+            for bit_idx, label in bits_map.items():
+                if reg_value & (1 << int(bit_idx)):
+                    active.append(str(label))
+            result[name] = active
+            continue
+
+        source = field.get("source")
+        address = int(field.get("address", 0))
+        values = source_values.get(source, [])
+        if f_type == "uint32_be":
+            hi = int(values[address]) if address < len(values) else 0
+            lo = int(values[address + 1]) if (address + 1) < len(values) else 0
+            value: Any = (hi << 16) | lo
+        elif f_type == "bool":
+            value = bool(values[address]) if address < len(values) else False
+        else:
+            value = int(values[address]) if address < len(values) else 0
+
+        if "bit" in field:
+            value = bool(int(value) & (1 << int(field["bit"])))
+
+        if "expr" in field:
+            try:
+                value = _eval_expr(field["expr"], {"x": value, **result})
+            except Exception:
+                pass
+        result[name] = value
+    for name in result.get("active_status", []):
+        result[name] = True
+    return result
+
+
+def _field_categories(config: dict[str, Any]) -> tuple[list[str], list[str]]:
+    analog: list[str] = []
+    discrete: list[str] = []
+    for field in config.get("fields", []):
+        name = field.get("name")
+        if not name:
+            continue
+        f_type = field.get("type", "uint16")
+        if f_type == "bool":
+            discrete.append(name)
+            continue
+        if f_type in {"bitfield"} or name in {"active_alarms", "active_status"}:
+            continue
+        analog.append(name)
+    return analog, discrete
+
+
+def analog_discrete_keys() -> tuple[list[str], list[str]]:
+    return _field_categories(_load_settings())
+
+
+def analog_discrete_for_csv(processed: dict[str, Any]) -> tuple[dict[str, Any], dict[str, bool]]:
+    analog_keys, discrete_keys = analog_discrete_keys()
+    analog = {k: processed.get(k, "") for k in analog_keys}
+    discrete = {k: bool(processed.get(k, False)) for k in discrete_keys}
+    return analog, discrete
 
 
 def decode_to_processed(payload: bytes) -> dict[str, Any]:
-    registers, bits = unpack_snapshot(payload)
-    raw = raw_from_registers_and_bits(registers, bits)
-    return convert_raw(raw)
+    data = json.loads(payload.decode("utf-8"))
+    if isinstance(data, dict) and "sources" in data:
+        return parse_fields(_load_settings(), data.get("sources", {}))
+    return {}
 
 
 class ModbusCollector:
@@ -121,12 +178,20 @@ class ModbusCollector:
                 if instrument is None:
                     time.sleep(self._config.modbus_interval)
                     continue
-
-                base = self._config.address_offset - 1
-                registers = instrument.read_registers(base + 1, 90)
-                bits = instrument.read_bits(base + 16, 32, functioncode=1)
-
-                self._append({"created_at": datetime.now(), "registers": list(registers), "bits": [bool(v) for v in bits]})
+                config = _load_settings()
+                source_values: dict[str, list[Any]] = {}
+                for req in config.get("requests", []):
+                    req_name = req["name"]
+                    fc = int(req["fc"])
+                    address = int(req["address"])
+                    count = int(req["count"])
+                    if fc == 3:
+                        source_values[req_name] = list(instrument.read_registers(address, count))
+                    elif fc == 1:
+                        source_values[req_name] = [bool(v) for v in instrument.read_bits(address, count, functioncode=1)]
+                    else:
+                        source_values[req_name] = []
+                self._append({"created_at": datetime.now(), "sources": source_values})
             except Exception:
                 logger.exception("Unhandled error in Modbus polling loop")
             time.sleep(self._config.modbus_interval)
@@ -146,16 +211,14 @@ class ModbusCollector:
         try:
             for sample in batch:
                 created_at = sample["created_at"]
-                blob = pack_snapshot(list(sample.get("registers", [])), list(sample.get("bits", [])))
-                session.add(Analogs(created_at=created_at, date=blob))
-                session.add(Discretes(created_at=created_at, date=blob))
+                blob = pack_snapshot(dict(sample.get("sources", {})))
+                session.add(Samples(created_at=created_at, date=blob))
             session.commit()
 
             if self._alarms_enabled:
                 for sample in batch:
                     created_at = sample["created_at"]
-                    raw = raw_from_registers_and_bits(list(sample.get("registers", [])), list(sample.get("bits", [])))
-                    active_alarms = convert_raw(raw).get("active_alarms", [])
+                    active_alarms = parse_fields(_load_settings(), dict(sample.get("sources", {}))).get("active_alarms", [])
                     if not isinstance(active_alarms, list):
                         continue
                     for alarm_name in active_alarms:

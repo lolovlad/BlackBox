@@ -56,7 +56,7 @@ cur.execute("SELECT name FROM sqlite_master WHERE type='table'")
 tables = {row[0] for row in cur.fetchall()}
 conn.close()
 
-required = {"analogs", "discretes", "alarms", "type_user", "user"}
+required = {"samples", "alarms", "type_user", "user"}
 missing = sorted(required - tables)
 if missing:
     print("Missing tables:", ",".join(missing))
@@ -82,7 +82,7 @@ cur.execute("SELECT name FROM sqlite_master WHERE type='table'")
 tables = {row[0] for row in cur.fetchall()}
 conn.close()
 
-required = {"analogs", "discretes", "alarms", "type_user", "user"}
+required = {"samples", "alarms", "type_user", "user"}
 missing = sorted(required - tables)
 if missing:
     print(f"ERROR: required tables still missing in {db_path}: {','.join(missing)}")

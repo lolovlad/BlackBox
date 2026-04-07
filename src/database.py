@@ -43,12 +43,8 @@ class User(db.Model, UserMixin, DeleteMixin):
     type_user: Mapped[TypeUser] = relationship(TypeUser)
 
 
-class Analogs(db.Model, DateMixin):
-    __tablename__ = 'analogs'
-
-
-class Discretes(db.Model, DateMixin):
-    __tablename__ = 'discretes'
+class Samples(db.Model, DateMixin):
+    __tablename__ = 'samples'
 
 
 class Alarms(db.Model, DateMixin):

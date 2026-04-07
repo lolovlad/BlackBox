@@ -8,7 +8,7 @@ from datetime import datetime
 import pytest
 from werkzeug.datastructures import MultiDict
 
-from src.database import Analogs, TypeUser, User, db
+from src.database import Samples, TypeUser, User, db
 from src.webui.modbus_service import pack_snapshot
 from src.webui.repositories.data_repository import DataRepository
 from src.webui.services.data_service import (
@@ -86,7 +86,7 @@ def test_table_page_size_constant() -> None:
 
 
 def _minimal_blob() -> bytes:
-    return pack_snapshot([0] * 90, [False] * 32)
+    return pack_snapshot({"hr": [0] * 90, "coils": [False] * 32})
 
 
 @pytest.fixture()
@@ -115,7 +115,7 @@ def memory_app(monkeypatch, tmp_path):
         t2 = datetime(2026, 1, 3, 12, 0, 0)
         blob = _minimal_blob()
         for ts in (t0, t1, t2):
-            db.session.add(Analogs(created_at=ts, date=blob))
+            db.session.add(Samples(created_at=ts, date=blob))
         db.session.commit()
     yield app
 
@@ -155,7 +155,7 @@ def test_data_service_collect_tab_respects_sort_and_page(memory_app) -> None:
     ctx = svc.collect_tab(flt)
     assert ctx["total_rows"] == 3
     assert ctx["total_pages"] == 1
-    assert ctx["rows"][0]["time"].startswith("2026-01-03")
+    assert ctx["rows"][0]["time"].startswith("03.01.2026")
 
 
 def _csrf_from_login_page(html: str) -> str:
@@ -184,6 +184,6 @@ def test_http_data_tables_returns_rows_for_admin(memory_app) -> None:
     r = client.get("/data/tables?active_tab=analog&sort=desc&page=1")
     assert r.status_code == 200
     body = r.get_data(as_text=True)
-    assert "2026-01-03" in body
+    assert "03.01.2026" in body
     assert "data-table-result" in body
     assert "Всего записей: 3" in body

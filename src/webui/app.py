@@ -132,7 +132,7 @@ def create_app() -> Flask:
         }
 
     with app.app_context():
-        required_tables = ("analogs", "discretes")
+        required_tables = ("samples",)
         missing_required: list[str] = []
         alarms_enabled = False
         try:

@@ -5,7 +5,7 @@ from datetime import datetime
 from sqlalchemy import func, select
 from sqlalchemy.orm import sessionmaker
 
-from src.database import Alarms, Analogs, Discretes
+from src.database import Alarms, Samples
 
 
 class DataRepository:
@@ -53,7 +53,7 @@ class DataRepository:
         created_from: datetime | None = None,
         created_to: datetime | None = None,
     ) -> int:
-        return self._count_rows(Analogs, created_from=created_from, created_to=created_to)
+        return self._count_rows(Samples, created_from=created_from, created_to=created_to)
 
     def count_discretes(
         self,
@@ -61,7 +61,7 @@ class DataRepository:
         created_from: datetime | None = None,
         created_to: datetime | None = None,
     ) -> int:
-        return self._count_rows(Discretes, created_from=created_from, created_to=created_to)
+        return self._count_rows(Samples, created_from=created_from, created_to=created_to)
 
     def count_alarms(
         self,
@@ -81,7 +81,7 @@ class DataRepository:
         limit: int | None = None,
     ):
         return self._list_rows(
-            Analogs,
+            Samples,
             created_from=created_from,
             created_to=created_to,
             sort_desc=sort_desc,
@@ -99,7 +99,7 @@ class DataRepository:
         limit: int | None = None,
     ):
         return self._list_rows(
-            Discretes,
+            Samples,
             created_from=created_from,
             created_to=created_to,
             sort_desc=sort_desc,
