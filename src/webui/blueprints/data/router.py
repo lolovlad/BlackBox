@@ -4,7 +4,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from flask import Blueprint, current_app, render_template, request, url_for
+from flask import Blueprint, current_app, jsonify, render_template, request, url_for
 from flask_login import login_required
 
 from src.webui.data_labels import (
@@ -12,8 +12,6 @@ from src.webui.data_labels import (
     all_discrete_keys,
     analog_labels_for,
     discrete_labels_for,
-    filter_valid_analog,
-    filter_valid_discrete,
 )
 from src.webui.modbus_service import analog_discrete_for_csv, decode_to_processed
 from src.webui.paths import TEMPLATES_DIR
@@ -22,6 +20,7 @@ from src.webui.services.data_service import TABLE_PAGE_SIZE, DataService, parse_
 
 data_router = Blueprint("data", __name__, url_prefix="/data", template_folder=str(TEMPLATES_DIR))
 DATETIME_UI_FORMAT = "%d.%m.%Y %H:%M:%S"
+DATETIME_API_FORMAT = "%Y-%m-%dT%H:%M:%S"
 
 
 def _service() -> DataService:
@@ -97,9 +96,62 @@ def charts_page():
     )
 
 
-@data_router.route("/charts/render", methods=["GET"])
+def _requested_chart_columns(table: str) -> list[str]:
+    requested = request.args.getlist("analog_col") if table == "analog" else request.args.getlist("discrete_col")
+    if table == "analog":
+        allowed = set(all_analog_keys())
+    else:
+        allowed = set(all_discrete_keys())
+    return [col for col in requested if col in allowed]
+
+
+def _collect_second_points(rows: list[Any], table: str, columns: list[str]) -> list[dict[str, Any]]:
+    by_second: dict[datetime, dict[str, Any]] = {}
+    for item in rows:
+        sec = item.created_at.replace(microsecond=0)
+        processed = decode_to_processed(item.date)
+        analog, discrete = analog_discrete_for_csv(processed)
+        values: dict[str, Any] = {}
+        for col in columns:
+            if table == "analog":
+                values[col] = analog.get(col, None)
+            else:
+                values[col] = 1 if bool(discrete.get(col, False)) else 0
+        # Если в одну секунду несколько замеров, берем последний
+        by_second[sec] = values
+
+    points: list[dict[str, Any]] = []
+    for sec in sorted(by_second.keys()):
+        points.append(
+            {
+                "ts": sec.strftime(DATETIME_API_FORMAT),
+                "label": sec.strftime(DATETIME_UI_FORMAT),
+                "values": by_second[sec],
+            }
+        )
+    return points
+
+
+def _parse_since(raw: str | None) -> datetime | None:
+    if raw is None:
+        return None
+    val = str(raw).strip()
+    if not val:
+        return None
+    for fmt in (DATETIME_API_FORMAT, DATETIME_UI_FORMAT):
+        try:
+            return datetime.strptime(val, fmt)
+        except ValueError:
+            continue
+    try:
+        return datetime.fromisoformat(val)
+    except ValueError:
+        return None
+
+
+@data_router.route("/charts/api/init", methods=["GET"])
 @login_required
-def charts_render():
+def charts_api_init():
     table = (request.args.get("table") or "analog").strip().lower()
     if table not in ("analog", "discrete"):
         table = "analog"
@@ -109,38 +161,71 @@ def charts_render():
     if date_from is not None and date_to is not None and date_from > date_to:
         date_from, date_to = date_to, date_from
 
+    realtime = date_from is None and date_to is None
+    if realtime:
+        now = datetime.now()
+        date_from = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        date_to = now
+
     repo = DataRepository(current_app.extensions["session_factory"])
     rows = (
-        repo.list_analogs(created_from=date_from, created_to=date_to, sort_desc=False, limit=1000)
+        repo.list_analogs(created_from=date_from, created_to=date_to, sort_desc=False, limit=None)
         if table == "analog"
-        else repo.list_discretes(created_from=date_from, created_to=date_to, sort_desc=False, limit=1000)
+        else repo.list_discretes(created_from=date_from, created_to=date_to, sort_desc=False, limit=None)
     )
 
-    requested_cols = request.args.getlist("analog_col") if table == "analog" else request.args.getlist("discrete_col")
-    columns = (
-        filter_valid_analog(requested_cols if requested_cols else None)
-        if table == "analog"
-        else filter_valid_discrete(requested_cols if requested_cols else None)
+    columns = _requested_chart_columns(table)
+    points = _collect_second_points(rows, table, columns)
+    return jsonify(
+        {
+            "table": table,
+            "columns": columns,
+            "points": points,
+            "last_ts": points[-1]["ts"] if points else None,
+            "row_count": len(points),
+            "realtime": realtime,
+        }
     )
 
-    x_axis = [item.created_at.strftime(DATETIME_UI_FORMAT) for item in rows]
-    series: list[dict[str, Any]] = [{"name": col, "type": "line", "showSymbol": False, "data": []} for col in columns]
 
-    for item in rows:
-        processed = decode_to_processed(item.date)
-        analog, discrete = analog_discrete_for_csv(processed)
-        for idx, col in enumerate(columns):
-            if table == "analog":
-                value = analog.get(col, None)
-            else:
-                value = 1 if bool(discrete.get(col, False)) else 0
-            series[idx]["data"].append(value)
+@data_router.route("/charts/api/update", methods=["GET"])
+@login_required
+def charts_api_update():
+    table = (request.args.get("table") or "analog").strip().lower()
+    if table not in ("analog", "discrete"):
+        table = "analog"
+    columns = _requested_chart_columns(table)
+    since = _parse_since(request.args.get("since"))
 
-    return render_template(
-        "data/_chart_result.html",
-        table=table,
-        x_axis=x_axis,
-        series=series,
-        row_count=len(rows),
-        has_columns=bool(columns),
+    now = datetime.now()
+    day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    created_from = since if since is not None else day_start
+    if created_from < day_start:
+        created_from = day_start
+
+    repo = DataRepository(current_app.extensions["session_factory"])
+    rows = (
+        repo.list_analogs(created_from=created_from, created_to=now, sort_desc=False, limit=None)
+        if table == "analog"
+        else repo.list_discretes(created_from=created_from, created_to=now, sort_desc=False, limit=None)
+    )
+    points = _collect_second_points(rows, table, columns)
+
+    if since is not None:
+        filtered: list[dict[str, Any]] = []
+        for point in points:
+            pt = _parse_since(point["ts"])
+            if pt is not None and pt > since:
+                filtered.append(point)
+        points = filtered
+
+    return jsonify(
+        {
+            "table": table,
+            "columns": columns,
+            "points": points,
+            "last_ts": points[-1]["ts"] if points else (since.strftime(DATETIME_API_FORMAT) if since else None),
+            "row_count": len(points),
+            "realtime": True,
+        }
     )

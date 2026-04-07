@@ -52,18 +52,18 @@
         </form>
     </aside>
 
-    <div id="chart-panel"
-         hx-get="{{ url_for('data_blueprint.charts_render') }}"
-         hx-trigger="load, click from:#btn-render-chart, chart-poll from:body"
-         hx-include="#chart-form"
-         hx-swap="innerHTML">
-        <p class="hint">Загрузка графика...</p>
-    </div>
+    <section class="card">
+        <p class="hint" id="chart-meta">График пуст. Выберите поля и нажмите "Построить график".</p>
+        <div id="echarts-main" style="height: 520px; width: 100%; display:none;"></div>
+    </section>
 </section>
 
 <script src="{{ url_for('static', filename='vendor/echarts.min.js') }}"></script>
 <script>
 (function () {
+    var INIT_URL = "{{ url_for('data_blueprint.charts_api_init') }}";
+    var UPDATE_URL = "{{ url_for('data_blueprint.charts_api_update') }}";
+
     function syncColPanels() {
         var t = document.getElementById('chart-table').value;
         var root = document.getElementById('chart-col-root');
@@ -73,7 +73,11 @@
     var panel = document.getElementById('chart-filters-panel');
     var overlay = document.getElementById('chart-filters-overlay');
     var form = document.getElementById('chart-form');
-    var chartPanel = document.getElementById('chart-panel');
+    var chartMeta = document.getElementById('chart-meta');
+    var chartEl = document.getElementById('echarts-main');
+    var chart = null;
+    var lastTs = null;
+    var pollTimer = null;
 
     function toggleFilters(open) {
         panel.classList.toggle('open', !!open);
@@ -82,10 +86,127 @@
         overlay.setAttribute('aria-hidden', open ? 'false' : 'true');
     }
 
+    function selectedColumns(table) {
+        var out = [];
+        if (table === 'analog') {
+            form.querySelectorAll('input[name="analog_col"]:checked').forEach(function (el) { out.push(el.value); });
+        } else {
+            form.querySelectorAll('input[name="discrete_col"]:checked').forEach(function (el) { out.push(el.value); });
+        }
+        return out;
+    }
+
+    function buildQuery(includeSince) {
+        var table = form.querySelector('[name="table"]').value;
+        var q = new URLSearchParams();
+        q.set('table', table);
+        q.set('date_from', form.querySelector('[name="date_from"]').value);
+        q.set('date_to', form.querySelector('[name="date_to"]').value);
+        selectedColumns(table).forEach(function (col) {
+            q.append(table === 'analog' ? 'analog_col' : 'discrete_col', col);
+        });
+        if (includeSince && lastTs) q.set('since', lastTs);
+        return q;
+    }
+
+    function ensureChart() {
+        if (!chart) chart = echarts.init(chartEl);
+        return chart;
+    }
+
+    function renderEmpty(msg) {
+        if (chart) chart.clear();
+        chartEl.style.display = 'none';
+        chartMeta.textContent = msg;
+    }
+
+    function setFullData(payload) {
+        if (!payload.columns || payload.columns.length === 0) {
+            renderEmpty('График пуст. Выберите поля и нажмите "Построить график".');
+            lastTs = null;
+            return;
+        }
+        if (!payload.points || payload.points.length === 0) {
+            renderEmpty('Нет данных за выбранный период.');
+            lastTs = null;
+            return;
+        }
+
+        chartEl.style.display = '';
+        chartMeta.textContent = 'Записей: ' + payload.row_count + '. Для online-режима показывается только текущий день.';
+        var x = payload.points.map(function (p) { return p.label; });
+        var series = payload.columns.map(function (col) {
+            return {
+                name: col,
+                type: 'line',
+                showSymbol: false,
+                data: payload.points.map(function (p) { return p.values[col]; })
+            };
+        });
+        ensureChart().setOption({
+            tooltip: { trigger: 'axis' },
+            legend: { type: 'scroll' },
+            grid: { left: 45, right: 25, top: 45, bottom: 90 },
+            xAxis: { type: 'category', data: x, boundaryGap: false },
+            yAxis: { type: 'value' },
+            dataZoom: [
+                { type: 'inside', xAxisIndex: 0, filterMode: 'none' },
+                { type: 'slider', xAxisIndex: 0, height: 24, bottom: 18 }
+            ],
+            series: series
+        }, true);
+        lastTs = payload.last_ts || null;
+    }
+
+    function appendUpdates(payload) {
+        if (!payload.points || payload.points.length === 0 || !chart) return;
+        var option = chart.getOption();
+        if (!option || !option.series || option.series.length === 0) return;
+        payload.points.forEach(function (p) {
+            option.xAxis[0].data.push(p.label);
+            option.series.forEach(function (s) {
+                s.data.push(p.values[s.name]);
+            });
+        });
+        chart.setOption(option, false);
+        lastTs = payload.last_ts || lastTs;
+    }
+
+    function fetchInit() {
+        var query = buildQuery(false);
+        fetch(INIT_URL + '?' + query.toString())
+            .then(function (r) { return r.json(); })
+            .then(function (payload) { setFullData(payload); restartPolling(); });
+    }
+
+    function fetchUpdate() {
+        var query = buildQuery(true);
+        fetch(UPDATE_URL + '?' + query.toString())
+            .then(function (r) { return r.json(); })
+            .then(function (payload) { appendUpdates(payload); });
+    }
+
+    function restartPolling() {
+        if (pollTimer) {
+            clearInterval(pollTimer);
+            pollTimer = null;
+        }
+        var df = form.querySelector('[name="date_from"]').value;
+        var dt = form.querySelector('[name="date_to"]').value;
+        var table = form.querySelector('[name="table"]').value;
+        var cols = selectedColumns(table);
+        if (!df && !dt && cols.length > 0) {
+            pollTimer = setInterval(fetchUpdate, 1000);
+        }
+    }
+
     document.getElementById('btn-open-filters').addEventListener('click', function () { toggleFilters(true); });
     document.getElementById('btn-close-filters').addEventListener('click', function () { toggleFilters(false); });
     overlay.addEventListener('click', function () { toggleFilters(false); });
-    document.getElementById('btn-render-chart').addEventListener('click', function () { toggleFilters(false); });
+    document.getElementById('btn-render-chart').addEventListener('click', function () {
+        toggleFilters(false);
+        fetchInit();
+    });
 
     document.getElementById('btn-reset-filters').addEventListener('click', function () {
         form.querySelector('[name="table"]').value = 'analog';
@@ -94,18 +215,16 @@
         form.querySelectorAll('input[name="analog_col"]').forEach(function (el) { el.checked = false; });
         form.querySelectorAll('input[name="discrete_col"]').forEach(function (el) { el.checked = false; });
         syncColPanels();
-        htmx.trigger(chartPanel, 'chart-poll');
+        if (pollTimer) {
+            clearInterval(pollTimer);
+            pollTimer = null;
+        }
+        lastTs = null;
+        renderEmpty('График пуст. Выберите поля и нажмите "Построить график".');
     });
 
-    setInterval(function () {
-        var df = form.querySelector('[name="date_from"]').value;
-        var dt = form.querySelector('[name="date_to"]').value;
-        if (!df && !dt) {
-            htmx.trigger(chartPanel, 'chart-poll');
-        }
-    }, 2000);
-
     document.getElementById('chart-table').addEventListener('change', syncColPanels);
+    window.addEventListener('resize', function () { if (chart) chart.resize(); });
     syncColPanels();
 })();
 </script>
