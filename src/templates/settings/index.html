@@ -1,7 +1,48 @@
 {% extends "base.html" %}
 {% block title %}Настройки{% endblock %}
 {% block content %}
-<section class="card">
-    <h2>Настройки</h2>
+<section class="card settings-page">
+    <h2>Настройки системы</h2>
+    <p class="hint">Здесь доступны только параметры чтения данных и JSON-настройки парсера. Параметры web-интерфейса не редактируются.</p>
+
+    <form method="post" class="settings-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <fieldset>
+            <legend>Параметры Modbus / чтения данных</legend>
+            <div class="settings-grid">
+                <label class="filter-field">MODBUS_PORT
+                    <input type="text" name="MODBUS_PORT" value="{{ env_values.MODBUS_PORT }}">
+                </label>
+                <label class="filter-field">MODBUS_SLAVE
+                    <input type="number" name="MODBUS_SLAVE" value="{{ env_values.MODBUS_SLAVE }}">
+                </label>
+                <label class="filter-field">MODBUS_BAUDRATE
+                    <input type="number" name="MODBUS_BAUDRATE" value="{{ env_values.MODBUS_BAUDRATE }}">
+                </label>
+                <label class="filter-field">MODBUS_TIMEOUT
+                    <input type="text" name="MODBUS_TIMEOUT" value="{{ env_values.MODBUS_TIMEOUT }}">
+                </label>
+                <label class="filter-field">MODBUS_INTERVAL
+                    <input type="text" name="MODBUS_INTERVAL" value="{{ env_values.MODBUS_INTERVAL }}">
+                </label>
+                <label class="filter-field">MODBUS_ADDRESS_OFFSET
+                    <input type="number" name="MODBUS_ADDRESS_OFFSET" value="{{ env_values.MODBUS_ADDRESS_OFFSET }}">
+                </label>
+                <label class="filter-field">RAM_BATCH_SIZE
+                    <input type="number" name="RAM_BATCH_SIZE" value="{{ env_values.RAM_BATCH_SIZE }}">
+                </label>
+            </div>
+        </fieldset>
+
+        <fieldset>
+            <legend>Файл настроек парсера (settings.json)</legend>
+            <textarea name="parser_json" class="parser-json" spellcheck="false">{{ parser_text }}</textarea>
+        </fieldset>
+
+        <div class="row actions">
+            <button type="submit" class="btn secondary" name="action" value="test">Проверить</button>
+            <button type="submit" class="btn" name="action" value="save">Сохранить и применить</button>
+        </div>
+    </form>
 </section>
 {% endblock %}

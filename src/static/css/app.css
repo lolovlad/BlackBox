@@ -227,3 +227,23 @@ th { background: #c3cce0; color: #2d3540; font-weight: 600; }
 .discrete-list li.state-off { border-color: #9ca3af; background: #f9fafb; }
 .alarm-time { color: #6b7280; font-size: 12px; }
 .alarm-text { font-weight: 600; color: var(--md-accent); }
+
+/* System settings page */
+.settings-page .hint { color: var(--md-subtext); margin-top: 6px; }
+.settings-form { display: grid; gap: 12px; }
+.settings-page fieldset { border: 1px solid var(--md-outline); border-radius: 12px; padding: 10px 12px; margin: 0; }
+.settings-page legend { padding: 0 6px; font-size: 13px; color: var(--md-primary); }
+.settings-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px 12px; }
+.settings-page .filter-field { display: flex; flex-direction: column; gap: 4px; font-size: 13px; }
+.settings-page .filter-field input { padding: 8px 10px; border: 1px solid var(--md-outline); border-radius: 10px; }
+.parser-json {
+    width: 100%;
+    min-height: 360px;
+    border: 1px solid var(--md-outline);
+    border-radius: 10px;
+    padding: 10px 12px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 13px;
+    line-height: 1.35;
+    box-sizing: border-box;
+}

@@ -238,19 +238,31 @@ class ModbusCollector:
         self._config = config
         self._alarms_enabled = alarms_enabled
         self._lock = threading.Lock()
+        self._thread_lock = threading.Lock()
         self._ram_buffer: list[dict[str, Any]] = []
         self._stop_event = threading.Event()
-        self._thread = threading.Thread(target=self._loop, daemon=True)
+        self._thread: threading.Thread | None = None
 
     def start(self) -> None:
-        if not self._thread.is_alive():
+        with self._thread_lock:
+            if self._thread is not None and self._thread.is_alive():
+                return
+            self._stop_event.clear()
+            self._thread = threading.Thread(target=self._loop, daemon=True)
             self._thread.start()
 
     def stop(self) -> None:
         self._stop_event.set()
         self.flush_remaining()
-        if self._thread.is_alive():
-            self._thread.join(timeout=3)
+        with self._thread_lock:
+            if self._thread is not None and self._thread.is_alive():
+                self._thread.join(timeout=3)
+
+    def restart(self, new_config: RuntimeConfig | None = None) -> None:
+        if new_config is not None:
+            self._config = new_config
+        self.stop()
+        self.start()
 
     def _loop(self) -> None:
         try:

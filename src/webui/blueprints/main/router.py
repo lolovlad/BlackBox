@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from flask import Blueprint, current_app, redirect, render_template, request, url_for
+import os
+
+from flask import Blueprint, current_app, flash, redirect, render_template, request, url_for
 from flask_login import current_user, login_required
 
 from src.webui.auth_utils import admin_required
@@ -15,6 +17,15 @@ from src.webui.data_labels import (
 from src.webui.paths import TEMPLATES_DIR
 from src.webui.repositories.data_repository import DataRepository
 from src.webui.modbus_service import analog_discrete_for_csv, decode_to_processed
+from src.webui.modbus_service import reload_settings_cache
+from src.webui.system_settings import (
+    ENV_DEFAULTS,
+    effective_runtime_from_env,
+    read_env_file,
+    test_modbus_settings,
+    validate_parser_json,
+    write_env_file,
+)
 
 main_router = Blueprint("main", __name__, template_folder=str(TEMPLATES_DIR))
 DATETIME_UI_FORMAT = "%d.%m.%Y %H:%M:%S"
@@ -42,7 +53,69 @@ def dashboard():
 @main_router.route("/settings", methods=["GET"])
 @admin_required
 def settings():
-    return render_template("settings/index.html")
+    env_path = current_app.extensions["env_path"]
+    env_current = read_env_file(env_path)
+    values = {k: env_current.get(k, ENV_DEFAULTS[k]) for k in ENV_DEFAULTS}
+    parser_path = current_app.config.get("PARSER_SETTINGS_PATH", "settings/settings.json")
+    with open(parser_path, "r", encoding="utf-8") as f:
+        parser_text = f.read()
+    return render_template("settings/index.html", env_values=values, parser_text=parser_text)
+
+
+@main_router.route("/settings", methods=["POST"])
+@admin_required
+def settings_save():
+    env_path = current_app.extensions["env_path"]
+    parser_path = current_app.config.get("PARSER_SETTINGS_PATH", "settings/settings.json")
+    static_csv_dir = current_app.extensions["static_csv_dir"]
+    collector = current_app.extensions["modbus_collector"]
+
+    posted_env = {
+        "MODBUS_PORT": (request.form.get("MODBUS_PORT") or "").strip(),
+        "MODBUS_SLAVE": (request.form.get("MODBUS_SLAVE") or "").strip(),
+        "MODBUS_BAUDRATE": (request.form.get("MODBUS_BAUDRATE") or "").strip(),
+        "MODBUS_TIMEOUT": (request.form.get("MODBUS_TIMEOUT") or "").strip(),
+        "MODBUS_INTERVAL": (request.form.get("MODBUS_INTERVAL") or "").strip(),
+        "MODBUS_ADDRESS_OFFSET": (request.form.get("MODBUS_ADDRESS_OFFSET") or "").strip(),
+        "RAM_BATCH_SIZE": (request.form.get("RAM_BATCH_SIZE") or "").strip(),
+    }
+    parser_text = request.form.get("parser_json") or ""
+    action = (request.form.get("action") or "test").strip().lower()
+
+    parser_cfg, err = validate_parser_json(parser_text)
+    if err:
+        flash(err, "error")
+        return render_template("settings/index.html", env_values=posted_env, parser_text=parser_text), 400
+
+    try:
+        runtime = effective_runtime_from_env(static_csv_dir, posted_env)
+    except Exception as exc:
+        flash(f"Некорректные значения runtime: {exc}", "error")
+        return render_template("settings/index.html", env_values=posted_env, parser_text=parser_text), 400
+
+    ok, msg = test_modbus_settings(runtime, parser_cfg)
+    if not ok:
+        flash(msg, "error")
+        return render_template("settings/index.html", env_values=posted_env, parser_text=parser_text), 400
+
+    if action == "test":
+        flash(msg, "success")
+        return render_template("settings/index.html", env_values=posted_env, parser_text=parser_text)
+
+    # action == save: test already passed.
+    write_env_file(env_path, posted_env)
+    with open(parser_path, "w", encoding="utf-8") as f:
+        f.write(parser_text.strip() + "\n")
+
+    # Apply without full app restart.
+    for key, value in posted_env.items():
+        current_app.config[key] = value
+        os.environ[key] = value
+    reload_settings_cache()
+    collector.restart(new_config=runtime)
+
+    flash("Настройки сохранены и применены. Процесс чтения перезапущен.", "success")
+    return redirect(url_for("main_blueprint.settings"))
 
 
 def _build_live_dashboard_context(
