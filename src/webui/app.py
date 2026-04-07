@@ -120,6 +120,7 @@ def create_app() -> Flask:
         menu = [
             {"endpoint": "main_blueprint.dashboard", "title": "Панель"},
             {"endpoint": "data_blueprint.page", "title": "Данные"},
+            {"endpoint": "data_blueprint.charts_page", "title": "Графики"},
         ]
         if role == "admin":
             menu.append({"endpoint": "main_blueprint.settings", "title": "Настройки"})

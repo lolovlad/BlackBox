@@ -1,0 +1,86 @@
+{% extends "base.html" %}
+{% block title %}Графики{% endblock %}
+{% block content %}
+<section class="card charts-page">
+    <h2>Графики</h2>
+    <form id="chart-form" onsubmit="return false;">
+        <div class="filter-grid">
+            <label class="filter-field">Таблица
+                <select name="table" id="chart-table">
+                    <option value="analog" selected>Аналоги</option>
+                    <option value="discrete">Дискреты</option>
+                </select>
+            </label>
+            <label class="filter-field">Дата с
+                <input type="datetime-local" name="date_from" autocomplete="off">
+            </label>
+            <label class="filter-field">Дата по
+                <input type="datetime-local" name="date_to" autocomplete="off">
+            </label>
+        </div>
+
+        <div id="chart-col-root" data-cols="analog">
+            <fieldset class="col-panel col-panel-analog">
+                <legend>Поля (аналоги)</legend>
+                <div class="checkbox-grid">
+                    {% for key, ru in analog_options %}
+                        <label class="chk"><input type="checkbox" name="analog_col" value="{{ key }}" checked> {{ ru }}</label>
+                    {% endfor %}
+                </div>
+            </fieldset>
+            <fieldset class="col-panel col-panel-discrete">
+                <legend>Поля (дискреты)</legend>
+                <div class="checkbox-grid">
+                    {% for key, ru in discrete_options %}
+                        <label class="chk"><input type="checkbox" name="discrete_col" value="{{ key }}" checked> {{ ru }}</label>
+                    {% endfor %}
+                </div>
+            </fieldset>
+        </div>
+
+        <div class="row actions">
+            <button type="button" class="btn" id="btn-render-chart">Построить график</button>
+        </div>
+    </form>
+
+    <div id="chart-panel"
+         hx-get="{{ url_for('data_blueprint.charts_render') }}"
+         hx-trigger="load, click from:#btn-render-chart"
+         hx-vals="js:window.buildChartQuery()"
+         hx-swap="innerHTML">
+        <p class="hint">Загрузка графика...</p>
+    </div>
+</section>
+
+<script src="{{ url_for('static', filename='vendor/echarts.min.js') }}"></script>
+<script>
+(function () {
+    function syncColPanels() {
+        var t = document.getElementById('chart-table').value;
+        var root = document.getElementById('chart-col-root');
+        root.dataset.cols = t;
+    }
+
+    window.buildChartQuery = function () {
+        var form = document.getElementById('chart-form');
+        var table = form.querySelector('[name="table"]').value;
+        var vals = {
+            table: table,
+            date_from: form.querySelector('[name="date_from"]').value,
+            date_to: form.querySelector('[name="date_to"]').value
+        };
+        var selected = [];
+        if (table === 'analog') {
+            form.querySelectorAll('input[name="analog_col"]:checked').forEach(function (el) { selected.push(el.value); });
+        } else {
+            form.querySelectorAll('input[name="discrete_col"]:checked').forEach(function (el) { selected.push(el.value); });
+        }
+        vals.col = selected;
+        return vals;
+    };
+
+    document.getElementById('chart-table').addEventListener('change', syncColPanels);
+    syncColPanels();
+})();
+</script>
+{% endblock %}

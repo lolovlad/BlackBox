@@ -40,6 +40,8 @@ th, td { border: 1px solid #e5e7eb; padding: 4px 6px; white-space: nowrap; }
 .filter-root[data-cols="discrete"] .col-panel-alarms { display: none; }
 .filter-root[data-cols="alarms"] .col-panel-analog,
 .filter-root[data-cols="alarms"] .col-panel-discrete { display: none; }
+.charts-page #chart-col-root[data-cols="analog"] .col-panel-discrete { display: none; }
+.charts-page #chart-col-root[data-cols="discrete"] .col-panel-analog { display: none; }
 
 /* Область таблицы данных: выше, лоадер поверх при htmx */
 .tab-panel-host { position: relative; min-height: 520px; margin-top: 12px; }
