@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import struct
 import threading
 import time
 from dataclasses import dataclass
@@ -42,12 +43,51 @@ def _eval_expr(expr: str, context: dict[str, Any]) -> Any:
     return eval(expr, {"__builtins__": {}}, context)
 
 
+def _pick_sources_for_snapshot(source_values: dict[str, list[Any]]) -> tuple[list[int], list[bool]]:
+    config = _load_settings()
+    registers: list[int] = []
+    bits: list[bool] = []
+    for req in config.get("requests", []):
+        name = req.get("name")
+        fc = int(req.get("fc", 0))
+        values = list(source_values.get(name, []))
+        if fc == 3 and not registers:
+            registers = [int(v) & 0xFFFF for v in values]
+        elif fc == 1 and not bits:
+            bits = [bool(v) for v in values]
+    return registers, bits
+
+
 def pack_snapshot(source_values: dict[str, list[Any]]) -> bytes:
-    payload = {
-        "version": 2,
-        "sources": {k: list(v) for k, v in source_values.items()},
-    }
-    return json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    registers, bits = _pick_sources_for_snapshot(source_values)
+    reg_part = b"".join(struct.pack(">H", v) for v in registers)
+    bit_count = len(bits)
+    bit_bytes = bytearray((bit_count + 7) // 8)
+    for idx, bit in enumerate(bits):
+        if bit:
+            bit_bytes[idx // 8] |= 1 << (idx % 8)
+    return struct.pack(">H", len(registers)) + reg_part + struct.pack(">H", bit_count) + bytes(bit_bytes)
+
+
+def unpack_snapshot(blob: bytes) -> tuple[list[int], list[bool]]:
+    if len(blob) < 4:
+        raise ValueError("Snapshot blob is too short")
+    offset = 0
+    reg_count = struct.unpack_from(">H", blob, offset)[0]
+    offset += 2
+    reg_bytes_len = reg_count * 2
+    if len(blob) < offset + reg_bytes_len + 2:
+        raise ValueError("Invalid snapshot blob register section")
+    registers = [struct.unpack_from(">H", blob, offset + i * 2)[0] for i in range(reg_count)]
+    offset += reg_bytes_len
+    bit_count = struct.unpack_from(">H", blob, offset)[0]
+    offset += 2
+    packed_len = (bit_count + 7) // 8
+    if len(blob) < offset + packed_len:
+        raise ValueError("Invalid snapshot blob bit section")
+    packed = blob[offset : offset + packed_len]
+    bits = [bool((packed[i // 8] >> (i % 8)) & 1) for i in range(bit_count)]
+    return registers, bits
 
 
 def parse_fields(config: dict[str, Any], source_values: dict[str, list[Any]]) -> dict[str, Any]:
@@ -131,10 +171,33 @@ def analog_discrete_for_csv(processed: dict[str, Any]) -> tuple[dict[str, Any], 
 
 
 def decode_to_processed(payload: bytes) -> dict[str, Any]:
-    data = json.loads(payload.decode("utf-8"))
-    if isinstance(data, dict) and "sources" in data:
-        return parse_fields(_load_settings(), data.get("sources", {}))
-    return {}
+    config = _load_settings()
+    try:
+        registers, bits = unpack_snapshot(payload)
+        source_values: dict[str, list[Any]] = {}
+        reg_used = False
+        bit_used = False
+        for req in config.get("requests", []):
+            req_name = req.get("name")
+            fc = int(req.get("fc", 0))
+            if fc == 3 and not reg_used:
+                source_values[req_name] = list(registers)
+                reg_used = True
+            elif fc == 1 and not bit_used:
+                source_values[req_name] = list(bits)
+                bit_used = True
+            else:
+                source_values[req_name] = []
+        return parse_fields(config, source_values)
+    except Exception:
+        # Backward compatibility for a short transition period if JSON payloads exist.
+        try:
+            data = json.loads(payload.decode("utf-8"))
+            if isinstance(data, dict) and "sources" in data:
+                return parse_fields(config, data.get("sources", {}))
+        except Exception:
+            pass
+        return {}
 
 
 class ModbusCollector:
