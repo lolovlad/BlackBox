@@ -1,0 +1,7 @@
+{% if total_pages is defined and total_pages > 1 %}
+<nav class="data-pagination" aria-label="Страницы таблицы">
+    <button type="button" class="btn secondary btn-page-prev" {% if page <= 1 %}disabled{% endif %}>Назад</button>
+    <span class="data-pagination-label">{{ page }} / {{ total_pages }}</span>
+    <button type="button" class="btn secondary btn-page-next" {% if page >= total_pages %}disabled{% endif %}>Вперёд</button>
+</nav>
+{% endif %}

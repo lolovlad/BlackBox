@@ -22,7 +22,7 @@ th, td { border: 1px solid #e5e7eb; padding: 4px 6px; white-space: nowrap; }
 .data-page .filter-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px; margin-bottom: 10px; }
 .data-page .filter-field { display: flex; flex-direction: column; gap: 4px; font-size: 13px; }
 .data-page .filter-field input, .data-page .filter-field select { padding: 6px 8px; border: 1px solid #d1d5db; border-radius: 6px; }
-.data-page input.data-datetime-ru { font-family: Consolas, "Courier New", monospace; min-width: 11.5rem; }
+.data-page input.data-datetime-input { min-width: 12.5rem; }
 .data-page .hint { font-size: 13px; color: #6b7280; margin: 8px 0; }
 .data-page .tabs { display: flex; gap: 8px; flex-wrap: wrap; margin: 14px 0 10px; }
 .data-page .tab-label { display: inline-flex; align-items: center; gap: 6px; padding: 8px 12px; background: #e5e7eb; border-radius: 6px; cursor: pointer; font-size: 14px; }

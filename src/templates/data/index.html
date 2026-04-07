@@ -8,14 +8,12 @@
         <input type="hidden" name="page" id="data-page-num" value="1">
         <div class="filter-grid">
             <label class="filter-field">Дата с
-                <input type="text" name="date_from" class="data-datetime-ru" autocomplete="off"
-                       inputmode="numeric" placeholder="дд.мм.гггг чч:мм"
-                       title="Формат: дд.мм.гггг чч:мм (сутки 0–23). Можно только дату: дд.мм.гггг">
+                <input type="datetime-local" name="date_from" class="data-datetime-input" autocomplete="off"
+                       title="Календарь и время в браузере (24 ч). Пусто — без нижней границы.">
             </label>
             <label class="filter-field">Дата по
-                <input type="text" name="date_to" class="data-datetime-ru" autocomplete="off"
-                       inputmode="numeric" placeholder="дд.мм.гггг чч:мм"
-                       title="Формат: дд.мм.гггг чч:мм (24 часа). Только дата — до конца этого дня.">
+                <input type="datetime-local" name="date_to" class="data-datetime-input" autocomplete="off"
+                       title="Верхняя граница. Если выбрать полночь 00:00, учитывается весь этот календарный день до 23:59:59.">
             </label>
             <label class="filter-field">Сортировка по времени
                 <select name="sort">
@@ -24,7 +22,7 @@
                 </select>
             </label>
         </div>
-        <p class="hint">Поля даты в формате <strong>дд.мм.гггг чч:мм</strong> (24-часовое время). Пустые поля — весь доступный период. На экране — до <strong>{{ table_page_size }}</strong> строк на страницу; экспорт CSV включает <strong>все</strong> строки, попавшие под фильтр.</p>
+        <p class="hint">Дата и время — стандартные поля браузера (календарь и часы, 24-часовой формат при русской локали ОС). Пустые поля — весь период. На экране до <strong>{{ table_page_size }}</strong> строк на страницу; экспорт CSV — все строки по фильтру.</p>
 
         <div class="tabs" role="tablist">
             <label class="tab-label"><input type="radio" name="active_tab" value="analog" class="data-tab-radio" checked> Аналоги</label>
