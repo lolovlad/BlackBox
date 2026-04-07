@@ -42,6 +42,36 @@ th, td { border: 1px solid #e5e7eb; padding: 4px 6px; white-space: nowrap; }
 .filter-root[data-cols="alarms"] .col-panel-discrete { display: none; }
 .charts-page #chart-col-root[data-cols="analog"] .col-panel-discrete { display: none; }
 .charts-page #chart-col-root[data-cols="discrete"] .col-panel-analog { display: none; }
+.chart-filters-panel {
+    position: fixed;
+    top: 0;
+    right: -440px;
+    width: min(420px, 96vw);
+    height: 100vh;
+    background: #fff;
+    border-left: 1px solid #e5e7eb;
+    box-shadow: -10px 0 30px rgba(0, 0, 0, 0.12);
+    z-index: 50;
+    transition: right 0.2s ease;
+    padding: 12px;
+    overflow: auto;
+}
+.chart-filters-panel.open { right: 0; }
+.chart-filters-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(17, 24, 39, 0.45);
+    opacity: 0;
+    visibility: hidden;
+    transition: opacity 0.2s ease, visibility 0.2s ease;
+    z-index: 45;
+}
+.chart-filters-overlay.open {
+    opacity: 1;
+    visibility: visible;
+}
+.chart-filters-panel .panel-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 10px; }
+.chart-filters-panel .panel-head h3 { margin: 0; font-size: 18px; }
 
 /* Область таблицы данных: выше, лоадер поверх при htmx */
 .tab-panel-host { position: relative; min-height: 520px; margin-top: 12px; }

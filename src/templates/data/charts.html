@@ -3,49 +3,58 @@
 {% block content %}
 <section class="card charts-page">
     <h2>Графики</h2>
-    <form id="chart-form" onsubmit="return false;">
-        <div class="filter-grid">
-            <label class="filter-field">Таблица
-                <select name="table" id="chart-table">
-                    <option value="analog" selected>Аналоги</option>
-                    <option value="discrete">Дискреты</option>
-                </select>
-            </label>
-            <label class="filter-field">Дата с
-                <input type="datetime-local" name="date_from" autocomplete="off">
-            </label>
-            <label class="filter-field">Дата по
-                <input type="datetime-local" name="date_to" autocomplete="off">
-            </label>
-        </div>
+    <div class="row actions">
+        <button type="button" class="btn secondary" id="btn-open-filters">Фильтры</button>
+        <button type="button" class="btn secondary" id="btn-reset-filters">Сбросить фильтры</button>
+        <button type="button" class="btn" id="btn-render-chart">Построить график</button>
+    </div>
 
-        <div id="chart-col-root" data-cols="analog">
-            <fieldset class="col-panel col-panel-analog">
-                <legend>Поля (аналоги)</legend>
-                <div class="checkbox-grid">
-                    {% for key, ru in analog_options %}
-                        <label class="chk"><input type="checkbox" name="analog_col" value="{{ key }}" checked> {{ ru }}</label>
-                    {% endfor %}
-                </div>
-            </fieldset>
-            <fieldset class="col-panel col-panel-discrete">
-                <legend>Поля (дискреты)</legend>
-                <div class="checkbox-grid">
-                    {% for key, ru in discrete_options %}
-                        <label class="chk"><input type="checkbox" name="discrete_col" value="{{ key }}" checked> {{ ru }}</label>
-                    {% endfor %}
-                </div>
-            </fieldset>
+    <div id="chart-filters-overlay" class="chart-filters-overlay" aria-hidden="true"></div>
+    <aside id="chart-filters-panel" class="chart-filters-panel" aria-hidden="true">
+        <div class="panel-head">
+            <h3>Фильтры графика</h3>
+            <button type="button" class="btn secondary" id="btn-close-filters">Закрыть</button>
         </div>
+        <form id="chart-form" onsubmit="return false;">
+            <div class="filter-grid">
+                <label class="filter-field">Таблица
+                    <select name="table" id="chart-table">
+                        <option value="analog" selected>Аналоги</option>
+                        <option value="discrete">Дискреты</option>
+                    </select>
+                </label>
+                <label class="filter-field">Дата с
+                    <input type="datetime-local" name="date_from" autocomplete="off">
+                </label>
+                <label class="filter-field">Дата по
+                    <input type="datetime-local" name="date_to" autocomplete="off">
+                </label>
+            </div>
 
-        <div class="row actions">
-            <button type="button" class="btn" id="btn-render-chart">Построить график</button>
-        </div>
-    </form>
+            <div id="chart-col-root" data-cols="analog">
+                <fieldset class="col-panel col-panel-analog">
+                    <legend>Поля (аналоги)</legend>
+                    <div class="checkbox-grid">
+                        {% for key, ru in analog_options %}
+                            <label class="chk"><input type="checkbox" name="analog_col" value="{{ key }}"> {{ ru }}</label>
+                        {% endfor %}
+                    </div>
+                </fieldset>
+                <fieldset class="col-panel col-panel-discrete">
+                    <legend>Поля (дискреты)</legend>
+                    <div class="checkbox-grid">
+                        {% for key, ru in discrete_options %}
+                            <label class="chk"><input type="checkbox" name="discrete_col" value="{{ key }}"> {{ ru }}</label>
+                        {% endfor %}
+                    </div>
+                </fieldset>
+            </div>
+        </form>
+    </aside>
 
     <div id="chart-panel"
          hx-get="{{ url_for('data_blueprint.charts_render') }}"
-         hx-trigger="load, click from:#btn-render-chart"
+         hx-trigger="load, click from:#btn-render-chart, chart-poll from:body"
          hx-include="#chart-form"
          hx-swap="innerHTML">
         <p class="hint">Загрузка графика...</p>
@@ -60,6 +69,41 @@
         var root = document.getElementById('chart-col-root');
         root.dataset.cols = t;
     }
+
+    var panel = document.getElementById('chart-filters-panel');
+    var overlay = document.getElementById('chart-filters-overlay');
+    var form = document.getElementById('chart-form');
+    var chartPanel = document.getElementById('chart-panel');
+
+    function toggleFilters(open) {
+        panel.classList.toggle('open', !!open);
+        overlay.classList.toggle('open', !!open);
+        panel.setAttribute('aria-hidden', open ? 'false' : 'true');
+        overlay.setAttribute('aria-hidden', open ? 'false' : 'true');
+    }
+
+    document.getElementById('btn-open-filters').addEventListener('click', function () { toggleFilters(true); });
+    document.getElementById('btn-close-filters').addEventListener('click', function () { toggleFilters(false); });
+    overlay.addEventListener('click', function () { toggleFilters(false); });
+    document.getElementById('btn-render-chart').addEventListener('click', function () { toggleFilters(false); });
+
+    document.getElementById('btn-reset-filters').addEventListener('click', function () {
+        form.querySelector('[name="table"]').value = 'analog';
+        form.querySelector('[name="date_from"]').value = '';
+        form.querySelector('[name="date_to"]').value = '';
+        form.querySelectorAll('input[name="analog_col"]').forEach(function (el) { el.checked = false; });
+        form.querySelectorAll('input[name="discrete_col"]').forEach(function (el) { el.checked = false; });
+        syncColPanels();
+        htmx.trigger(chartPanel, 'chart-poll');
+    });
+
+    setInterval(function () {
+        var df = form.querySelector('[name="date_from"]').value;
+        var dt = form.querySelector('[name="date_to"]').value;
+        if (!df && !dt) {
+            htmx.trigger(chartPanel, 'chart-poll');
+        }
+    }, 2000);
 
     document.getElementById('chart-table').addEventListener('change', syncColPanels);
     syncColPanels();

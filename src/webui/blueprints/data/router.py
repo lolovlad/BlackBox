@@ -106,6 +106,8 @@ def charts_render():
 
     date_from = _parse_dt_local(request.args.get("date_from"))
     date_to = _parse_dt_local(request.args.get("date_to"))
+    if date_from is not None and date_to is not None and date_from > date_to:
+        date_from, date_to = date_to, date_from
 
     repo = DataRepository(current_app.extensions["session_factory"])
     rows = (
@@ -140,4 +142,5 @@ def charts_render():
         x_axis=x_axis,
         series=series,
         row_count=len(rows),
+        has_columns=bool(columns),
     )
