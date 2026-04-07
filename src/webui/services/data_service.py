@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import csv
+import re
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, time, timezone
 from pathlib import Path
 from typing import Any
 
@@ -20,9 +21,8 @@ from src.webui.modbus_service import (
 )
 from src.webui.repositories.data_repository import DataRepository
 
-# Пустой лимит в форме = «максимум записей по умолчанию» (производительность)
-DEFAULT_ROW_LIMIT = 10000
-MAX_ROW_LIMIT = 50000
+# Таблица на экране: фиксированный размер страницы (экспорт без лимита строк)
+TABLE_PAGE_SIZE = 1000
 
 
 @dataclass(frozen=True)
@@ -33,45 +33,76 @@ class DataFilter:
     sort_desc: bool
     analog_columns: list[str]
     discrete_columns: list[str]
-    limit: int
+    page: int  # 1-based, для таблицы
 
 
 def _parse_dt(raw: str | None) -> datetime | None:
+    """Дата/время: русский дд.мм.гггг [чч:мм[:сс]] или ISO / Z (для совместимости)."""
     if raw is None:
         return None
     s = str(raw).strip()
     if not s:
         return None
+    s = s.replace(",", ".")
+    for fmt in ("%d.%m.%Y %H:%M:%S", "%d.%m.%Y %H:%M", "%d.%m.%Y"):
+        try:
+            return datetime.strptime(s, fmt)
+        except ValueError:
+            continue
+    # Дд.мм.ггггчч:мм без пробела (опечатка)
+    m = re.match(r"^(\d{2})\.(\d{2})\.(\d{4})(\d{2}):(\d{2})$", s)
+    if m:
+        d, mo, y, hh, mm = m.groups()
+        try:
+            return datetime(int(y), int(mo), int(d), int(hh), int(mm), 0)
+        except ValueError:
+            pass
     try:
-        return datetime.fromisoformat(s)
+        iso = s
+        if iso.endswith("Z"):
+            iso = iso[:-1] + "+00:00"
+        dt = datetime.fromisoformat(iso)
+        if dt.tzinfo is not None:
+            dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+        return dt
     except ValueError:
         return None
 
 
-def _parse_limit(raw: str | None) -> int:
+def _normalize_date_range(date_from: datetime | None, date_to: datetime | None) -> tuple[datetime | None, datetime | None]:
+    """Верхняя граница «по дате» при времени 00:00 включает весь календарный день (ввод только даты или 00:00)."""
+    df, dt = date_from, date_to
+    if dt is not None and dt.time() == time(0, 0, 0):
+        dt = dt.replace(hour=23, minute=59, second=59, microsecond=999999)
+    if df is not None and dt is not None and df > dt:
+        df, dt = dt, df
+    return df, dt
+
+
+def _parse_page(raw: str | None) -> int:
     if raw is None or str(raw).strip() == "":
-        return DEFAULT_ROW_LIMIT
+        return 1
     try:
-        n = int(str(raw).strip())
+        p = int(str(raw).strip())
     except ValueError:
-        return DEFAULT_ROW_LIMIT
-    if n < 1:
-        return DEFAULT_ROW_LIMIT
-    return min(n, MAX_ROW_LIMIT)
+        return 1
+    return max(1, p)
 
 
 def parse_data_filter(source: ImmutableMultiDict | MultiDict) -> DataFilter:
     tab = (source.get("active_tab") or "analog").strip().lower()
     if tab not in ("analog", "discrete", "alarms"):
         tab = "analog"
-    date_from = _parse_dt(source.get("date_from"))
-    date_to = _parse_dt(source.get("date_to"))
+    date_from, date_to = _normalize_date_range(
+        _parse_dt(source.get("date_from")),
+        _parse_dt(source.get("date_to")),
+    )
     sort_desc = (source.get("sort") or "desc").lower() != "asc"
     analog_req = source.getlist("analog_col")
     discrete_req = source.getlist("discrete_col")
     analog_columns = filter_valid_analog(analog_req if analog_req else None)
     discrete_columns = filter_valid_discrete(discrete_req if discrete_req else None)
-    limit = _parse_limit(source.get("limit"))
+    page = _parse_page(source.get("page"))
     return DataFilter(
         active_tab=tab,
         date_from=date_from,
@@ -79,7 +110,7 @@ def parse_data_filter(source: ImmutableMultiDict | MultiDict) -> DataFilter:
         sort_desc=sort_desc,
         analog_columns=analog_columns,
         discrete_columns=discrete_columns,
-        limit=limit,
+        page=page,
     )
 
 
@@ -96,14 +127,23 @@ class DataService:
                 "alarms_disabled": True,
                 "columns": [],
                 "rows": [],
+                "page": 1,
+                "total_pages": 1,
+                "total_rows": 0,
+                "page_size": TABLE_PAGE_SIZE,
             }
 
         if tab == "analog":
+            total = self._repo.count_analogs(created_from=flt.date_from, created_to=flt.date_to)
+            total_pages = max(1, (total + TABLE_PAGE_SIZE - 1) // TABLE_PAGE_SIZE) if total else 1
+            page_eff = min(max(1, flt.page), total_pages)
+            offset = (page_eff - 1) * TABLE_PAGE_SIZE
             rows_db = self._repo.list_analogs(
                 created_from=flt.date_from,
                 created_to=flt.date_to,
                 sort_desc=flt.sort_desc,
-                limit=flt.limit,
+                offset=offset,
+                limit=TABLE_PAGE_SIZE,
             )
             keys = flt.analog_columns
             col_labels = analog_labels_for(keys)
@@ -117,14 +157,28 @@ class DataService:
                         "cells": [analog.get(k, "") for k in keys],
                     }
                 )
-            return {"tab": "analog", "columns": col_labels, "rows": out_rows, "alarms_disabled": False}
+            return {
+                "tab": "analog",
+                "columns": col_labels,
+                "rows": out_rows,
+                "alarms_disabled": False,
+                "page": page_eff,
+                "total_pages": total_pages,
+                "total_rows": total,
+                "page_size": TABLE_PAGE_SIZE,
+            }
 
         if tab == "discrete":
+            total = self._repo.count_discretes(created_from=flt.date_from, created_to=flt.date_to)
+            total_pages = max(1, (total + TABLE_PAGE_SIZE - 1) // TABLE_PAGE_SIZE) if total else 1
+            page_eff = min(max(1, flt.page), total_pages)
+            offset = (page_eff - 1) * TABLE_PAGE_SIZE
             rows_db = self._repo.list_discretes(
                 created_from=flt.date_from,
                 created_to=flt.date_to,
                 sort_desc=flt.sort_desc,
-                limit=flt.limit,
+                offset=offset,
+                limit=TABLE_PAGE_SIZE,
             )
             keys = flt.discrete_columns
             col_labels = discrete_labels_for(keys)
@@ -138,13 +192,27 @@ class DataService:
                         "cells": [1 if bool(discrete.get(k, False)) else 0 for k in keys],
                     }
                 )
-            return {"tab": "discrete", "columns": col_labels, "rows": out_rows, "alarms_disabled": False}
+            return {
+                "tab": "discrete",
+                "columns": col_labels,
+                "rows": out_rows,
+                "alarms_disabled": False,
+                "page": page_eff,
+                "total_pages": total_pages,
+                "total_rows": total,
+                "page_size": TABLE_PAGE_SIZE,
+            }
 
+        total = self._repo.count_alarms(created_from=flt.date_from, created_to=flt.date_to)
+        total_pages = max(1, (total + TABLE_PAGE_SIZE - 1) // TABLE_PAGE_SIZE) if total else 1
+        page_eff = min(max(1, flt.page), total_pages)
+        offset = (page_eff - 1) * TABLE_PAGE_SIZE
         rows_db = self._repo.list_alarms(
             created_from=flt.date_from,
             created_to=flt.date_to,
             sort_desc=flt.sort_desc,
-            limit=flt.limit,
+            offset=offset,
+            limit=TABLE_PAGE_SIZE,
         )
         out_rows = [
             {
@@ -153,7 +221,16 @@ class DataService:
             }
             for item in rows_db
         ]
-        return {"tab": "alarms", "columns": [], "rows": out_rows, "alarms_disabled": False}
+        return {
+            "tab": "alarms",
+            "columns": [],
+            "rows": out_rows,
+            "alarms_disabled": False,
+            "page": page_eff,
+            "total_pages": total_pages,
+            "total_rows": total,
+            "page_size": TABLE_PAGE_SIZE,
+        }
 
     def build_export(self, flt: DataFilter, static_csv_dir: Path) -> Path:
         static_csv_dir.mkdir(parents=True, exist_ok=True)
@@ -166,7 +243,8 @@ class DataService:
                 created_from=flt.date_from,
                 created_to=flt.date_to,
                 sort_desc=flt.sort_desc,
-                limit=flt.limit,
+                offset=0,
+                limit=None,
             )
             with path.open("w", newline="", encoding="utf-8") as f:
                 w = csv.writer(f, delimiter=";")
@@ -181,7 +259,8 @@ class DataService:
                 created_from=flt.date_from,
                 created_to=flt.date_to,
                 sort_desc=flt.sort_desc,
-                limit=flt.limit,
+                offset=0,
+                limit=None,
             )
             keys = flt.analog_columns
             headers = ["№", "Дата", "Время", *keys]
@@ -202,7 +281,8 @@ class DataService:
                 created_from=flt.date_from,
                 created_to=flt.date_to,
                 sort_desc=flt.sort_desc,
-                limit=flt.limit,
+                offset=0,
+                limit=None,
             )
             keys = flt.discrete_columns
             headers = ["№", "Дата", "Время", *keys]

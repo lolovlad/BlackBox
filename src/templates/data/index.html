@@ -3,14 +3,19 @@
 {% block content %}
 <section class="card data-page">
     <h2>Данные</h2>
-    <form id="data-filter-form" onsubmit="return false;">
+    <form id="data-filter-form" onsubmit="return false;" lang="ru">
         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+        <input type="hidden" name="page" id="data-page-num" value="1">
         <div class="filter-grid">
             <label class="filter-field">Дата с
-                <input type="datetime-local" name="date_from" autocomplete="off">
+                <input type="text" name="date_from" class="data-datetime-ru" autocomplete="off"
+                       inputmode="numeric" placeholder="дд.мм.гггг чч:мм"
+                       title="Формат: дд.мм.гггг чч:мм (сутки 0–23). Можно только дату: дд.мм.гггг">
             </label>
             <label class="filter-field">Дата по
-                <input type="datetime-local" name="date_to" autocomplete="off">
+                <input type="text" name="date_to" class="data-datetime-ru" autocomplete="off"
+                       inputmode="numeric" placeholder="дд.мм.гггг чч:мм"
+                       title="Формат: дд.мм.гггг чч:мм (24 часа). Только дата — до конца этого дня.">
             </label>
             <label class="filter-field">Сортировка по времени
                 <select name="sort">
@@ -18,12 +23,8 @@
                     <option value="asc">Старые сверху</option>
                 </select>
             </label>
-            <label class="filter-field">Макс. строк
-                <input type="number" name="limit" min="1" max="50000" placeholder="{{ default_row_limit }}"
-                       title="Пустое поле — по умолчанию {{ default_row_limit }}">
-            </label>
         </div>
-        <p class="hint">По умолчанию выбраны все поля таблицы. Пустые «Дата с/по» — без ограничения по периоду (в пределах лимита строк).</p>
+        <p class="hint">Поля даты в формате <strong>дд.мм.гггг чч:мм</strong> (24-часовое время). Пустые поля — весь доступный период. На экране — до <strong>{{ table_page_size }}</strong> строк на страницу; экспорт CSV включает <strong>все</strong> строки, попавшие под фильтр.</p>
 
         <div class="tabs" role="tablist">
             <label class="tab-label"><input type="radio" name="active_tab" value="analog" class="data-tab-radio" checked> Аналоги</label>
@@ -53,6 +54,7 @@
 
         <div class="row actions">
             <button type="button" class="btn secondary" id="btn-refresh-table">Обновить таблицу</button>
+            <button type="button" class="btn secondary" id="btn-filter-reset">Сбросить</button>
             <button type="button" class="btn" id="btn-export-open">Экспорт CSV…</button>
         </div>
     </form>
@@ -76,7 +78,7 @@
 <dialog id="export-modal" class="modal-dialog">
     <div class="modal-inner">
         <h3>Подтверждение экспорта CSV</h3>
-        <p class="hint">Будет создан файл с теми же фильтрами и полями, что на экране.</p>
+        <p class="hint">Файл будет содержать все строки по текущим фильтрам (без ограничения по количеству). На экране по-прежнему пагинация по {{ table_page_size }} строк.</p>
         <pre id="export-summary" class="export-summary" aria-live="polite"></pre>
         <div id="export-outcome"></div>
         <div class="modal-actions">
@@ -92,8 +94,6 @@
 
 <script>
 (function () {
-    const defaultLimit = {{ default_row_limit | int | tojson }};
-
     function syncColPanels() {
         const tab = document.querySelector('input[name="active_tab"]:checked');
         const root = document.getElementById('filter-root');
@@ -107,10 +107,72 @@
         });
     }
 
+    function resetFiltersToDefault() {
+        var f = document.getElementById('data-filter-form');
+        var df = f.querySelector('[name="date_from"]');
+        var dt = f.querySelector('[name="date_to"]');
+        if (df) df.value = '';
+        if (dt) dt.value = '';
+        var sort = f.querySelector('[name="sort"]');
+        if (sort) sort.value = 'desc';
+        document.getElementById('data-page-num').value = '1';
+        var analogTab = f.querySelector('input[name="active_tab"][value="analog"]');
+        if (analogTab) analogTab.checked = true;
+        f.querySelectorAll('input[name="analog_col"]').forEach(function (c) { c.checked = true; });
+        f.querySelectorAll('input[name="discrete_col"]').forEach(function (c) { c.checked = true; });
+        syncColPanels();
+        document.getElementById('btn-refresh-table').click();
+    }
+
+    document.getElementById('btn-filter-reset').addEventListener('click', resetFiltersToDefault);
+
+    var lastActiveTab = null;
     document.body.addEventListener('htmx:beforeRequest', function (evt) {
         var t = evt.detail.target;
         if (t && t.id === 'tab-panel') {
             syncColPanels();
+            var fd = new FormData(document.getElementById('data-filter-form'));
+            var tab = fd.get('active_tab');
+            if (lastActiveTab !== null && lastActiveTab !== tab) {
+                document.getElementById('data-page-num').value = '1';
+            }
+            lastActiveTab = tab;
+        }
+    });
+    document.body.addEventListener('htmx:afterSwap', function (evt) {
+        if (evt.detail.target && evt.detail.target.id === 'tab-panel') {
+            var meta = document.getElementById('data-table-result');
+            if (meta && meta.dataset.page) {
+                document.getElementById('data-page-num').value = meta.dataset.page;
+            }
+        }
+    });
+    ['sort', 'date_from', 'date_to'].forEach(function (name) {
+        var el = document.querySelector('#data-filter-form [name="' + name + '"]');
+        if (el) {
+            el.addEventListener('change', function () {
+                document.getElementById('data-page-num').value = '1';
+            });
+        }
+    });
+    document.body.addEventListener('click', function (ev) {
+        var pageInp = document.getElementById('data-page-num');
+        var refreshBtn = document.getElementById('btn-refresh-table');
+        if (!pageInp || !refreshBtn) return;
+        if (ev.target.closest('.btn-page-prev')) {
+            var p = parseInt(pageInp.value, 10) || 1;
+            if (p > 1) {
+                pageInp.value = String(p - 1);
+                refreshBtn.click();
+            }
+        } else if (ev.target.closest('.btn-page-next')) {
+            var meta = document.getElementById('data-table-result');
+            var maxP = parseInt(meta && meta.dataset.totalPages ? meta.dataset.totalPages : '1', 10);
+            var p2 = parseInt(pageInp.value, 10) || 1;
+            if (p2 < maxP) {
+                pageInp.value = String(p2 + 1);
+                refreshBtn.click();
+            }
         }
     });
     syncColPanels();
@@ -124,13 +186,12 @@
         const fd = new FormData(f);
         const lines = [];
         lines.push('Таблица: ' + tabRu(fd.get('active_tab')));
-        const df = fd.get('date_from');
-        const dt = fd.get('date_to');
-        lines.push(df ? ('С: ' + df) : 'С: (не ограничено)');
-        lines.push(dt ? ('По: ' + dt) : 'По: (не ограничено)');
+        const dff = fd.get('date_from');
+        const dtt = fd.get('date_to');
+        lines.push(dff ? ('С: ' + dff) : 'С: (не ограничено)');
+        lines.push(dtt ? ('По: ' + dtt) : 'По: (не ограничено)');
         lines.push(fd.get('sort') === 'asc' ? 'Сортировка: старые сверху' : 'Сортировка: новые сверху');
-        const lim = (fd.get('limit') || '').toString().trim();
-        lines.push('Макс. строк: ' + (lim ? lim : String(defaultLimit)));
+        lines.push('Экспорт: все строки по фильтру (лимит не применяется)');
         const tab = fd.get('active_tab');
         if (tab === 'analog') {
             lines.push('Полей аналогов (отмечено): ' + f.querySelectorAll('input[name="analog_col"]:checked').length);

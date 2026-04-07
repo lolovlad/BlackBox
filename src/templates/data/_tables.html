@@ -1,10 +1,11 @@
 {% if alarms_disabled %}
-<section class="card">
+<section class="card" id="data-table-result" data-page="1" data-total-pages="1">
     <p class="flash error">Таблица аварий недоступна. Выполните миграции БД.</p>
 </section>
 {% elif tab == 'alarms' %}
-<section class="card">
+<section class="card" id="data-table-result" data-page="{{ page }}" data-total-pages="{{ total_pages }}">
     <h3>Аварии</h3>
+    <p class="hint data-table-meta">Всего записей: {{ total_rows }} · страница {{ page }} из {{ total_pages }} (по {{ page_size }})</p>
     <div class="table-wrap">
         <table>
             <thead>
@@ -26,10 +27,12 @@
     {% if not rows %}
         <p class="hint">Нет записей за выбранные условия.</p>
     {% endif %}
+    {% include "data/_pagination.html" %}
 </section>
 {% else %}
-<section class="card">
+<section class="card" id="data-table-result" data-page="{{ page }}" data-total-pages="{{ total_pages }}">
     <h3>{% if tab == 'analog' %}Аналоги{% else %}Дискреты{% endif %}</h3>
+    <p class="hint data-table-meta">Всего записей: {{ total_rows }} · страница {{ page }} из {{ total_pages }} (по {{ page_size }})</p>
     <div class="table-wrap">
         <table>
             <thead>
@@ -55,5 +58,6 @@
     {% if not rows %}
         <p class="hint">Нет записей за выбранные условия.</p>
     {% endif %}
+    {% include "data/_pagination.html" %}
 </section>
 {% endif %}

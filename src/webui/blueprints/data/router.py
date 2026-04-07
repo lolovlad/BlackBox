@@ -8,7 +8,7 @@ from src.webui.auth_utils import admin_required
 from src.webui.data_labels import all_analog_keys, all_discrete_keys, analog_labels_for, discrete_labels_for
 from src.webui.paths import TEMPLATES_DIR
 from src.webui.repositories.data_repository import DataRepository
-from src.webui.services.data_service import DEFAULT_ROW_LIMIT, DataService, parse_data_filter
+from src.webui.services.data_service import TABLE_PAGE_SIZE, DataService, parse_data_filter
 
 data_router = Blueprint("data", __name__, url_prefix="/data", template_folder=str(TEMPLATES_DIR))
 
@@ -29,7 +29,7 @@ def page():
         "data/index.html",
         analog_options=analog_opts,
         discrete_options=discrete_opts,
-        default_row_limit=DEFAULT_ROW_LIMIT,
+        table_page_size=TABLE_PAGE_SIZE,
     )
 
 
