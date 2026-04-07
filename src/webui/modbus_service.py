@@ -295,8 +295,6 @@ class ModbusCollector:
         consecutive_failures = 0
         last_error_log = 0.0
         last_success_log = 0.0
-        total_polls = 0
-        total_errors = 0
         while not self._stop_event.is_set():
             try:
                 if instrument is None:
@@ -314,6 +312,7 @@ class ModbusCollector:
                 config = _load_settings()
                 source_values: dict[str, list[Any]] = {}
                 had_error = False
+                cycle_read_errors = 0
                 for req in config.get("requests", []):
                     req_name = req["name"]
                     fc = int(req["fc"])
@@ -340,7 +339,7 @@ class ModbusCollector:
                             break
                     if last_exc is not None:
                         had_error = True
-                        total_errors += 1
+                        cycle_read_errors += 1
                         source_values[req_name] = []
                         now = time.monotonic()
                         if now - last_error_log >= 2.0:
@@ -353,7 +352,6 @@ class ModbusCollector:
                             last_error_log = now
 
                 self._append({"created_at": datetime.now(), "sources": source_values})
-                total_polls += 1
                 if had_error:
                     consecutive_failures += 1
                 else:
@@ -364,10 +362,9 @@ class ModbusCollector:
                     analog_snapshot, _ = analog_discrete_for_csv(processed)
                     # Show a compact health snapshot for operator visibility.
                     logger.info(
-                        "Modbus poll: ok=%s poll_count=%d read_errors=%d active_alarms=%d sample={Fgen=%s, Pgen=%s, RPM=%s}",
+                        "Modbus poll: ok=%s cycle_read_errors=%d active_alarms=%d sample={Fgen=%s, Pgen=%s, RPM=%s}",
                         not had_error,
-                        total_polls,
-                        total_errors,
+                        cycle_read_errors,
                         len(processed.get("active_alarms", []) or []),
                         analog_snapshot.get("Fgen", "-"),
                         analog_snapshot.get("Pgen", "-"),

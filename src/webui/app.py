@@ -21,7 +21,7 @@ from src.webui.blueprints.main import main_router
 from src.webui.extensions import csrf, login_manager, server_session
 from src.webui.modbus_service import ModbusCollector, RuntimeConfig, reload_settings_cache
 from src.webui.paths import SRC_DIR, STATIC_DIR, TEMPLATES_DIR
-from src.webui.system_settings import load_env_into_os
+from src.webui.system_settings import ENV_DEFAULTS, ensure_env_file, load_env_into_os
 
 logger = logging.getLogger(__name__)
 
@@ -60,9 +60,17 @@ def create_app() -> Flask:
         instance_path=str(instance_dir),
     )
 
-    config = _build_runtime_config(static_csv_dir)
     env_path = Path.cwd() / ".env"
-    load_env_into_os(env_path)
+    # First launch: create .env with all runtime settings.
+    ensure_env_file(
+        env_path,
+        defaults={
+            key: os.getenv(key, default)
+            for key, default in ENV_DEFAULTS.items()
+        },
+    )
+    # Next launches: read values from existing .env.
+    load_env_into_os(env_path, override=True)
     config = _build_runtime_config(static_csv_dir)
     # Preload settings at startup; runtime updates are picked automatically by mtime.
     reload_settings_cache()

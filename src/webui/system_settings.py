@@ -84,9 +84,19 @@ def write_env_file(path: Path, updates: dict[str, str]) -> None:
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def load_env_into_os(path: Path) -> None:
+def ensure_env_file(path: Path, defaults: dict[str, str] | None = None) -> None:
+    if path.exists():
+        return
+    seed = dict(ENV_DEFAULTS)
+    if defaults:
+        seed.update(defaults)
+    lines = [f"{k}={v}" for k, v in sorted(seed.items())]
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def load_env_into_os(path: Path, *, override: bool = True) -> None:
     for key, value in read_env_file(path).items():
-        if key not in os.environ:
+        if override or key not in os.environ:
             os.environ[key] = value
 
 
