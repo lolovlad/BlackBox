@@ -1,7 +1,8 @@
 {% extends "base.html" %}
 {% block title %}Данные{% endblock %}
 {% block content %}
-<section class="card data-page" x-data="dataPage()" x-init="init()">
+<div x-data="dataPage()" x-init="init()">
+<section class="card data-page">
     <h2>Данные</h2>
     <form id="data-filter-form" onsubmit="return false;" lang="ru">
         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
@@ -143,6 +144,7 @@
         <button type="button" class="btn" id="export-confirm-btn" @click="submitExport()" :disabled="exportLoading" x-text="exportLoading ? 'Экспорт...' : 'Экспортировать'"></button>
     </div>
 </aside>
+</div>
 
 <script>
 function dataPage() {
