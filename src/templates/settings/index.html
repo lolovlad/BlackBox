@@ -8,15 +8,24 @@
     <form method="post" class="settings-form" enctype="multipart/form-data">
         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
         <fieldset>
-            <legend>Импорт настроек</legend>
+            <legend>Файлы настроек</legend>
             <div class="settings-grid">
-                <label class="filter-field">JSON-файл настроек
-                    <input type="file" name="import_file" accept=".json,application/json">
-                    <small class="field-help">Поддерживаются структуры: { "runtime": {...}, "parser": {...} } или просто parser JSON с requests/fields.</small>
+                <label class="filter-field">Активный файл настроек
+                    <select name="settings_file">
+                        {% for file_name in settings_files %}
+                        <option value="{{ file_name }}" {% if active_settings_file == file_name %}selected{% endif %}>{{ file_name }}</option>
+                        {% endfor %}
+                    </select>
+                    <small class="field-help">Можно хранить несколько файлов в папке settings и переключать активный.</small>
+                </label>
+                <label class="filter-field">Загрузить JSON-файл
+                    <input type="file" name="settings_file_upload" accept=".json,application/json">
+                    <small class="field-help">Кнопка ниже загружает файл в папку settings, выбирает его активным и перезапускает чтение.</small>
                 </label>
             </div>
             <div class="row actions">
-                <button type="submit" class="btn secondary" name="action" value="import">Импортировать из файла</button>
+                <button type="submit" class="btn secondary" name="action" value="switch_file">Выбрать файл</button>
+                <button type="submit" class="btn secondary" name="action" value="upload">Загрузить файл настроек</button>
             </div>
         </fieldset>
 
@@ -66,8 +75,9 @@
         </fieldset>
 
         <fieldset>
-            <legend>Файл настроек парсера (settings.json)</legend>
+            <legend>Редактирование активного файла ({{ active_settings_file }})</legend>
             <textarea name="parser_json" class="parser-json" spellcheck="false">{{ parser_text }}</textarea>
+            <p class="hint">Для скрытых служебных полей добавьте <code>"system": true</code> (также поддерживаются <code>"is_system"</code> и <code>"internal"</code>): поле останется доступным для выражений, но не попадет в интерфейс и экспорт.</p>
         </fieldset>
 
         <div class="row actions">

@@ -29,7 +29,7 @@ from src.webui.paths import TEMPLATES_DIR
 from src.webui.emergency_rule_validation import validate_emergency_rule_expression
 from src.webui.repositories.data_repository import DataRepository
 from src.webui.repositories.emergency_repository import EmergencyRepository
-from src.webui.modbus_service import analog_discrete_for_csv, decode_to_processed
+from src.webui.modbus_service import analog_discrete_for_csv, configure_settings_path, decode_to_processed
 from src.webui.modbus_service import reload_settings_cache
 from src.webui.system_settings import (
     ENV_DEFAULTS,
@@ -51,8 +51,53 @@ def _effective_parser_settings_path() -> Path:
     return p if p.is_absolute() else Path.cwd() / p
 
 
+def _settings_dir() -> Path:
+    return Path.cwd() / "settings"
+
+
+def _settings_file_choices() -> list[str]:
+    settings_dir = _settings_dir()
+    settings_dir.mkdir(parents=True, exist_ok=True)
+    files = sorted({p.name for p in settings_dir.glob("*.json")}, key=lambda v: v.lower())
+    if "settings.json" in files:
+        files.remove("settings.json")
+        files.insert(0, "settings.json")
+    return files
+
+
+def _set_active_parser_settings(filename: str) -> Path:
+    safe_name = Path(filename).name
+    target = _settings_dir() / safe_name
+    if not target.exists():
+        raise FileNotFoundError(f"Файл настроек не найден: {safe_name}")
+    rel = Path("settings") / safe_name
+    current_app.config["PARSER_SETTINGS_PATH"] = str(rel).replace("\\", "/")
+    os.environ["PARSER_SETTINGS_PATH"] = current_app.config["PARSER_SETTINGS_PATH"]
+    configure_settings_path(target)
+    return target
+
+
+def _build_non_overwriting_settings_path(filename: str) -> Path:
+    safe_name = Path(filename).name
+    base = Path(safe_name).stem
+    suffix = Path(safe_name).suffix or ".json"
+    target = _settings_dir() / safe_name
+    if not target.exists():
+        return target
+    idx = 1
+    while True:
+        candidate = _settings_dir() / f"{base}_{idx}{suffix}"
+        if not candidate.exists():
+            return candidate
+        idx += 1
+
+
 def _settings_page_context(env_values: dict, parser_text: str) -> dict:
     er_repo = EmergencyRepository(current_app.extensions["session_factory"])
+    parser_path = _effective_parser_settings_path()
+    choices = _settings_file_choices()
+    if parser_path.name not in choices:
+        choices.insert(0, parser_path.name)
     timezone_choices = [
         ("Europe/Kaliningrad", "UTC+2  Europe/Kaliningrad"),
         ("Europe/Moscow", "UTC+3  Europe/Moscow"),
@@ -69,6 +114,8 @@ def _settings_page_context(env_values: dict, parser_text: str) -> dict:
     return {
         "env_values": env_values,
         "parser_text": parser_text,
+        "settings_files": choices,
+        "active_settings_file": parser_path.name,
         "emergency_conditions": er_repo.list_conditions(),
         "timezone_choices": timezone_choices,
     }
@@ -128,11 +175,16 @@ def settings_save():
     }
     parser_text = request.form.get("parser_json") or ""
     action = (request.form.get("action") or "test").strip().lower()
+    selected_settings_file = (request.form.get("settings_file") or parser_path.name).strip()
 
-    if action == "import":
-        uploaded = request.files.get("import_file")
+    if action == "upload":
+        uploaded = request.files.get("settings_file_upload")
         if uploaded is None or not uploaded.filename:
-            flash("Выберите JSON-файл для импорта.", "error")
+            flash("Выберите JSON-файл настроек.", "error")
+            return render_template("settings/index.html", **_settings_page_context(posted_env, parser_text)), 400
+        filename = Path(uploaded.filename).name
+        if not filename.lower().endswith(".json"):
+            flash("Допустимы только файлы .json", "error")
             return render_template("settings/index.html", **_settings_page_context(posted_env, parser_text)), 400
         try:
             raw = uploaded.read().decode("utf-8")
@@ -142,44 +194,47 @@ def settings_save():
             return render_template("settings/index.html", **_settings_page_context(posted_env, parser_text)), 400
 
         if not isinstance(payload, dict):
-            flash("Файл импорта должен быть JSON-объектом.", "error")
+            flash("Файл настроек должен быть JSON-объектом.", "error")
             return render_template("settings/index.html", **_settings_page_context(posted_env, parser_text)), 400
 
-        imported_env = dict(posted_env)
-        env_block = payload.get("runtime") or payload.get("env") or payload
-        if isinstance(env_block, dict):
-            for key in ENV_DEFAULTS:
-                if key in env_block:
-                    imported_env[key] = str(env_block[key]).strip()
-
-        parser_block = payload.get("parser") or payload.get("settings") or payload
-        if isinstance(parser_block, dict) and "requests" in parser_block and "fields" in parser_block:
-            imported_parser_text = json.dumps(parser_block, ensure_ascii=False, indent=2)
-        else:
-            imported_parser_text = parser_text
-
-        parser_cfg_import, err = validate_parser_json(imported_parser_text)
+        parser_cfg_import, err = validate_parser_json(raw)
         if err:
-            flash(f"Импортирован JSON, но parser-секция невалидна: {err}", "error")
-            return render_template(
-                "settings/index.html",
-                **_settings_page_context(imported_env, imported_parser_text),
-            ), 400
-        try:
-            _ = effective_runtime_from_env(static_csv_dir, imported_env)
-        except Exception as exc:
-            flash(f"Импортирован JSON, но runtime-секция невалидна: {exc}", "error")
-            return render_template(
-                "settings/index.html",
-                **_settings_page_context(imported_env, imported_parser_text),
-            ), 400
-
+            flash(f"Файл не загружен: {err}", "error")
+            return render_template("settings/index.html", **_settings_page_context(posted_env, parser_text)), 400
         _ = parser_cfg_import
-        flash("Импорт выполнен. Проверьте значения и нажмите 'Проверить' или 'Сохранить и применить'.", "success")
-        return render_template(
-            "settings/index.html",
-            **_settings_page_context(imported_env, imported_parser_text),
-        )
+        target = _build_non_overwriting_settings_path(filename)
+        target.write_text(raw.strip() + "\n", encoding="utf-8")
+        _set_active_parser_settings(target.name)
+        reload_settings_cache()
+        collector.restart()
+        if target.name == filename:
+            flash(f"Файл '{target.name}' загружен и выбран активным. Чтение перезапущено.", "success")
+        else:
+            flash(
+                f"Файл '{filename}' уже существовал. Загружен как '{target.name}' и выбран активным. Чтение перезапущено.",
+                "success",
+            )
+        return redirect(url_for("main_blueprint.settings"))
+
+    if action == "switch_file":
+        try:
+            target_path = _settings_dir() / Path(selected_settings_file).name
+            if not target_path.exists():
+                raise FileNotFoundError(f"Файл настроек не найден: {Path(selected_settings_file).name}")
+        except Exception as exc:
+            flash(str(exc), "error")
+            return render_template("settings/index.html", **_settings_page_context(posted_env, parser_text)), 400
+        parser_text = target_path.read_text(encoding="utf-8")
+        parser_cfg_selected, err = validate_parser_json(parser_text)
+        if err:
+            flash(f"Выбранный файл невалиден: {err}", "error")
+            return render_template("settings/index.html", **_settings_page_context(posted_env, parser_text)), 400
+        _ = parser_cfg_selected
+        _set_active_parser_settings(target_path.name)
+        reload_settings_cache()
+        collector.restart()
+        flash("Активный файл настроек изменен. Чтение перезапущено.", "success")
+        return render_template("settings/index.html", **_settings_page_context(posted_env, parser_text))
 
     parser_cfg, err = validate_parser_json(parser_text)
     if err:
@@ -206,6 +261,12 @@ def settings_save():
         return render_template("settings/index.html", **_settings_page_context(posted_env, parser_text))
 
     # action == save: test already passed.
+    try:
+        parser_path = _set_active_parser_settings(selected_settings_file)
+    except Exception as exc:
+        flash(str(exc), "error")
+        return render_template("settings/index.html", **_settings_page_context(posted_env, parser_text)), 400
+
     write_env_file(env_path, posted_env)
     with parser_path.open("w", encoding="utf-8") as f:
         f.write(parser_text.strip() + "\n")

@@ -44,6 +44,11 @@ class SettingsCache:
         self._lock = threading.Lock()
         self._cached: dict[str, Any] | None = None
 
+    def set_path(self, path: Path) -> None:
+        with self._lock:
+            self._path = path
+            self._cached = None
+
     def get(self, *, force_reload: bool = False) -> dict[str, Any]:
         with self._lock:
             if force_reload or self._cached is None:
@@ -63,6 +68,12 @@ def _load_settings(*, force_reload: bool = False) -> dict[str, Any]:
 
 def reload_settings_cache() -> dict[str, Any]:
     return _load_settings(force_reload=True)
+
+
+def configure_settings_path(path: str | Path) -> None:
+    p = Path(path)
+    resolved = p if p.is_absolute() else (Path.cwd() / p)
+    _SETTINGS_CACHE.set_path(resolved)
 
 
 def _eval_expr(expr: str, context: dict[str, Any]) -> Any:
@@ -174,6 +185,9 @@ def _field_categories(config: dict[str, Any]) -> tuple[list[str], list[str]]:
     for field in config.get("fields", []):
         name = field.get("name")
         if not name:
+            continue
+        is_system = bool(field.get("system") or field.get("is_system") or field.get("internal"))
+        if is_system:
             continue
         f_type = field.get("type", "uint16")
         if f_type == "bool":

@@ -55,9 +55,13 @@ class FieldModel(BaseModel):
     model_config = ConfigDict(extra="allow")
     name: str = Field(min_length=1, max_length=255)
     type: str = Field(min_length=1, max_length=64)
+    display_name: str | None = None
     source: str | None = None
     address: int | None = Field(default=None, ge=0, le=65535)
     expr: str | None = None
+    system: bool | None = None
+    is_system: bool | None = None
+    internal: bool | None = None
 
 
 class ParserSettingsModel(BaseModel):

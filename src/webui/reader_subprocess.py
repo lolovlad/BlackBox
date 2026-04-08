@@ -8,7 +8,7 @@ from pathlib import Path
 from sqlalchemy import create_engine, inspect
 from sqlalchemy.orm import sessionmaker
 
-from src.webui.modbus_service import ModbusCollector, RuntimeConfig, reload_settings_cache
+from src.webui.modbus_service import ModbusCollector, RuntimeConfig, configure_settings_path, reload_settings_cache
 
 
 def _build_runtime_config() -> RuntimeConfig:
@@ -36,6 +36,7 @@ def _write_heartbeat(path: Path, *, pid: int) -> None:
 def main() -> int:
     heartbeat_path = Path(os.getenv("READER_HEARTBEAT_PATH", "instance/reader-control/heartbeat.json"))
     stop_path = Path(os.getenv("READER_STOP_PATH", "instance/reader-control/stop.flag"))
+    configure_settings_path(os.getenv("PARSER_SETTINGS_PATH", "settings/settings.json"))
     reload_settings_cache()
     cfg = _build_runtime_config()
     db_file = Path(cfg.db_path).resolve()

@@ -20,7 +20,7 @@ from src.webui.blueprints.auth import auth_router
 from src.webui.blueprints.data import data_router
 from src.webui.blueprints.main import main_router
 from src.webui.extensions import csrf, login_manager, server_session
-from src.webui.modbus_service import RuntimeConfig, reload_settings_cache
+from src.webui.modbus_service import RuntimeConfig, configure_settings_path, reload_settings_cache
 from src.webui.paths import SRC_DIR, STATIC_DIR, TEMPLATES_DIR
 from src.webui.reader_supervisor import ReaderSupervisor
 from src.webui.system_settings import ENV_DEFAULTS, ensure_env_file, load_env_into_os
@@ -75,8 +75,6 @@ def create_app() -> Flask:
     # Next launches: read values from existing .env.
     load_env_into_os(env_path, override=True)
     config = _build_runtime_config(static_csv_dir)
-    # Preload settings at startup; runtime updates are picked automatically by mtime.
-    reload_settings_cache()
     db_file = Path(config.db_path).resolve()
     db_file.parent.mkdir(parents=True, exist_ok=True)
 
@@ -96,6 +94,9 @@ def create_app() -> Flask:
         SESSION_COOKIE_SAMESITE="Lax",
         SESSION_COOKIE_SECURE=os.getenv("SESSION_COOKIE_SECURE", "0") == "1",
     )
+    # Bind active parser settings file for this process and warm cache.
+    configure_settings_path(app.config["PARSER_SETTINGS_PATH"])
+    reload_settings_cache()
 
     logging.basicConfig(level=logging.DEBUG, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
     logger.info("Starting web app with DB path: %s", db_file)
