@@ -7,6 +7,7 @@
     <script src="{{ url_for('static', filename='vendor/htmx.min.js') }}"></script>
     <script defer src="{{ url_for('static', filename='vendor/alpine.min.js') }}"></script>
     <link rel="stylesheet" href="{{ url_for('static', filename='vendor/tailwind.min.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='vendor/bootstrap-icons/bootstrap-icons.min.css') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='css/app.css') }}">
 </head>
 <body class="min-h-screen bg-gray-100 text-gray-800 antialiased">
@@ -21,10 +22,18 @@
     </h1>
     <nav class="flex flex-wrap items-center gap-2">
         {% for item in nav_menu %}
-            <a class="rounded-full border border-gray-200 bg-white px-3 py-1 text-sm font-medium text-gray-700 transition hover:border-indigo-400 hover:text-indigo-700" href="{{ url_for(item.endpoint) }}">{{ item.title }}</a>
+            <a class="rounded-full border border-gray-200 bg-white px-3 py-1 text-sm font-medium text-gray-700 transition hover:border-indigo-400 hover:text-indigo-700" href="{{ url_for(item.endpoint) }}">
+                {% if item.endpoint == 'main_blueprint.dashboard' %}<i class="bi bi-speedometer2"></i>
+                {% elif item.endpoint == 'main_blueprint.alarms_page' %}<i class="bi bi-bell"></i>
+                {% elif item.endpoint == 'data_blueprint.page' %}<i class="bi bi-table"></i>
+                {% elif item.endpoint == 'data_blueprint.charts_page' %}<i class="bi bi-graph-up"></i>
+                {% elif item.endpoint == 'main_blueprint.settings' %}<i class="bi bi-gear"></i>
+                {% else %}<i class="bi bi-circle"></i>{% endif %}
+                {{ item.title }}
+            </a>
         {% endfor %}
         {% if display_username %}
-            <a class="rounded-full bg-orange-500 px-3 py-1 text-sm font-semibold text-white transition hover:bg-orange-600" href="{{ url_for('auth_blueprint.logout') }}">Выход</a>
+            <a class="rounded-full bg-orange-500 px-3 py-1 text-sm font-semibold text-white transition hover:bg-orange-600" href="{{ url_for('auth_blueprint.logout') }}"><i class="bi bi-box-arrow-right"></i> Выход</a>
         {% endif %}
     </nav>
     </div>

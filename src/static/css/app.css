@@ -21,6 +21,7 @@ body { font-family: Inter, Roboto, "Segoe UI", Arial, sans-serif; margin: 0; bac
 .topbar h1 { margin: 0; font-size: 1.15rem; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .topbar-user { font-size: 0.85rem; font-weight: normal; color: var(--md-subtext); }
 .topbar a { color: var(--md-primary); margin-left: 12px; text-decoration: none; font-weight: 600; }
+.topbar a i { margin-right: 6px; }
 .page { padding: 16px; }
 .card { background: var(--md-surface); border: 1px solid var(--md-outline); border-radius: 16px; padding: 14px; margin-bottom: 14px; box-shadow: var(--md-shadow); }
 .btn { display: inline-block; background: var(--md-primary); color: var(--md-on-primary); border: 0; padding: 9px 14px; border-radius: 999px; cursor: pointer; text-decoration: none; font-weight: 600; letter-spacing: .01em; transition: background .15s ease, transform .05s ease; }
@@ -227,25 +228,27 @@ th { background: #c3cce0; color: #2d3540; font-weight: 600; }
 }
 .export-fab:hover { filter: brightness(0.95); }
 .export-fab-icon { line-height: 1; transform: translateY(-1px); }
+.export-fab-icon .bi { font-size: 22px; }
 .data-page .export-panel { margin-top: 8px; }
 .export-panel-drawer {
-    top: 2vh;
-    left: 1.5vw;
-    right: 1.5vw;
+    top: 0;
+    left: 0;
+    right: 0;
     width: auto;
-    height: 96vh;
-    max-height: 96vh;
+    height: 100vh;
+    max-height: 100vh;
     z-index: 120;
     padding: 16px;
     background: #ffffff;
     isolation: isolate;
-    border: 1px solid var(--md-outline);
-    border-radius: 16px;
-    box-shadow: 0 20px 50px rgba(0, 0, 0, 0.22);
+    border: 0;
+    border-radius: 0;
+    box-shadow: none;
     transform: translateY(16px);
     opacity: 0;
     pointer-events: none;
     transition: transform 0.2s ease, opacity 0.2s ease;
+    overflow: auto;
 }
 .export-panel-drawer.open {
     transform: translateY(0);
@@ -300,6 +303,32 @@ th { background: #c3cce0; color: #2d3540; font-weight: 600; }
     z-index: 110;
 }
 #export-outcome { margin-top: 10px; }
+.export-loading-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 130;
+    background: rgba(17, 24, 39, 0.45);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+.export-loading-card {
+    min-width: 260px;
+    background: #fff;
+    border: 1px solid var(--md-outline);
+    border-radius: 14px;
+    padding: 16px 18px;
+    box-shadow: var(--md-shadow);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 10px;
+}
+.export-loading-card p {
+    margin: 0;
+    font-size: 14px;
+    color: var(--md-subtext);
+}
 
 @media (max-width: 860px) {
     .export-panel-drawer {
