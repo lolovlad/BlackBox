@@ -20,8 +20,8 @@
             <tbody>
             {% for row in emergency_rows %}
             <tr>
-                <td>{{ row.datetime.strftime('%d.%m.%Y %H:%M:%S') }}</td>
-                <td>{{ (row.ended_at or row.datetime).strftime('%d.%m.%Y %H:%M:%S') }}</td>
+                <td>{{ format_in_configured_timezone(row.datetime, '%d.%m.%Y %H:%M:%S') }}</td>
+                <td>{{ format_in_configured_timezone((row.ended_at or row.datetime), '%d.%m.%Y %H:%M:%S') }}</td>
                 <td>{{ ((row.ended_at or row.datetime) - row.datetime) }}</td>
                 <td>{{ row.emergency_condition.name }}</td>
                 <td>{{ row.emergency_condition.id }}</td>

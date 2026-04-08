@@ -20,6 +20,7 @@ from src.webui.modbus_service import (
     decode_to_processed,
 )
 from src.webui.repositories.data_repository import DataRepository
+from src.webui.timezone_utils import format_in_configured_timezone
 
 # Таблица на экране: фиксированный размер страницы (экспорт без лимита строк)
 TABLE_PAGE_SIZE = 1000
@@ -154,7 +155,7 @@ class DataService:
                 analog, _ = analog_discrete_for_csv(processed)
                 out_rows.append(
                     {
-                        "time": item.created_at.strftime(DATETIME_UI_FORMAT),
+                        "time": format_in_configured_timezone(item.created_at, DATETIME_UI_FORMAT),
                         "cells": [analog.get(k, "") for k in keys],
                     }
                 )
@@ -189,7 +190,7 @@ class DataService:
                 _, discrete = analog_discrete_for_csv(processed)
                 out_rows.append(
                     {
-                        "time": item.created_at.strftime(DATETIME_UI_FORMAT),
+                        "time": format_in_configured_timezone(item.created_at, DATETIME_UI_FORMAT),
                         "cells": [1 if bool(discrete.get(k, False)) else 0 for k in keys],
                     }
                 )
@@ -217,7 +218,7 @@ class DataService:
         )
         out_rows = [
             {
-                "time": item.created_at.strftime(DATETIME_UI_FORMAT),
+                "time": format_in_configured_timezone(item.created_at, DATETIME_UI_FORMAT),
                 "name": item.name,
             }
             for item in rows_db
@@ -252,7 +253,8 @@ class DataService:
                 w.writerow(["№", "Дата", "Время", "Название"])
                 for i, item in enumerate(rows_db, start=1):
                     dt = item.created_at
-                    w.writerow([i, dt.strftime("%Y-%m-%d"), dt.strftime("%H:%M:%S"), item.name])
+                    dt_display = format_in_configured_timezone(dt, "%Y-%m-%d %H:%M:%S")
+                    w.writerow([i, dt_display[:10], dt_display[11:], item.name])
             return path
 
         if flt.active_tab == "analog":
@@ -272,8 +274,9 @@ class DataService:
                     processed = decode_to_processed(row.date)
                     analog, _ = analog_discrete_for_csv(processed)
                     dt = row.created_at
+                    dt_display = format_in_configured_timezone(dt, "%Y-%m-%d %H:%M:%S")
                     w.writerow(
-                        [i, dt.strftime("%Y-%m-%d"), dt.strftime("%H:%M:%S"), *[analog.get(k, "") for k in keys]]
+                        [i, dt_display[:10], dt_display[11:], *[analog.get(k, "") for k in keys]]
                     )
             return path
 
@@ -294,11 +297,12 @@ class DataService:
                     processed = decode_to_processed(row.date)
                     _, discrete = analog_discrete_for_csv(processed)
                     dt = row.created_at
+                    dt_display = format_in_configured_timezone(dt, "%Y-%m-%d %H:%M:%S")
                     w.writerow(
                         [
                             i,
-                            dt.strftime("%Y-%m-%d"),
-                            dt.strftime("%H:%M:%S"),
+                            dt_display[:10],
+                            dt_display[11:],
                             *[1 if bool(discrete.get(k, False)) else 0 for k in keys],
                         ]
                     )

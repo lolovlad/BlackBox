@@ -24,6 +24,7 @@ from src.webui.modbus_service import RuntimeConfig, reload_settings_cache
 from src.webui.paths import SRC_DIR, STATIC_DIR, TEMPLATES_DIR
 from src.webui.reader_supervisor import ReaderSupervisor
 from src.webui.system_settings import ENV_DEFAULTS, ensure_env_file, load_env_into_os
+from src.webui.timezone_utils import configured_timezone_name, format_in_configured_timezone
 
 logger = logging.getLogger(__name__)
 
@@ -129,7 +130,11 @@ def create_app() -> Flask:
 
     @app.context_processor
     def inject_nav() -> dict:
-        base = {"csrf_token": generate_csrf}
+        base = {
+            "csrf_token": generate_csrf,
+            "app_timezone": configured_timezone_name(),
+            "format_in_configured_timezone": format_in_configured_timezone,
+        }
         if not current_user.is_authenticated:
             return {**base, "nav_menu": [], "display_username": None, "is_admin": False}
         tu = getattr(current_user, "type_user", None)
@@ -147,6 +152,8 @@ def create_app() -> Flask:
             "nav_menu": menu,
             "display_username": current_user.username,
             "is_admin": role == "admin",
+            "app_timezone": configured_timezone_name(),
+            "format_in_configured_timezone": format_in_configured_timezone,
         }
 
     with app.app_context():

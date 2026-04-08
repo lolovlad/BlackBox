@@ -30,6 +30,7 @@ from src.webui.system_settings import (
     validate_parser_json,
     write_env_file,
 )
+from src.webui.timezone_utils import format_in_configured_timezone
 
 main_router = Blueprint("main", __name__, template_folder=str(TEMPLATES_DIR))
 DATETIME_UI_FORMAT = "%d.%m.%Y %H:%M:%S"
@@ -43,10 +44,29 @@ def _effective_parser_settings_path() -> Path:
 
 def _settings_page_context(env_values: dict, parser_text: str) -> dict:
     er_repo = EmergencyRepository(current_app.extensions["session_factory"])
+    timezone_choices = [
+        ("UTC", "UTC"),
+        ("Europe/Moscow", "Europe/Moscow"),
+        ("Europe/Kaliningrad", "Europe/Kaliningrad"),
+        ("Europe/Samara", "Europe/Samara"),
+        ("Asia/Yekaterinburg", "Asia/Yekaterinburg"),
+        ("Asia/Omsk", "Asia/Omsk"),
+        ("Asia/Krasnoyarsk", "Asia/Krasnoyarsk"),
+        ("Asia/Irkutsk", "Asia/Irkutsk"),
+        ("Asia/Yakutsk", "Asia/Yakutsk"),
+        ("Asia/Vladivostok", "Asia/Vladivostok"),
+        ("Asia/Magadan", "Asia/Magadan"),
+        ("Asia/Kamchatka", "Asia/Kamchatka"),
+        ("Asia/Almaty", "Asia/Almaty"),
+        ("Asia/Tashkent", "Asia/Tashkent"),
+        ("Europe/Berlin", "Europe/Berlin"),
+        ("America/New_York", "America/New_York"),
+    ]
     return {
         "env_values": env_values,
         "parser_text": parser_text,
         "emergency_conditions": er_repo.list_conditions(),
+        "timezone_choices": timezone_choices,
     }
 
 
@@ -97,6 +117,10 @@ def settings_save():
         "MODBUS_INTERVAL": (request.form.get("MODBUS_INTERVAL") or "").strip(),
         "MODBUS_ADDRESS_OFFSET": (request.form.get("MODBUS_ADDRESS_OFFSET") or "").strip(),
         "RAM_BATCH_SIZE": (request.form.get("RAM_BATCH_SIZE") or "").strip(),
+        "APP_TIMEZONE": (
+            (request.form.get("APP_TIMEZONE_CUSTOM") or "").strip()
+            or (request.form.get("APP_TIMEZONE") or "").strip()
+        ),
     }
     parser_text = request.form.get("parser_json") or ""
     action = (request.form.get("action") or "test").strip().lower()
@@ -276,7 +300,7 @@ def _build_live_dashboard_context(
         row = analog_row[0]
         processed = decode_to_processed(row.date)
         analog_map, _ = analog_discrete_for_csv(processed)
-        analog_time = row.created_at.strftime(DATETIME_UI_FORMAT)
+        analog_time = format_in_configured_timezone(row.created_at, DATETIME_UI_FORMAT)
         analog_items = [{"name": analog_label_map.get(k, k), "value": analog_map.get(k, "")} for k in analog_columns]
 
     discrete_items: list[dict] = []
@@ -286,14 +310,14 @@ def _build_live_dashboard_context(
         row = discrete_row[0]
         processed = decode_to_processed(row.date)
         _, discrete_map = analog_discrete_for_csv(processed)
-        discrete_time = row.created_at.strftime(DATETIME_UI_FORMAT)
+        discrete_time = format_in_configured_timezone(row.created_at, DATETIME_UI_FORMAT)
         discrete_items = [
             {"name": discrete_label_map.get(k, k), "is_on": bool(discrete_map.get(k, False))}
             for k in discrete_columns
         ]
 
     alarm_rows = [
-        {"time": item.created_at.strftime(DATETIME_UI_FORMAT), "name": item.name}
+        {"time": format_in_configured_timezone(item.created_at, DATETIME_UI_FORMAT), "name": item.name}
         for item in alarms
     ]
 

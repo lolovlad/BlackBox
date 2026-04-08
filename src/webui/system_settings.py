@@ -19,6 +19,7 @@ ENV_DEFAULTS: dict[str, str] = {
     "MODBUS_INTERVAL": "0.12",
     "MODBUS_ADDRESS_OFFSET": "1",
     "RAM_BATCH_SIZE": "60",
+    "APP_TIMEZONE": "UTC",
 }
 
 
@@ -32,6 +33,7 @@ class RuntimeEnvModel(BaseModel):
     MODBUS_INTERVAL: float = Field(ge=0.05, le=60.0)
     MODBUS_ADDRESS_OFFSET: int = Field(ge=0, le=10000)
     RAM_BATCH_SIZE: int = Field(ge=1, le=10000)
+    APP_TIMEZONE: str = Field(min_length=1, max_length=128)
 
 
 class RequestModel(BaseModel):
