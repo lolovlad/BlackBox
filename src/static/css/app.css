@@ -229,17 +229,65 @@ th { background: #c3cce0; color: #2d3540; font-weight: 600; }
 .export-fab-icon { line-height: 1; transform: translateY(-1px); }
 .data-page .export-panel { margin-top: 8px; }
 .export-panel-drawer {
-    right: -540px;
-    width: min(520px, 96vw);
-    z-index: 55;
-    padding: 14px;
+    top: 2vh;
+    left: 1.5vw;
+    right: 1.5vw;
+    width: auto;
+    height: 96vh;
+    max-height: 96vh;
+    z-index: 120;
+    padding: 16px;
+    background: #ffffff;
+    isolation: isolate;
+    border: 1px solid var(--md-outline);
+    border-radius: 16px;
+    box-shadow: 0 20px 50px rgba(0, 0, 0, 0.22);
+    transform: translateY(16px);
+    opacity: 0;
+    pointer-events: none;
+    transition: transform 0.2s ease, opacity 0.2s ease;
 }
-.export-panel-drawer.open { right: 0; }
+.export-panel-drawer.open {
+    transform: translateY(0);
+    opacity: 1;
+    pointer-events: auto;
+}
 .export-panel-drawer .filter-grid {
-    grid-template-columns: 1fr;
+    grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
 }
 .export-panel-drawer .checkbox-grid {
-    max-height: 32vh;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: 8px;
+    max-height: 30vh;
+    overflow: auto;
+    padding-right: 4px;
+}
+.export-panel-drawer .chk {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    line-height: 1.35;
+    white-space: normal;
+    word-break: break-word;
+}
+.export-panel-drawer .chk input {
+    margin-top: 2px;
+    flex: 0 0 auto;
+}
+.export-panel-drawer fieldset {
+    border: 1px solid var(--md-outline);
+    border-radius: 12px;
+    background: #fff;
+    padding: 10px 12px;
+    margin: 0 0 10px;
+}
+.export-panel-drawer .panel-head {
+    position: sticky;
+    top: 0;
+    background: #fff;
+    z-index: 1;
+    padding-bottom: 8px;
 }
 .export-panel-drawer .filter-field input,
 .export-panel-drawer .filter-field select {
@@ -248,7 +296,25 @@ th { background: #c3cce0; color: #2d3540; font-weight: 600; }
     border-radius: 12px;
     background: #fff;
 }
+#export-overlay {
+    z-index: 110;
+}
 #export-outcome { margin-top: 10px; }
+
+@media (max-width: 860px) {
+    .export-panel-drawer {
+        top: 0;
+        left: 0;
+        right: 0;
+        height: 100vh;
+        max-height: 100vh;
+        border-radius: 0;
+    }
+    .export-panel-drawer .filter-grid,
+    .export-panel-drawer .checkbox-grid {
+        grid-template-columns: 1fr;
+    }
+}
 
 /* Dashboard live widgets */
 .dashboard-page .hint { font-size: 13px; color: #6b7280; margin: 8px 0; }
