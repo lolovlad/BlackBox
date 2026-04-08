@@ -530,44 +530,38 @@ def emergency_rule_delete(rule_id: int):
 def _build_live_dashboard_context(
     analog_columns: list[str],
     discrete_columns: list[str],
-    *,
-    alarm_limit: int = 12,
 ) -> dict:
     session_factory = current_app.extensions["session_factory"]
-    collector = current_app.extensions["modbus_collector"]
     repo = DataRepository(session_factory)
 
-    analog_row = repo.list_analogs(limit=1)
-    discrete_row = repo.list_discretes(limit=1)
-    alarms = repo.list_alarms(limit=alarm_limit) if collector._alarms_enabled else []
+    latest_rows = repo.list_analogs(limit=1)
+    latest_row = latest_rows[0] if latest_rows else None
+    latest_processed: dict[str, Any] = {}
+    latest_time = None
+    if latest_row is not None:
+        latest_processed = decode_to_processed(latest_row.date)
+        latest_time = format_in_configured_timezone(latest_row.created_at, DATETIME_UI_FORMAT)
 
     analog_items: list[dict] = []
-    analog_time = None
+    analog_time = latest_time
     analog_label_map = dict(analog_labels_for(analog_columns))
-    if analog_row:
-        row = analog_row[0]
-        processed = decode_to_processed(row.date)
-        analog_map, _ = analog_discrete_for_csv(processed)
-        analog_time = format_in_configured_timezone(row.created_at, DATETIME_UI_FORMAT)
+    if latest_row is not None:
+        analog_map, _ = analog_discrete_for_csv(latest_processed)
         analog_items = [{"name": analog_label_map.get(k, k), "value": analog_map.get(k, "")} for k in analog_columns]
 
     discrete_items: list[dict] = []
-    discrete_time = None
+    discrete_time = latest_time
     discrete_label_map = dict(discrete_labels_for(discrete_columns))
-    if discrete_row:
-        row = discrete_row[0]
-        processed = decode_to_processed(row.date)
-        _, discrete_map = analog_discrete_for_csv(processed)
-        discrete_time = format_in_configured_timezone(row.created_at, DATETIME_UI_FORMAT)
+    if latest_row is not None:
+        _, discrete_map = analog_discrete_for_csv(latest_processed)
         discrete_items = [
             {"name": discrete_label_map.get(k, k), "is_on": bool(discrete_map.get(k, False))}
             for k in discrete_columns
         ]
 
-    alarm_rows = [
-        {"time": format_in_configured_timezone(item.created_at, DATETIME_UI_FORMAT), "name": item.name}
-        for item in alarms
-    ]
+    active_alarms_raw = latest_processed.get("active_alarms", [])
+    active_alarms = [str(v) for v in active_alarms_raw] if isinstance(active_alarms_raw, list) else []
+    alarm_rows = [{"time": latest_time, "name": name} for name in active_alarms]
 
     system_monitor = _collect_system_monitor()
 
@@ -577,7 +571,7 @@ def _build_live_dashboard_context(
         "discrete_time": discrete_time,
         "discrete_items": discrete_items,
         "alarm_rows": alarm_rows,
-        "alarms_enabled": collector._alarms_enabled,
+        "alarm_time": latest_time,
         "system_monitor": system_monitor,
     }
 

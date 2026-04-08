@@ -38,13 +38,12 @@
 <section class="card">
     <h3>
         Сообщения аварий
-        {% if alarms_enabled %}
-            <small class="hint">Сейчас: {{ alarm_rows|length }}</small>
-        {% endif %}
+        <small class="hint">Сейчас: {{ alarm_rows|length }}</small>
     </h3>
-    {% if not alarms_enabled %}
-        <p class="hint">Таблица аварий недоступна. Выполните миграции БД.</p>
-    {% elif alarm_rows %}
+    {% if alarm_time %}
+        <p class="hint">Слепок: {{ alarm_time }}</p>
+    {% endif %}
+    {% if alarm_rows %}
         <ul class="alarm-list">
             {% for row in alarm_rows %}
                 <li>
