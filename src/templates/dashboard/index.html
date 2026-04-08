@@ -1,10 +1,9 @@
 {% extends "base.html" %}
 {% block title %}Dashboard{% endblock %}
 {% block content %}
-<section class="card dashboard-page" x-data="dashboardLivePage()" x-init="init()">
+<section class="card dashboard-page">
     <h2>Главная панель</h2>
-
-    <form id="dashboard-live-form" class="dashboard-controls" onsubmit="return false;" lang="ru" @change="onFiltersChanged()">
+    <form id="dashboard-live-form" class="dashboard-controls" onsubmit="return false;" lang="ru">
         <fieldset>
             <legend>Поля аналогов</legend>
             <div class="checkbox-grid">
@@ -23,102 +22,14 @@
         </fieldset>
     </form>
 
-    <div id="dashboard-live-root">
+    <div id="dashboard-live-root"
+         hx-get="{{ url_for('main_blueprint.dashboard_live') }}"
+         hx-include="#dashboard-live-form"
+         hx-trigger="load, every 2s, change from:#dashboard-live-form"
+         hx-swap="innerHTML">
         <p class="tab-panel-placeholder">Загрузка данных...</p>
     </div>
 
     <p><a class="btn" href="{{ url_for('data_blueprint.page') }}">Открыть расширенные таблицы</a></p>
 </section>
-
-<script>
-function dashboardLivePage() {
-    return {
-        socket: null,
-        fallbackTimer: null,
-        init() {
-            this.connectSocket();
-        },
-        connectSocket() {
-            const scheme = window.location.protocol === "https:" ? "wss" : "ws";
-            const wsUrl = `${scheme}://${window.location.host}/ws/dashboard`;
-            this.socket = new WebSocket(wsUrl);
-            this.socket.onopen = () => {
-                this.stopFallbackPolling();
-                this.sendSubscription();
-            };
-            this.socket.onclose = () => {
-                this.startFallbackPolling();
-                setTimeout(() => this.connectSocket(), 2000);
-            };
-            this.socket.onerror = () => {
-                this.startFallbackPolling();
-            };
-            this.socket.onmessage = (event) => {
-                let payload = null;
-                try {
-                    payload = JSON.parse(event.data);
-                } catch (_) {
-                    return;
-                }
-                if (!payload || payload.type !== "dashboard_live_update" || !payload.html) {
-                    return;
-                }
-                const root = document.getElementById("dashboard-live-root");
-                if (root) {
-                    root.innerHTML = payload.html;
-                }
-            };
-        },
-        selectedValues(name) {
-            const out = [];
-            document.querySelectorAll('#dashboard-live-form input[name="' + name + '"]:checked').forEach((el) => out.push(el.value));
-            return out;
-        },
-        sendSubscription() {
-            if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
-                return;
-            }
-            this.socket.send(JSON.stringify({
-                type: "subscribe",
-                analog_col: this.selectedValues("analog_col"),
-                discrete_col: this.selectedValues("discrete_col"),
-            }));
-        },
-        onFiltersChanged() {
-            if (this.socket && this.socket.readyState === WebSocket.OPEN) {
-                this.sendSubscription();
-                return;
-            }
-            this.fetchFallbackSnapshot();
-        },
-        fetchFallbackSnapshot() {
-            const q = new URLSearchParams();
-            this.selectedValues("analog_col").forEach((v) => q.append("analog_col", v));
-            this.selectedValues("discrete_col").forEach((v) => q.append("discrete_col", v));
-            fetch("{{ url_for('main_blueprint.dashboard_live') }}?" + q.toString())
-                .then((r) => r.text())
-                .then((html) => {
-                    const root = document.getElementById("dashboard-live-root");
-                    if (root) {
-                        root.innerHTML = html;
-                    }
-                });
-        },
-        startFallbackPolling() {
-            if (this.fallbackTimer) {
-                return;
-            }
-            this.fetchFallbackSnapshot();
-            this.fallbackTimer = setInterval(() => this.fetchFallbackSnapshot(), 2000);
-        },
-        stopFallbackPolling() {
-            if (!this.fallbackTimer) {
-                return;
-            }
-            clearInterval(this.fallbackTimer);
-            this.fallbackTimer = null;
-        },
-    };
-}
-</script>
 {% endblock %}
