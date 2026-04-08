@@ -19,6 +19,7 @@ from sqlalchemy.orm import sessionmaker
 
 from src.database import Alarms, Emergency, EmergencyConditions, Samples
 from src.webui.emergency_rule_validation import evaluate_emergency_rule_expression
+from src.webui.timezone_utils import now_in_configured_timezone_naive
 
 logger = logging.getLogger(__name__)
 SETTINGS_PATH = Path("settings/settings.json")
@@ -364,7 +365,8 @@ class ModbusCollector:
                             )
                             last_error_log = now
 
-                created_at = datetime.now()
+                # Persist timestamps already in configured APP_TIMEZONE.
+                created_at = now_in_configured_timezone_naive()
                 processed = parse_fields(config, source_values)
                 self._append({"created_at": created_at, "sources": source_values, "processed": processed})
                 try:
