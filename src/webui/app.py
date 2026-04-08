@@ -3,23 +3,28 @@ from __future__ import annotations
 import atexit
 import logging
 import os
+import threading
 from datetime import timedelta
 from pathlib import Path
 
-from flask import Flask
+from flask import Flask, request
 from flask_login import current_user
+from flask_login import current_user as socket_current_user
 from flask_wtf.csrf import generate_csrf
 from flask_migrate import Migrate
 from sqlalchemy import inspect
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import joinedload, sessionmaker
+from flask_socketio import disconnect
 
 from src.database import User, db
 from src.database import Emergency, EmergencyConditions  # noqa: F401 — метаданные для Alembic / Flask-Migrate
 from src.webui.blueprints.auth import auth_router
 from src.webui.blueprints.data import data_router
 from src.webui.blueprints.main import main_router
-from src.webui.extensions import csrf, login_manager, server_session
+from src.webui.extensions import csrf, login_manager, server_session, socketio
+from src.webui.data_labels import all_analog_keys, all_discrete_keys
+from src.webui.blueprints.main.router import render_live_dashboard_html
 from src.webui.modbus_service import RuntimeConfig, reload_settings_cache
 from src.webui.paths import SRC_DIR, STATIC_DIR, TEMPLATES_DIR
 from src.webui.reader_supervisor import ReaderSupervisor
@@ -108,6 +113,7 @@ def create_app() -> Flask:
     Migrate(app, db, compare_type=True, render_as_batch=True)
     csrf.init_app(app)
     server_session.init_app(app)
+    socketio.init_app(app, logger=False, engineio_logger=False, manage_session=False)
 
     login_manager.init_app(app)
     login_manager.login_view = "auth_blueprint.login"
@@ -184,6 +190,72 @@ def create_app() -> Flask:
     app.extensions["modbus_collector"] = collector
     app.extensions["static_csv_dir"] = static_csv_dir
     app.extensions["env_path"] = env_path
+
+    live_lock = threading.Lock()
+    live_subscriptions: dict[str, dict[str, list[str]]] = {}
+    live_thread_started = False
+
+    def _normalize_live_columns(payload: dict | None) -> tuple[list[str], list[str]]:
+        analog_allowed = set(all_analog_keys())
+        discrete_allowed = set(all_discrete_keys())
+        data = payload if isinstance(payload, dict) else {}
+        analog_cols = [str(v) for v in (data.get("analog_col") or []) if str(v) in analog_allowed]
+        discrete_cols = [str(v) for v in (data.get("discrete_col") or []) if str(v) in discrete_allowed]
+        if not analog_cols:
+            analog_cols = list(all_analog_keys())
+        if not discrete_cols:
+            discrete_cols = list(all_discrete_keys())
+        return analog_cols, discrete_cols
+
+    def _dashboard_live_emitter() -> None:
+        logger.info("Dashboard Socket.IO emitter started")
+        while True:
+            socketio.sleep(2.0)
+            with live_lock:
+                targets = dict(live_subscriptions)
+            if not targets:
+                continue
+            with app.app_context():
+                for sid, cols in targets.items():
+                    try:
+                        html = render_live_dashboard_html(cols.get("analog_col", []), cols.get("discrete_col", []))
+                        socketio.emit("dashboard_live_update", {"html": html}, to=sid, namespace="/dashboard")
+                    except Exception:
+                        logger.exception("Failed to emit dashboard live update to sid=%s", sid)
+
+    @socketio.on("connect", namespace="/dashboard")
+    def _dashboard_connect():
+        nonlocal live_thread_started
+        if not socket_current_user.is_authenticated:
+            disconnect()
+            return
+        sid = request.sid  # type: ignore[name-defined]
+        with live_lock:
+            live_subscriptions[sid] = {
+                "analog_col": list(all_analog_keys()),
+                "discrete_col": list(all_discrete_keys()),
+            }
+        if not live_thread_started:
+            socketio.start_background_task(_dashboard_live_emitter)
+            live_thread_started = True
+        logger.info("Dashboard socket connected sid=%s user=%s", sid, socket_current_user.get_id())
+
+    @socketio.on("dashboard_subscribe", namespace="/dashboard")
+    def _dashboard_subscribe(payload: dict | None):
+        if not socket_current_user.is_authenticated:
+            disconnect()
+            return
+        sid = request.sid  # type: ignore[name-defined]
+        analog_cols, discrete_cols = _normalize_live_columns(payload)
+        with live_lock:
+            live_subscriptions[sid] = {"analog_col": analog_cols, "discrete_col": discrete_cols}
+
+    @socketio.on("disconnect", namespace="/dashboard")
+    def _dashboard_disconnect():
+        sid = request.sid  # type: ignore[name-defined]
+        with live_lock:
+            live_subscriptions.pop(sid, None)
+        logger.info("Dashboard socket disconnected sid=%s", sid)
 
     app.register_blueprint(auth_router, name="auth_blueprint")
     app.register_blueprint(main_router, name="main_blueprint")

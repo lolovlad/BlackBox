@@ -1,10 +1,14 @@
 {% extends "base.html" %}
 {% block title %}Dashboard{% endblock %}
 {% block content %}
-<section class="card dashboard-page">
+<section class="card dashboard-page" x-data="dashboardLivePage()" x-init="init()">
     <h2>Главная панель</h2>
+    <p class="hint">
+        Live-канал:
+        <strong x-text="socketStatus"></strong>
+    </p>
 
-    <form id="dashboard-live-form" class="dashboard-controls" onsubmit="return false;" lang="ru">
+    <form id="dashboard-live-form" class="dashboard-controls" onsubmit="return false;" lang="ru" @change="onFiltersChanged()">
         <fieldset>
             <legend>Поля аналогов</legend>
             <div class="checkbox-grid">
@@ -23,14 +27,102 @@
         </fieldset>
     </form>
 
-    <div id="dashboard-live-root"
-         hx-get="{{ url_for('main_blueprint.dashboard_live') }}"
-         hx-include="#dashboard-live-form"
-         hx-trigger="load, every 2s, change from:#dashboard-live-form"
-         hx-swap="innerHTML">
+    <div id="dashboard-live-root">
         <p class="tab-panel-placeholder">Загрузка данных...</p>
     </div>
 
     <p><a class="btn" href="{{ url_for('data_blueprint.page') }}">Открыть расширенные таблицы</a></p>
 </section>
+
+<script src="/socket.io/socket.io.js"></script>
+<script>
+function dashboardLivePage() {
+    return {
+        socket: null,
+        socketStatus: "connecting",
+        fallbackTimer: null,
+        init() {
+            if (typeof io === "undefined") {
+                this.socketStatus = "fallback (polling)";
+                this.startFallbackPolling();
+                return;
+            }
+            this.connectSocket();
+        },
+        connectSocket() {
+            this.socket = io("/dashboard", { transports: ["websocket", "polling"] });
+            this.socket.on("connect", () => {
+                this.socketStatus = "online";
+                this.stopFallbackPolling();
+                this.sendSubscription();
+            });
+            this.socket.on("connect_error", () => {
+                this.socketStatus = "reconnecting";
+                this.startFallbackPolling();
+            });
+            this.socket.on("disconnect", () => {
+                this.socketStatus = "offline";
+                this.startFallbackPolling();
+            });
+            this.socket.on("dashboard_live_update", (payload) => {
+                if (!payload || !payload.html) {
+                    return;
+                }
+                const root = document.getElementById("dashboard-live-root");
+                if (root) {
+                    root.innerHTML = payload.html;
+                }
+            });
+        },
+        selectedValues(name) {
+            const out = [];
+            document.querySelectorAll('#dashboard-live-form input[name="' + name + '"]:checked').forEach((el) => out.push(el.value));
+            return out;
+        },
+        sendSubscription() {
+            if (!this.socket || !this.socket.connected) {
+                return;
+            }
+            this.socket.emit("dashboard_subscribe", {
+                analog_col: this.selectedValues("analog_col"),
+                discrete_col: this.selectedValues("discrete_col"),
+            });
+        },
+        onFiltersChanged() {
+            if (this.socket && this.socket.connected) {
+                this.sendSubscription();
+                return;
+            }
+            this.fetchFallbackSnapshot();
+        },
+        fetchFallbackSnapshot() {
+            const q = new URLSearchParams();
+            this.selectedValues("analog_col").forEach((v) => q.append("analog_col", v));
+            this.selectedValues("discrete_col").forEach((v) => q.append("discrete_col", v));
+            fetch("{{ url_for('main_blueprint.dashboard_live') }}?" + q.toString())
+                .then((r) => r.text())
+                .then((html) => {
+                    const root = document.getElementById("dashboard-live-root");
+                    if (root) {
+                        root.innerHTML = html;
+                    }
+                });
+        },
+        startFallbackPolling() {
+            if (this.fallbackTimer) {
+                return;
+            }
+            this.fetchFallbackSnapshot();
+            this.fallbackTimer = setInterval(() => this.fetchFallbackSnapshot(), 2000);
+        },
+        stopFallbackPolling() {
+            if (!this.fallbackTimer) {
+                return;
+            }
+            clearInterval(this.fallbackTimer);
+            this.fallbackTimer = null;
+        },
+    };
+}
+</script>
 {% endblock %}

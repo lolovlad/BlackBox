@@ -332,6 +332,11 @@ def _build_live_dashboard_context(
     }
 
 
+def render_live_dashboard_html(analog_columns: list[str], discrete_columns: list[str]) -> str:
+    ctx = _build_live_dashboard_context(analog_columns, discrete_columns)
+    return render_template("dashboard/_live_panels.html", **ctx)
+
+
 def _collect_system_monitor() -> dict[str, Any]:
     stats: dict[str, Any] = {
         "disk": {"used_gb": None, "total_gb": None, "free_gb": None, "percent": None},
@@ -379,5 +384,4 @@ def dashboard_live():
     discrete_requested = request.args.getlist("discrete_col")
     analog_columns = filter_valid_analog(analog_requested if analog_requested else None)
     discrete_columns = filter_valid_discrete(discrete_requested if discrete_requested else None)
-    ctx = _build_live_dashboard_context(analog_columns, discrete_columns)
-    return render_template("dashboard/_live_panels.html", **ctx)
+    return render_live_dashboard_html(analog_columns, discrete_columns)
