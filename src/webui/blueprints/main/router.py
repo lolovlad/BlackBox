@@ -166,6 +166,14 @@ def settings():
     return render_template("settings/index.html", **_settings_page_context(values, parser_text))
 
 
+@main_router.route("/admin/event-logs", methods=["GET"])
+@admin_required
+def event_logs_page():
+    repo = DataRepository(current_app.extensions["session_factory"])
+    rows = repo.list_event_logs(limit=500)
+    return render_template("settings/event_logs.html", rows=rows)
+
+
 @main_router.route("/settings/instructions/<slug>", methods=["GET"])
 @admin_required
 def settings_instruction(slug: str):
@@ -332,9 +340,9 @@ def _alarm_export_rows(
     discrete_keys: list[str],
 ) -> tuple[list[str], list[list[Any]]]:
     if table == "alarms":
-        headers = ["Дата", "Время", "Название"]
+        headers = ["Дата", "Время", "Название", "Состояние"]
         body = [
-            [item.created_at.strftime("%Y-%m-%d"), item.created_at.strftime("%H:%M:%S"), item.name]
+            [item.created_at.strftime("%Y-%m-%d"), item.created_at.strftime("%H:%M:%S"), item.name, getattr(item, "state", "active")]
             for item in rows_db
         ]
         return headers, body

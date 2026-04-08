@@ -17,7 +17,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import sessionmaker
 
-from src.database import Alarms, Emergency, EmergencyConditions, Samples
+from src.database import Alarms, Emergency, EmergencyConditions, EventLog, Samples
 from src.webui.emergency_rule_validation import evaluate_emergency_rule_expression
 from src.webui.timezone_utils import now_in_configured_timezone_naive
 
@@ -272,6 +272,8 @@ class ModbusCollector:
         self._events_thread: threading.Thread | None = None
         self._rules_lock = threading.Lock()
         self._rules_snapshot: list[tuple[int, str]] = []
+        self._active_alarm_names: set[str] = set()
+        self._modbus_data_unavailable = False
 
     def start(self) -> None:
         with self._thread_lock:
@@ -356,7 +358,8 @@ class ModbusCollector:
                 source_values: dict[str, list[Any]] = {}
                 had_error = False
                 cycle_read_errors = 0
-                for req in config.get("requests", []):
+                requests = list(config.get("requests", []))
+                for req in requests:
                     req_name = req["name"]
                     fc = int(req["fc"])
                     address = int(req["address"])
@@ -406,6 +409,27 @@ class ModbusCollector:
                     consecutive_failures += 1
                 else:
                     consecutive_failures = 0
+                no_data = bool(requests) and cycle_read_errors >= len(requests)
+                if no_data and not self._modbus_data_unavailable:
+                    self._modbus_data_unavailable = True
+                    self.flush_remaining()
+                    self._log_event(
+                        created_at=created_at,
+                        level="error",
+                        code="modbus_data_unavailable",
+                        message="Нет данных Modbus: все запросы в цикле завершились ошибкой.",
+                        payload={"cycle_read_errors": cycle_read_errors, "requests_count": len(requests)},
+                    )
+                    self._close_all_active_alarms(created_at=created_at, reason="modbus_data_unavailable")
+                elif (not no_data) and self._modbus_data_unavailable:
+                    self._modbus_data_unavailable = False
+                    self._log_event(
+                        created_at=created_at,
+                        level="info",
+                        code="modbus_data_restored",
+                        message="Данные Modbus восстановлены.",
+                        payload={"cycle_read_errors": cycle_read_errors, "requests_count": len(requests)},
+                    )
                 now = time.monotonic()
                 if now - last_success_log >= 5.0:
                     analog_snapshot, _ = analog_discrete_for_csv(processed)
@@ -457,20 +481,7 @@ class ModbusCollector:
                     processed = sample.get("processed")
                     if not isinstance(processed, dict):
                         processed = parse_fields(_load_settings(), dict(sample.get("sources", {})))
-                    active_alarms = processed.get("active_alarms", [])
-                    if not isinstance(active_alarms, list):
-                        continue
-                    for alarm_name in active_alarms:
-                        payload = {"alarm": alarm_name, "created_at": created_at.isoformat()}
-                        session.add(
-                            Alarms(
-                                created_at=created_at,
-                                date=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-                                name=str(alarm_name),
-                                description="Alarm from converted Modbus data",
-                            )
-                        )
-                        alarms_written += 1
+                    alarms_written += self._sync_alarm_states(session=session, created_at=created_at, processed=processed)
                 session.commit()
             elapsed_ms = (time.monotonic() - flush_started) * 1000.0
             logger.info(
@@ -494,6 +505,124 @@ class ModbusCollector:
             self._ram_buffer.clear()
         if batch:
             self._flush(batch)
+
+    def _sync_alarm_states(self, *, session, created_at: datetime, processed: dict[str, Any]) -> int:
+        active_raw = processed.get("active_alarms", [])
+        active_now = {str(v) for v in active_raw} if isinstance(active_raw, list) else set()
+        written = 0
+
+        for alarm_name in sorted(active_now):
+            is_new = alarm_name not in self._active_alarm_names
+            if is_new:
+                last_row_stmt = (
+                    select(Alarms)
+                    .where(Alarms.name == alarm_name)
+                    .order_by(Alarms.created_at.desc(), Alarms.id.desc())
+                    .limit(1)
+                )
+                last_row = session.execute(last_row_stmt).scalar_one_or_none()
+                if last_row is not None and str(getattr(last_row, "state", "active")) == "active" and created_at > last_row.created_at:
+                    close_payload = {
+                        "alarm": alarm_name,
+                        "created_at": created_at.isoformat(),
+                        "state": "inactive",
+                        "reason": "auto_close_before_reopen",
+                    }
+                    session.add(
+                        Alarms(
+                            created_at=created_at,
+                            date=json.dumps(close_payload, ensure_ascii=False).encode("utf-8"),
+                            name=alarm_name,
+                            state="inactive",
+                            description="Alarm auto-closed before reopen",
+                        )
+                    )
+                    written += 1
+                payload = {"alarm": alarm_name, "created_at": created_at.isoformat(), "state": "active"}
+                session.add(
+                    Alarms(
+                        created_at=created_at,
+                        date=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+                        name=alarm_name,
+                        state="active",
+                        description="Alarm is active",
+                    )
+                )
+                written += 1
+            self._active_alarm_names.add(alarm_name)
+
+        resolved = sorted(self._active_alarm_names - active_now)
+        for alarm_name in resolved:
+            payload = {"alarm": alarm_name, "created_at": created_at.isoformat(), "state": "inactive"}
+            session.add(
+                Alarms(
+                    created_at=created_at,
+                    date=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+                    name=alarm_name,
+                    state="inactive",
+                    description="Alarm became inactive",
+                )
+            )
+            written += 1
+            self._active_alarm_names.discard(alarm_name)
+
+        return written
+
+    def _close_all_active_alarms(self, *, created_at: datetime, reason: str) -> None:
+        if not self._active_alarm_names:
+            return
+        session = self._session_factory()
+        try:
+            for alarm_name in sorted(self._active_alarm_names):
+                payload = {
+                    "alarm": alarm_name,
+                    "created_at": created_at.isoformat(),
+                    "state": "inactive",
+                    "reason": reason,
+                }
+                session.add(
+                    Alarms(
+                        created_at=created_at,
+                        date=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+                        name=alarm_name,
+                        state="inactive",
+                        description="Alarm closed due to Modbus data loss",
+                    )
+                )
+            session.commit()
+        except Exception:
+            session.rollback()
+            logger.exception("Failed to close active alarms on Modbus data loss")
+        finally:
+            session.close()
+            self._active_alarm_names.clear()
+
+    def _log_event(
+        self,
+        *,
+        created_at: datetime,
+        level: str,
+        code: str,
+        message: str,
+        payload: dict[str, Any] | None = None,
+    ) -> None:
+        session = self._session_factory()
+        try:
+            session.add(
+                EventLog(
+                    created_at=created_at,
+                    level=str(level),
+                    code=str(code),
+                    message=str(message),
+                    payload_json=json.dumps(payload or {}, ensure_ascii=False),
+                )
+            )
+            session.commit()
+        except Exception:
+            session.rollback()
+            logger.exception("Failed to write event log: %s", code)
+        finally:
+            session.close()
 
     def _events_loop(self) -> None:
         logger.info("Emergency events worker started")

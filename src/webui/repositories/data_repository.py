@@ -5,7 +5,7 @@ from datetime import datetime
 from sqlalchemy import func, select
 from sqlalchemy.orm import sessionmaker
 
-from src.database import Alarms, Samples
+from src.database import Alarms, EventLog, Samples
 
 
 class DataRepository:
@@ -120,6 +120,20 @@ class DataRepository:
             Alarms,
             created_from=created_from,
             created_to=created_to,
+            sort_desc=sort_desc,
+            offset=offset,
+            limit=limit,
+        )
+
+    def list_event_logs(
+        self,
+        *,
+        sort_desc: bool = True,
+        offset: int = 0,
+        limit: int | None = 200,
+    ):
+        return self._list_rows(
+            EventLog,
             sort_desc=sort_desc,
             offset=offset,
             limit=limit,

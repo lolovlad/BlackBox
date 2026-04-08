@@ -220,6 +220,7 @@ class DataService:
             {
                 "time": format_in_configured_timezone(item.created_at, DATETIME_UI_FORMAT),
                 "name": item.name,
+                "state": getattr(item, "state", "active"),
             }
             for item in rows_db
         ]
@@ -250,11 +251,11 @@ class DataService:
             )
             with path.open("w", newline="", encoding="utf-8") as f:
                 w = csv.writer(f, delimiter=";")
-                w.writerow(["№", "Дата", "Время", "Название"])
+                w.writerow(["№", "Дата", "Время", "Название", "Состояние"])
                 for i, item in enumerate(rows_db, start=1):
                     dt = item.created_at
                     dt_display = format_in_configured_timezone(dt, "%Y-%m-%d %H:%M:%S")
-                    w.writerow([i, dt_display[:10], dt_display[11:], item.name])
+                    w.writerow([i, dt_display[:10], dt_display[11:], item.name, getattr(item, "state", "active")])
             return path
 
         if flt.active_tab == "analog":

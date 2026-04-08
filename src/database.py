@@ -53,7 +53,18 @@ class Samples(db.Model, DateMixin):
 class Alarms(db.Model, DateMixin):
     __tablename__ = "alarms"
     name: Mapped[str] = mapped_column(String(255), nullable=False)
+    state: Mapped[str] = mapped_column(String(32), nullable=False, default="active")
     description: Mapped[str] = mapped_column(String(255), nullable=True)
+
+
+class EventLog(db.Model):
+    __tablename__ = "event_logs"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    level: Mapped[str] = mapped_column(String(32), nullable=False)
+    code: Mapped[str] = mapped_column(String(64), nullable=False)
+    message: Mapped[str] = mapped_column(String(255), nullable=False)
+    payload_json: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class EmergencyConditions(db.Model, DeleteMixin):
