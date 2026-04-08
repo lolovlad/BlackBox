@@ -228,7 +228,27 @@ th { background: #c3cce0; color: #2d3540; font-weight: 600; }
 .export-fab:hover { filter: brightness(0.95); }
 .export-fab-icon { line-height: 1; transform: translateY(-1px); }
 .data-page .export-panel { margin-top: 8px; }
-#export-modal .modal-inner { max-height: 86vh; overflow: auto; }
+.export-panel-drawer {
+    right: -540px;
+    width: min(520px, 96vw);
+    z-index: 55;
+    padding: 14px;
+}
+.export-panel-drawer.open { right: 0; }
+.export-panel-drawer .filter-grid {
+    grid-template-columns: 1fr;
+}
+.export-panel-drawer .checkbox-grid {
+    max-height: 32vh;
+}
+.export-panel-drawer .filter-field input,
+.export-panel-drawer .filter-field select {
+    padding: 8px 10px;
+    border: 1px solid var(--md-outline);
+    border-radius: 12px;
+    background: #fff;
+}
+#export-outcome { margin-top: 10px; }
 
 /* Dashboard live widgets */
 .dashboard-page .hint { font-size: 13px; color: #6b7280; margin: 8px 0; }

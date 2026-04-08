@@ -74,11 +74,14 @@
     <span class="export-fab-icon" aria-hidden="true">⬇</span>
 </button>
 
-<dialog id="export-modal" class="modal-dialog">
-    <div class="modal-inner">
+<div id="export-overlay" class="chart-filters-overlay" aria-hidden="true"></div>
+<aside id="export-modal" class="chart-filters-panel export-panel-drawer" aria-hidden="true">
+    <div class="panel-head">
         <h3>Экспорт данных</h3>
-        <p class="hint">Выберите период, таблицы и нужные поля. Экспорт без лимита пагинации.</p>
-        <form id="export-form">
+        <button type="button" class="btn secondary" id="export-cancel">Закрыть</button>
+    </div>
+    <p class="hint">Выберите период, таблицы и нужные поля. Экспорт без лимита пагинации.</p>
+    <form id="export-form">
             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
             <div class="filter-grid">
                 <label class="filter-field">Дата/время начала
@@ -134,18 +137,12 @@
                     <label class="chk"><input type="radio" name="export_format" value="excel"> Excel (1 файл, 3 листа)</label>
                 </div>
             </fieldset>
-        </form>
-        <div id="export-outcome"></div>
-        <div class="modal-actions">
-            <button type="button" class="btn secondary" id="export-cancel">Отмена</button>
-            <button type="button" class="btn" id="export-confirm-btn"
-                    hx-post="{{ url_for('data_blueprint.export_batch') }}"
-                    hx-include="#export-form"
-                    hx-target="#export-outcome"
-                    hx-swap="innerHTML">Экспортировать</button>
-        </div>
+    </form>
+    <div id="export-outcome"></div>
+    <div class="modal-actions">
+        <button type="button" class="btn" id="export-confirm-btn">Экспортировать</button>
     </div>
-</dialog>
+</aside>
 
 <script>
 (function () {
@@ -233,6 +230,15 @@
     syncColPanels();
 
     const modal = document.getElementById('export-modal');
+    const exportOverlay = document.getElementById('export-overlay');
+    const exportConfirmBtn = document.getElementById('export-confirm-btn');
+    const exportOutcome = document.getElementById('export-outcome');
+    function toggleExportModal(open) {
+        modal.classList.toggle('open', !!open);
+        exportOverlay.classList.toggle('open', !!open);
+        modal.setAttribute('aria-hidden', open ? 'false' : 'true');
+        exportOverlay.setAttribute('aria-hidden', open ? 'false' : 'true');
+    }
     function syncExportPanels() {
         const analogOn = !!document.querySelector('#export-form input[name="table_analog"]:checked');
         const discreteOn = !!document.querySelector('#export-form input[name="table_discrete"]:checked');
@@ -255,12 +261,35 @@
         document.getElementById('export-date-from').value = dataForm.querySelector('[name="date_from"]').value || '';
         document.getElementById('export-date-to').value = dataForm.querySelector('[name="date_to"]').value || '';
         document.getElementById('export-sort').value = dataForm.querySelector('[name="sort"]').value || 'desc';
-        document.getElementById('export-outcome').innerHTML = '';
+        exportOutcome.innerHTML = '';
         syncExportPanels();
-        modal.showModal();
+        toggleExportModal(true);
     });
     document.getElementById('export-cancel').addEventListener('click', function () {
-        modal.close();
+        toggleExportModal(false);
+    });
+    exportOverlay.addEventListener('click', function () {
+        toggleExportModal(false);
+    });
+    exportConfirmBtn.addEventListener('click', function () {
+        exportConfirmBtn.disabled = true;
+        exportConfirmBtn.textContent = 'Экспорт...';
+        exportOutcome.innerHTML = '';
+        fetch("{{ url_for('data_blueprint.export_batch') }}", {
+            method: 'POST',
+            body: new FormData(document.getElementById('export-form')),
+        })
+            .then(function (resp) { return resp.text(); })
+            .then(function (html) {
+                exportOutcome.innerHTML = html;
+            })
+            .catch(function (err) {
+                exportOutcome.innerHTML = '<div class="flash error">Ошибка экспорта: ' + String(err) + '</div>';
+            })
+            .finally(function () {
+                exportConfirmBtn.disabled = false;
+                exportConfirmBtn.textContent = 'Экспортировать';
+            });
     });
     syncExportPanels();
 })();
