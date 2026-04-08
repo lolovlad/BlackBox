@@ -20,6 +20,7 @@ dependencies = [
     "uvicorn>=0.35.0",
     "pydantic>=2.12.5",
     "simpleeval>=1.0.3",
+    "openpyxl>=3.1.5",
 ]
 
 [dependency-groups]

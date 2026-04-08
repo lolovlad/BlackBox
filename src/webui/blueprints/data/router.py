@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import csv
+import io
+import zipfile
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -71,6 +74,169 @@ def export_submit():
     rel = export_path.relative_to(current_app.static_folder)
     download_url = url_for("static", filename=str(rel).replace("\\", "/"))
     return render_template("data/_export_result.html", error=None, download_url=download_url)
+
+
+def _selected_export_tables() -> list[str]:
+    out: list[str] = []
+    if request.form.get("table_analog") == "1":
+        out.append("analog")
+    if request.form.get("table_discrete") == "1":
+        out.append("discrete")
+    if request.form.get("table_alarms") == "1":
+        out.append("alarms")
+    return out
+
+
+def _normalize_export_range(date_from: datetime | None, date_to: datetime | None) -> tuple[datetime | None, datetime | None]:
+    if date_from is not None and date_to is not None and date_from > date_to:
+        return date_to, date_from
+    return date_from, date_to
+
+
+def _build_rows_for_export(
+    *,
+    table: str,
+    rows_db: list[Any],
+    analog_keys: list[str],
+    discrete_keys: list[str],
+) -> tuple[list[str], list[list[Any]]]:
+    if table == "alarms":
+        headers = ["Дата", "Время", "Название"]
+        body = [
+            [
+                item.created_at.strftime("%Y-%m-%d"),
+                item.created_at.strftime("%H:%M:%S"),
+                item.name,
+            ]
+            for item in rows_db
+        ]
+        return headers, body
+
+    if table == "analog":
+        headers = ["Дата", "Время", *analog_keys]
+        body: list[list[Any]] = []
+        for item in rows_db:
+            processed = decode_to_processed(item.date)
+            analog, _ = analog_discrete_for_csv(processed)
+            body.append(
+                [
+                    item.created_at.strftime("%Y-%m-%d"),
+                    item.created_at.strftime("%H:%M:%S"),
+                    *[analog.get(k, "") for k in analog_keys],
+                ]
+            )
+        return headers, body
+
+    headers = ["Дата", "Время", *discrete_keys]
+    body = []
+    for item in rows_db:
+        processed = decode_to_processed(item.date)
+        _, discrete = analog_discrete_for_csv(processed)
+        body.append(
+            [
+                item.created_at.strftime("%Y-%m-%d"),
+                item.created_at.strftime("%H:%M:%S"),
+                *[1 if bool(discrete.get(k, False)) else 0 for k in discrete_keys],
+            ]
+        )
+    return headers, body
+
+
+@data_router.route("/export/batch", methods=["POST"])
+@login_required
+def export_batch():
+    tables = _selected_export_tables()
+    if not tables:
+        return render_template("data/_export_result.html", error="Выберите хотя бы одну таблицу для экспорта.", download_url=None)
+
+    export_format = (request.form.get("export_format") or "csv_zip").strip().lower()
+    if export_format not in ("csv_zip", "excel"):
+        return render_template("data/_export_result.html", error="Некорректный формат экспорта.", download_url=None)
+
+    date_from, date_to = _normalize_export_range(
+        _parse_dt_local(request.form.get("date_from")),
+        _parse_dt_local(request.form.get("date_to")),
+    )
+    sort_desc = (request.form.get("sort") or "desc").lower() != "asc"
+    analog_keys = request.form.getlist("analog_col_export")
+    discrete_keys = request.form.getlist("discrete_col_export")
+    if "analog" in tables and not analog_keys:
+        return render_template("data/_export_result.html", error="Для таблицы «Аналоги» выберите хотя бы одно поле.", download_url=None)
+    if "discrete" in tables and not discrete_keys:
+        return render_template("data/_export_result.html", error="Для таблицы «Дискреты» выберите хотя бы одно поле.", download_url=None)
+
+    repo = DataRepository(current_app.extensions["session_factory"])
+    collector = current_app.extensions["modbus_collector"]
+    if "alarms" in tables and not collector._alarms_enabled:
+        return render_template(
+            "data/_export_result.html",
+            error="Таблица аварий недоступна (нет таблицы в БД). Выполните миграции.",
+            download_url=None,
+        )
+
+    static_csv_dir: Path = current_app.extensions["static_csv_dir"]
+    static_csv_dir.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    dataset: dict[str, tuple[list[str], list[list[Any]]]] = {}
+    for table in tables:
+        if table == "analog":
+            rows_db = repo.list_analogs(created_from=date_from, created_to=date_to, sort_desc=sort_desc, offset=0, limit=None)
+        elif table == "discrete":
+            rows_db = repo.list_discretes(
+                created_from=date_from,
+                created_to=date_to,
+                sort_desc=sort_desc,
+                offset=0,
+                limit=None,
+            )
+        else:
+            rows_db = repo.list_alarms(created_from=date_from, created_to=date_to, sort_desc=sort_desc, offset=0, limit=None)
+        dataset[table] = _build_rows_for_export(
+            table=table,
+            rows_db=rows_db,
+            analog_keys=analog_keys,
+            discrete_keys=discrete_keys,
+        )
+
+    if export_format == "csv_zip":
+        out_path = static_csv_dir / f"export_package_{stamp}.zip"
+        with zipfile.ZipFile(out_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+            for table in tables:
+                headers, body = dataset[table]
+                sio = io.StringIO()
+                writer = csv.writer(sio, delimiter=";")
+                writer.writerow(headers)
+                writer.writerows(body)
+                zf.writestr(f"{table}.csv", sio.getvalue().encode("utf-8-sig"))
+        rel = out_path.relative_to(current_app.static_folder)
+        return render_template(
+            "data/_export_result.html",
+            error=None,
+            download_url=url_for("static", filename=str(rel).replace("\\", "/")),
+        )
+
+    try:
+        from openpyxl import Workbook
+    except Exception:
+        return render_template(
+            "data/_export_result.html",
+            error="Для Excel-экспорта требуется пакет openpyxl. Установите зависимость и повторите.",
+            download_url=None,
+        )
+
+    wb = Workbook()
+    wb.remove(wb.active)
+    sheet_title = {"analog": "Аналоги", "discrete": "Дискреты", "alarms": "Аварии"}
+    for table in tables:
+        ws = wb.create_sheet(sheet_title.get(table, table))
+        headers, body = dataset[table]
+        ws.append(headers)
+        for row in body:
+            ws.append(row)
+    out_path = static_csv_dir / f"export_package_{stamp}.xlsx"
+    wb.save(out_path)
+    rel = out_path.relative_to(current_app.static_folder)
+    return render_template("data/_export_result.html", error=None, download_url=url_for("static", filename=str(rel).replace("\\", "/")))
 
 
 def _parse_dt_local(raw: str | None) -> datetime | None:
