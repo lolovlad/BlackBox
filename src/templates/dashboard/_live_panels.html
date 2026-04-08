@@ -132,31 +132,19 @@
     <div class="monitor-disks">
         <h4>Подключенные диски</h4>
         {% if system_monitor.disks %}
-            <div class="table-wrap monitor-disks-table">
-                <table>
-                    <thead>
-                    <tr>
-                        <th>Устройство</th>
-                        <th>Точка монтирования</th>
-                        <th>ФС</th>
-                        <th>Занято</th>
-                        <th>Использование</th>
-                        <th>Свободно</th>
-                    </tr>
-                    </thead>
-                    <tbody>
-                    {% for d in system_monitor.disks %}
-                        <tr>
-                            <td>{{ d.device or "-" }}</td>
-                            <td>{{ d.mount }}</td>
-                            <td>{{ d.fstype or "-" }}</td>
-                            <td>{{ d.used_gb }} / {{ d.total_gb }} ГБ</td>
-                            <td>{{ d.percent }}%</td>
-                            <td>{{ d.free_gb }} ГБ</td>
-                        </tr>
-                    {% endfor %}
-                    </tbody>
-                </table>
+            <div class="monitor-disk-grid">
+                {% for d in system_monitor.disks %}
+                    <div class="monitor-disk-card">
+                        <div class="monitor-disk-head">
+                            <strong>{{ d.device or "-" }}</strong>
+                            <span>{{ d.percent }}%</span>
+                        </div>
+                        <div class="monitor-disk-mount">{{ d.mount }}</div>
+                        <div class="monitor-disk-row">ФС: {{ d.fstype or "-" }}</div>
+                        <div class="monitor-disk-row">Занято: {{ d.used_gb }} / {{ d.total_gb }} ГБ</div>
+                        <div class="monitor-disk-row">Свободно: {{ d.free_gb }} ГБ</div>
+                    </div>
+                {% endfor %}
             </div>
         {% else %}
             <p class="hint">Список дисков недоступен.</p>

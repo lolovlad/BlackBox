@@ -401,8 +401,45 @@ th { background: #c3cce0; color: #2d3540; font-weight: 600; }
     margin: 0 0 8px;
     font-size: 14px;
 }
-.monitor-disks-table {
-    max-height: 260px;
+.monitor-disk-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+    gap: 10px;
+}
+.monitor-disk-card {
+    border: 1px solid #e5e7eb;
+    border-radius: 10px;
+    padding: 10px 12px;
+    background: #fff;
+}
+.monitor-disk-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    margin-bottom: 4px;
+}
+.monitor-disk-head strong {
+    font-size: 13px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.monitor-disk-head span {
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--md-primary);
+}
+.monitor-disk-mount {
+    font-size: 12px;
+    color: #6b7280;
+    margin-bottom: 6px;
+    word-break: break-all;
+}
+.monitor-disk-row {
+    font-size: 12px;
+    color: #374151;
+    margin-top: 2px;
 }
 
 /* System settings page */
