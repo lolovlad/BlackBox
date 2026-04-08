@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import base64
+import binascii
 import csv
 import io
+import json
 import zipfile
 from datetime import datetime
 from pathlib import Path
@@ -20,7 +23,7 @@ from src.webui.modbus_service import analog_discrete_for_csv, decode_to_processe
 from src.webui.paths import TEMPLATES_DIR
 from src.webui.repositories.data_repository import DataRepository
 from src.webui.services.data_service import TABLE_PAGE_SIZE, DataService, parse_data_filter
-from src.webui.timezone_utils import format_in_configured_timezone
+from src.webui.timezone_utils import format_in_configured_timezone, now_in_configured_timezone_naive
 
 data_router = Blueprint("data", __name__, url_prefix="/data", template_folder=str(TEMPLATES_DIR))
 DATETIME_UI_FORMAT = "%d.%m.%Y %H:%M:%S"
@@ -264,12 +267,34 @@ def charts_page():
 
 
 def _requested_chart_columns(table: str) -> list[str]:
-    requested = request.args.getlist("analog_col") if table == "analog" else request.args.getlist("discrete_col")
+    requested: list[str]
+    raw_b64 = request.args.get("selected_col_b64")
+    if raw_b64:
+        requested = _decode_selected_columns(raw_b64)
+    else:
+        requested = request.args.getlist("analog_col") if table == "analog" else request.args.getlist("discrete_col")
     if table == "analog":
         allowed = set(all_analog_keys())
     else:
         allowed = set(all_discrete_keys())
     return [col for col in requested if col in allowed]
+
+
+def _decode_selected_columns(raw: str | None) -> list[str]:
+    if raw is None:
+        return []
+    text = str(raw).strip()
+    if not text:
+        return []
+    padded = text + ("=" * ((4 - len(text) % 4) % 4))
+    try:
+        decoded = base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8")
+        payload = json.loads(decoded)
+        if not isinstance(payload, list):
+            return []
+        return [str(v) for v in payload]
+    except (ValueError, UnicodeDecodeError, binascii.Error):
+        return []
 
 
 def _collect_second_points(rows: list[Any], table: str, columns: list[str]) -> list[dict[str, Any]]:
@@ -330,7 +355,7 @@ def charts_api_init():
 
     realtime = date_from is None and date_to is None
     if realtime:
-        now = datetime.now()
+        now = now_in_configured_timezone_naive()
         date_from = now.replace(hour=0, minute=0, second=0, microsecond=0)
         date_to = now
 
@@ -366,7 +391,7 @@ def charts_api_update():
     columns = _requested_chart_columns(table)
     since = _parse_since(request.args.get("since"))
 
-    now = datetime.now()
+    now = now_in_configured_timezone_naive()
     day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
     created_from = since if since is not None else day_start
     if created_from < day_start:

@@ -131,9 +131,13 @@
         q.set('table', table);
         q.set('date_from', form.querySelector('[name="date_from"]').value);
         q.set('date_to', form.querySelector('[name="date_to"]').value);
-        selectedColumns(table).forEach(function (col) {
-            q.append(table === 'analog' ? 'analog_col' : 'discrete_col', col);
-        });
+        var selected = selectedColumns(table);
+        var jsonCols = JSON.stringify(selected);
+        var encoded = btoa(unescape(encodeURIComponent(jsonCols)))
+            .replace(/\+/g, '-')
+            .replace(/\//g, '_')
+            .replace(/=+$/g, '');
+        q.set('selected_col_b64', encoded);
         if (includeSince && lastTs) q.set('since', lastTs);
         return q;
     }
