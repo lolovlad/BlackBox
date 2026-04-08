@@ -66,5 +66,6 @@ class EmergencyConditions(db.Model, DeleteMixin):
 class Emergency(db.Model, DeleteMixin):
     __tablename__ = "emergency"
     datetime: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     id_emergency_condition: Mapped[int] = mapped_column(ForeignKey("emergency_conditions.id"), nullable=False)
     emergency_condition: Mapped[EmergencyConditions] = relationship(back_populates="emergencies")

@@ -20,8 +20,9 @@ from src.webui.blueprints.auth import auth_router
 from src.webui.blueprints.data import data_router
 from src.webui.blueprints.main import main_router
 from src.webui.extensions import csrf, login_manager, server_session
-from src.webui.modbus_service import ModbusCollector, RuntimeConfig, reload_settings_cache
+from src.webui.modbus_service import RuntimeConfig, reload_settings_cache
 from src.webui.paths import SRC_DIR, STATIC_DIR, TEMPLATES_DIR
+from src.webui.reader_supervisor import ReaderSupervisor
 from src.webui.system_settings import ENV_DEFAULTS, ensure_env_file, load_env_into_os
 
 logger = logging.getLogger(__name__)
@@ -167,7 +168,7 @@ def create_app() -> Flask:
 
         session_factory = sessionmaker(bind=db.engine, autoflush=False, autocommit=False, expire_on_commit=False)
 
-    collector = ModbusCollector(session_factory, config, alarms_enabled=alarms_enabled)
+    collector = ReaderSupervisor(runtime=config, alarms_enabled=alarms_enabled, instance_dir=instance_dir)
     if os.getenv("DISABLE_MODBUS_COLLECTOR", "0") != "1" and not missing_required:
         collector.start()
         atexit.register(collector.stop)

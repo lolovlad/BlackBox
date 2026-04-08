@@ -216,6 +216,7 @@ def emergency_rule_add():
         return redirect(url_for("main_blueprint.settings"))
     er_repo = EmergencyRepository(current_app.extensions["session_factory"])
     er_repo.create_condition(name=name, condition=condition)
+    current_app.extensions["modbus_collector"].restart()
     flash("Правило аварии сохранено.", "success")
     return redirect(url_for("main_blueprint.settings"))
 
@@ -235,6 +236,7 @@ def emergency_rule_edit(rule_id: int):
         return redirect(url_for("main_blueprint.settings"))
     er_repo = EmergencyRepository(current_app.extensions["session_factory"])
     if er_repo.update_condition(condition_id=rule_id, name=name, condition=condition):
+        current_app.extensions["modbus_collector"].restart()
         flash("Правило обновлено.", "success")
     else:
         flash("Правило не найдено.", "error")
@@ -246,6 +248,7 @@ def emergency_rule_edit(rule_id: int):
 def emergency_rule_delete(rule_id: int):
     er_repo = EmergencyRepository(current_app.extensions["session_factory"])
     if er_repo.soft_delete_condition(rule_id):
+        current_app.extensions["modbus_collector"].restart()
         flash("Правило помечено удалённым.", "success")
     else:
         flash("Правило не найдено.", "error")

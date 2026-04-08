@@ -186,6 +186,26 @@ def validate_emergency_rule_expression(
     return True, None
 
 
+def evaluate_emergency_rule_expression(expr: str, *, processed: dict[str, Any]) -> tuple[bool, bool, str | None]:
+    """Выполняет правило на реальном срезе данных."""
+    text = (expr or "").strip()
+    if not text:
+        return False, False, "Пустое выражение правила."
+    try:
+        names = _flat_field_names_to_eval_names(dict(processed))
+    except ValueError as exc:
+        return False, False, str(exc)
+    allowed_funcs = {n: getattr(builtins, n) for n in _ALLOWED_CALL_NAMES if hasattr(builtins, n)}
+    s = SimpleEval(names=names, functions=allowed_funcs)
+    try:
+        result = s.eval(text)
+    except Exception as exc:  # noqa: BLE001
+        return False, False, f"Ошибка вычисления правила: {exc}"
+    if not isinstance(result, bool):
+        return False, False, "Правило должно возвращать bool."
+    return True, result, None
+
+
 def _dict_to_namespace(d: dict[str, Any]) -> Any:
     fields: dict[str, Any] = {}
     for kk, vv in d.items():

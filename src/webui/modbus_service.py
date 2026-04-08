@@ -2,20 +2,23 @@ from __future__ import annotations
 
 import json
 import logging
+import queue
 import struct
 import threading
 import time
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 import minimalmodbus
 from modbus_acquire.instrument import build_instrument
+from sqlalchemy import select
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import sessionmaker
 
-from src.database import Alarms, Samples
+from src.database import Alarms, Emergency, EmergencyConditions, Samples
+from src.webui.emergency_rule_validation import evaluate_emergency_rule_expression
 
 logger = logging.getLogger(__name__)
 SETTINGS_PATH = Path("settings/settings.json")
@@ -35,27 +38,16 @@ class RuntimeConfig:
 
 
 class SettingsCache:
-    def __init__(self, path: Path, check_interval_sec: float = 1.0) -> None:
+    def __init__(self, path: Path) -> None:
         self._path = path
-        self._check_interval_sec = check_interval_sec
         self._lock = threading.Lock()
         self._cached: dict[str, Any] | None = None
-        self._mtime_ns: int | None = None
-        self._last_check_monotonic = 0.0
 
     def get(self, *, force_reload: bool = False) -> dict[str, Any]:
-        now = time.monotonic()
         with self._lock:
-            should_check = force_reload or self._cached is None or (
-                now - self._last_check_monotonic >= self._check_interval_sec
-            )
-            if should_check:
-                current_mtime_ns = self._path.stat().st_mtime_ns
-                if force_reload or self._cached is None or self._mtime_ns != current_mtime_ns:
-                    with self._path.open("r", encoding="utf-8") as f:
-                        self._cached = json.load(f)
-                    self._mtime_ns = current_mtime_ns
-                self._last_check_monotonic = now
+            if force_reload or self._cached is None:
+                with self._path.open("r", encoding="utf-8") as f:
+                    self._cached = json.load(f)
             if self._cached is None:
                 raise RuntimeError("Settings cache is not initialized")
             return self._cached
@@ -243,25 +235,46 @@ class ModbusCollector:
         self._ram_buffer: list[dict[str, Any]] = []
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
+        self._events_queue: queue.Queue[tuple[datetime, dict[str, Any]]] = queue.Queue(
+            maxsize=max(100, self._config.ram_batch_size * 30)
+        )
+        self._events_stop_event = threading.Event()
+        self._events_thread: threading.Thread | None = None
+        self._rules_lock = threading.Lock()
+        self._rules_snapshot: list[tuple[int, str]] = []
 
     def start(self) -> None:
         with self._thread_lock:
             if self._thread is not None and self._thread.is_alive():
                 return
+            while not self._events_queue.empty():
+                try:
+                    self._events_queue.get_nowait()
+                    self._events_queue.task_done()
+                except queue.Empty:
+                    break
+            self._rules_snapshot = self._load_active_rules_snapshot()
             self._stop_event.clear()
+            self._events_stop_event.clear()
             self._thread = threading.Thread(target=self._loop, daemon=True)
+            self._events_thread = threading.Thread(target=self._events_loop, daemon=True)
             self._thread.start()
+            self._events_thread.start()
 
     def stop(self) -> None:
         self._stop_event.set()
+        self._events_stop_event.set()
         self.flush_remaining()
         with self._thread_lock:
             if self._thread is not None and self._thread.is_alive():
                 self._thread.join(timeout=3)
+            if self._events_thread is not None and self._events_thread.is_alive():
+                self._events_thread.join(timeout=3)
 
     def restart(self, new_config: RuntimeConfig | None = None) -> None:
         if new_config is not None:
             self._config = new_config
+        reload_settings_cache()
         self.stop()
         self.start()
 
@@ -351,14 +364,19 @@ class ModbusCollector:
                             )
                             last_error_log = now
 
-                self._append({"created_at": datetime.now(), "sources": source_values})
+                created_at = datetime.now()
+                processed = parse_fields(config, source_values)
+                self._append({"created_at": created_at, "sources": source_values, "processed": processed})
+                try:
+                    self._events_queue.put_nowait((created_at, dict(processed)))
+                except queue.Full:
+                    logger.warning("Emergency queue is full; dropping snapshot event")
                 if had_error:
                     consecutive_failures += 1
                 else:
                     consecutive_failures = 0
                 now = time.monotonic()
                 if now - last_success_log >= 5.0:
-                    processed = parse_fields(config, source_values)
                     analog_snapshot, _ = analog_discrete_for_csv(processed)
                     # Show a compact health snapshot for operator visibility.
                     logger.info(
@@ -405,7 +423,10 @@ class ModbusCollector:
             if self._alarms_enabled:
                 for sample in batch:
                     created_at = sample["created_at"]
-                    active_alarms = parse_fields(_load_settings(), dict(sample.get("sources", {}))).get("active_alarms", [])
+                    processed = sample.get("processed")
+                    if not isinstance(processed, dict):
+                        processed = parse_fields(_load_settings(), dict(sample.get("sources", {})))
+                    active_alarms = processed.get("active_alarms", [])
                     if not isinstance(active_alarms, list):
                         continue
                     for alarm_name in active_alarms:
@@ -442,5 +463,100 @@ class ModbusCollector:
             self._ram_buffer.clear()
         if batch:
             self._flush(batch)
+
+    def _events_loop(self) -> None:
+        logger.info("Emergency events worker started")
+        while not self._events_stop_event.is_set() or not self._events_queue.empty():
+            try:
+                created_at, processed = self._events_queue.get(timeout=0.5)
+            except queue.Empty:
+                continue
+            try:
+                with self._rules_lock:
+                    rules_snapshot = list(self._rules_snapshot)
+                if rules_snapshot:
+                    self._process_rule_events(created_at=created_at, processed=processed, rules_snapshot=rules_snapshot)
+            except Exception:
+                logger.exception("Emergency events worker failed to process snapshot")
+            finally:
+                self._events_queue.task_done()
+        logger.info("Emergency events worker stopped")
+
+    def _load_active_rules_snapshot(self) -> list[tuple[int, str]]:
+        with self._session_factory() as session:
+            stmt = (
+                select(EmergencyConditions)
+                .where(EmergencyConditions.is_deleted.is_(False))
+                .order_by(EmergencyConditions.id.asc())
+            )
+            rows = list(session.execute(stmt).scalars().all())
+            return [(row.id, row.condition) for row in rows]
+
+    def _process_rule_events(
+        self,
+        *,
+        created_at: datetime,
+        processed: dict[str, Any],
+        rules_snapshot: list[tuple[int, str]],
+    ) -> None:
+        session = self._session_factory()
+        changed = False
+        try:
+            for condition_id, rule_expr in rules_snapshot:
+                ok, fired, err = evaluate_emergency_rule_expression(rule_expr, processed=processed)
+                if not ok:
+                    logger.warning("Emergency rule %s evaluation error: %s", condition_id, err)
+                    continue
+                if not fired:
+                    continue
+                changed = self._upsert_emergency_event(
+                    session=session,
+                    condition_id=condition_id,
+                    fired_at=created_at,
+                ) or changed
+            if changed:
+                session.commit()
+        except Exception:
+            session.rollback()
+            raise
+        finally:
+            session.close()
+
+    def _upsert_emergency_event(self, *, session, condition_id: int, fired_at: datetime) -> bool:
+        stmt = (
+            select(Emergency)
+            .where(
+                Emergency.id_emergency_condition == condition_id,
+                Emergency.is_deleted.is_(False),
+            )
+            .order_by(Emergency.datetime.desc())
+            .limit(1)
+        )
+        last = session.execute(stmt).scalar_one_or_none()
+        if last is None:
+            session.add(
+                Emergency(
+                    datetime=fired_at,
+                    ended_at=fired_at,
+                    id_emergency_condition=condition_id,
+                )
+            )
+            return True
+        last_end = last.ended_at or last.datetime
+        if fired_at < last.datetime:
+            return False
+        if fired_at - last_end <= timedelta(minutes=10):
+            if last.ended_at is None or fired_at > last.ended_at:
+                last.ended_at = fired_at
+                return True
+            return False
+        session.add(
+            Emergency(
+                datetime=fired_at,
+                ended_at=fired_at,
+                id_emergency_condition=condition_id,
+            )
+        )
+        return True
 
 
