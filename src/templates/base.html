@@ -5,26 +5,35 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{% block title %}BlackBox{% endblock %}</title>
     <script src="{{ url_for('static', filename='vendor/htmx.min.js') }}"></script>
+    <link rel="stylesheet" href="{{ url_for('static', filename='vendor/tailwind.min.css') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='css/app.css') }}">
 </head>
-<body>
-<header class="topbar">
-    <h1>BlackBox{% if display_username %}<span class="topbar-user">{{ display_username }}</span>{% endif %}</h1>
-    <nav>
+<body class="min-h-screen bg-gray-100 text-gray-800 antialiased">
+<header class="sticky top-0 z-40 border-b border-gray-200 bg-white">
+    <div class="mx-auto flex max-w-7xl items-center justify-between gap-3 px-4 py-3">
+    <h1 class="flex items-center gap-2 text-lg font-semibold tracking-tight">
+        <span class="inline-flex h-8 w-8 items-center justify-center rounded-lg bg-indigo-700 text-white">B</span>
+        <span>BlackBox</span>
+        {% if display_username %}
+            <span class="rounded-full bg-gray-100 px-2 py-1 text-xs font-medium text-gray-600">{{ display_username }}</span>
+        {% endif %}
+    </h1>
+    <nav class="flex flex-wrap items-center gap-2">
         {% for item in nav_menu %}
-            <a href="{{ url_for(item.endpoint) }}">{{ item.title }}</a>
+            <a class="rounded-full border border-gray-200 bg-white px-3 py-1 text-sm font-medium text-gray-700 transition hover:border-indigo-400 hover:text-indigo-700" href="{{ url_for(item.endpoint) }}">{{ item.title }}</a>
         {% endfor %}
         {% if display_username %}
-            <a href="{{ url_for('auth_blueprint.logout') }}">Выход</a>
+            <a class="rounded-full bg-orange-500 px-3 py-1 text-sm font-semibold text-white transition hover:bg-orange-600" href="{{ url_for('auth_blueprint.logout') }}">Выход</a>
         {% endif %}
     </nav>
+    </div>
 </header>
-<main class="page">
+<main class="mx-auto w-full max-w-7xl px-4 py-4">
     {% with messages = get_flashed_messages(with_categories=true) %}
         {% if messages %}
-            <div class="flash-wrap">
+            <div class="mb-3 space-y-2">
             {% for category, message in messages %}
-                <div class="flash {{ category }}">{{ message }}</div>
+                <div class="rounded-xl px-4 py-3 text-sm font-medium {% if category == 'error' %}bg-red-100 text-red-800{% else %}bg-emerald-100 text-emerald-800{% endif %}">{{ message }}</div>
             {% endfor %}
             </div>
         {% endif %}
