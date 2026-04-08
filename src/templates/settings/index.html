@@ -85,7 +85,6 @@
 
     <fieldset>
         <legend>Правила аварий по условиям</legend>
-        <p class="hint">Условие — выражение для <a href="https://pypi.org/project/simpleeval/" rel="noopener noreferrer">simpleeval</a>: сравнения, <code>and</code>/<code>or</code>/<code>not</code>, <code>in</code> для проверки текста аварии в списке bitfield. Имена переменных должны совпадать с полями <code>name</code> в settings.json (включая имена с точками, например <code>Gov.Reg.Value</code>). Для дискретов и аналогов — те же имена; для ошибок в <code>in</code> — строки из секций <code>bits</code> у bitfield. Допустимы функции: abs, min, max, round, len.</p>
 
         {% if emergency_conditions %}
         <div class="table-wrap">
@@ -158,6 +157,7 @@
 <dialog id="rules-help-modal" class="rules-help-modal" x-ref="rulesHelpModal">
     <form method="dialog" class="rules-help-modal__panel">
         <h3>Как писать правила аварий</h3>
+        <p class="hint">Условие — выражение для <a href="https://pypi.org/project/simpleeval/" rel="noopener noreferrer">simpleeval</a>: сравнения, <code>and</code>/<code>or</code>/<code>not</code>, <code>in</code> для проверки текста аварии в списке bitfield. Имена переменных должны совпадать с полями <code>name</code> в <code>settings.json</code> (включая имена с точками, например <code>Gov.Reg.Value</code>). Для дискретов и аналогов — те же имена; для ошибок в <code>in</code> — строки из секций <code>bits</code> у bitfield. Допустимы функции: <code>abs</code>, <code>min</code>, <code>max</code>, <code>round</code>, <code>len</code>.</p>
         <p>Правило должно возвращать <code>True</code> или <code>False</code>.</p>
         <ul>
             <li>Проверка активной аварии по тексту: <code>'1670 EmergStop DI24' in active_alarms</code></li>
@@ -177,10 +177,15 @@
 function settingsPage() {
     return {
         openRulesHelp() {
-            const modal = this.$refs.rulesHelpModal;
-            if (modal && typeof modal.showModal === "function") {
-                modal.showModal();
+            const modal = this.$refs?.rulesHelpModal || document.getElementById("rules-help-modal");
+            if (!modal) {
+                return;
             }
+            if (typeof modal.showModal === "function") {
+                modal.showModal();
+                return;
+            }
+            modal.setAttribute("open", "open");
         },
     };
 }
