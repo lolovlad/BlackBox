@@ -52,24 +52,15 @@
                     <small class="field-help">Размер буфера записи в БД. Диапазон: 1..10000.</small>
                 </label>
                 <label class="filter-field">APP_TIMEZONE
-                    {% set tz_current = (env_values.APP_TIMEZONE or 'UTC') %}
                     {% set tz_values = timezone_choices | map(attribute=0) | list %}
-                    {% set tz_is_custom = tz_current not in tz_values %}
+                    {% set tz_current_raw = (env_values.APP_TIMEZONE or 'Europe/Moscow') %}
+                    {% set tz_current = tz_current_raw if tz_current_raw in tz_values else 'Europe/Moscow' %}
                     <select name="APP_TIMEZONE" id="timezone-select">
                         {% for tz_value, tz_label in timezone_choices %}
                         <option value="{{ tz_value }}" {% if tz_current == tz_value %}selected{% endif %}>{{ tz_label }}</option>
                         {% endfor %}
-                        <option value="__custom__" {% if tz_is_custom %}selected{% endif %}>Свой timezone...</option>
                     </select>
-                    <input
-                        type="text"
-                        name="APP_TIMEZONE_CUSTOM"
-                        id="timezone-custom"
-                        value="{% if tz_is_custom %}{{ tz_current }}{% endif %}"
-                        placeholder="Например: Asia/Bishkek"
-                        {% if not tz_is_custom %}style="display:none;"{% endif %}
-                    >
-                    <small class="field-help">Выберите часовой пояс или укажите вручную IANA-значение.</small>
+                    <small class="field-help">Часовые пояса РФ (UTC+2 ... UTC+12).</small>
                 </label>
             </div>
         </fieldset>
@@ -186,20 +177,7 @@
 })();
 
 (() => {
-    const tzSelect = document.getElementById("timezone-select");
-    const tzCustom = document.getElementById("timezone-custom");
-    if (!tzSelect || !tzCustom) {
-        return;
-    }
-    const syncTimezoneField = () => {
-        const isCustom = tzSelect.value === "__custom__";
-        tzCustom.style.display = isCustom ? "" : "none";
-        if (!isCustom) {
-            tzCustom.value = "";
-        }
-    };
-    tzSelect.addEventListener("change", syncTimezoneField);
-    syncTimezoneField();
+    // Reserved for settings page client-side behavior.
 })();
 </script>
 {% endblock %}

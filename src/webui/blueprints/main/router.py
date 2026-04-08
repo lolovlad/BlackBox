@@ -45,22 +45,17 @@ def _effective_parser_settings_path() -> Path:
 def _settings_page_context(env_values: dict, parser_text: str) -> dict:
     er_repo = EmergencyRepository(current_app.extensions["session_factory"])
     timezone_choices = [
-        ("UTC", "UTC"),
-        ("Europe/Moscow", "Europe/Moscow"),
-        ("Europe/Kaliningrad", "Europe/Kaliningrad"),
-        ("Europe/Samara", "Europe/Samara"),
-        ("Asia/Yekaterinburg", "Asia/Yekaterinburg"),
-        ("Asia/Omsk", "Asia/Omsk"),
-        ("Asia/Krasnoyarsk", "Asia/Krasnoyarsk"),
-        ("Asia/Irkutsk", "Asia/Irkutsk"),
-        ("Asia/Yakutsk", "Asia/Yakutsk"),
-        ("Asia/Vladivostok", "Asia/Vladivostok"),
-        ("Asia/Magadan", "Asia/Magadan"),
-        ("Asia/Kamchatka", "Asia/Kamchatka"),
-        ("Asia/Almaty", "Asia/Almaty"),
-        ("Asia/Tashkent", "Asia/Tashkent"),
-        ("Europe/Berlin", "Europe/Berlin"),
-        ("America/New_York", "America/New_York"),
+        ("Europe/Kaliningrad", "UTC+2  Europe/Kaliningrad"),
+        ("Europe/Moscow", "UTC+3  Europe/Moscow"),
+        ("Europe/Samara", "UTC+4  Europe/Samara"),
+        ("Asia/Yekaterinburg", "UTC+5  Asia/Yekaterinburg"),
+        ("Asia/Omsk", "UTC+6  Asia/Omsk"),
+        ("Asia/Krasnoyarsk", "UTC+7  Asia/Krasnoyarsk"),
+        ("Asia/Irkutsk", "UTC+8  Asia/Irkutsk"),
+        ("Asia/Yakutsk", "UTC+9  Asia/Yakutsk"),
+        ("Asia/Vladivostok", "UTC+10 Asia/Vladivostok"),
+        ("Asia/Magadan", "UTC+11 Asia/Magadan"),
+        ("Asia/Kamchatka", "UTC+12 Asia/Kamchatka"),
     ]
     return {
         "env_values": env_values,
