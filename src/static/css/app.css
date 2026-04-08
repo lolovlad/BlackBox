@@ -511,6 +511,29 @@ th { background: #c3cce0; color: #2d3540; font-weight: 600; }
     display: grid;
     gap: 6px;
 }
+.rules-help-modal__panel #instruction-content {
+    max-height: min(70vh, 720px);
+    overflow: auto;
+    padding-right: 4px;
+}
+.rules-help-modal__panel #instruction-content p,
+.rules-help-modal__panel #instruction-content li {
+    overflow-wrap: anywhere;
+    word-break: break-word;
+}
+.rules-help-modal__panel #instruction-content pre {
+    max-width: 100%;
+    overflow: auto;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    background: #f8f9ff;
+    border: 1px solid var(--md-outline);
+    border-radius: 8px;
+    padding: 10px 12px;
+}
+.rules-help-modal__panel #instruction-content code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
 
 .parser-json {
     width: 100%;
