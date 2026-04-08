@@ -221,14 +221,26 @@ function chartsPage() {
     fetchInit() {
         const query = this.buildQuery(false);
         fetch(this.INIT_URL + '?' + query.toString())
-            .then(function (r) { return r.json(); })
-            .then((payload) => { this.setFullData(payload); this.restartPolling(); });
+            .then((r) => {
+                if (!r.ok) throw new Error('HTTP ' + r.status);
+                return r.json();
+            })
+            .then((payload) => { this.setFullData(payload); this.restartPolling(); })
+            .catch((err) => {
+                this.renderEmpty('Ошибка загрузки графика: ' + err.message);
+            });
     },
     fetchUpdate() {
         const query = this.buildQuery(true);
         fetch(this.UPDATE_URL + '?' + query.toString())
-            .then(function (r) { return r.json(); })
-            .then((payload) => { this.appendUpdates(payload); });
+            .then((r) => {
+                if (!r.ok) throw new Error('HTTP ' + r.status);
+                return r.json();
+            })
+            .then((payload) => { this.appendUpdates(payload); })
+            .catch(() => {
+                // Keep current chart state, next poll will retry.
+            });
     },
     restartPolling() {
         const form = document.getElementById('chart-form');
@@ -256,8 +268,8 @@ function chartsPage() {
         form.querySelectorAll('input[name="analog_col"]').forEach(function (el) { el.checked = true; });
         form.querySelectorAll('input[name="discrete_col"]').forEach(function (el) { el.checked = true; });
         form.querySelectorAll('.field-search').forEach(function (el) { el.value = ''; });
-        filterFieldList('analog_col', '');
-        filterFieldList('discrete_col', '');
+        this.filterFieldList('analog_col', '');
+        this.filterFieldList('discrete_col', '');
         this.syncColPanels();
         if (this.pollTimer) {
             clearInterval(this.pollTimer);
