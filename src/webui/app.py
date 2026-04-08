@@ -15,6 +15,7 @@ from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import joinedload, sessionmaker
 
 from src.database import User, db
+from src.database import Emergency, EmergencyConditions  # noqa: F401 — метаданные для Alembic / Flask-Migrate
 from src.webui.blueprints.auth import auth_router
 from src.webui.blueprints.data import data_router
 from src.webui.blueprints.main import main_router
@@ -79,6 +80,7 @@ def create_app() -> Flask:
 
     app.config.update(
         SECRET_KEY=os.getenv("SECRET_KEY", "change-me"),
+        PARSER_SETTINGS_PATH=os.getenv("PARSER_SETTINGS_PATH", "settings/settings.json"),
         SQLALCHEMY_DATABASE_URI=f"sqlite:///{db_file.as_posix()}",
         SQLALCHEMY_TRACK_MODIFICATIONS=False,
         PROPAGATE_EXCEPTIONS=True,
@@ -133,6 +135,7 @@ def create_app() -> Flask:
         role = tu.system_name if tu is not None else "user"
         menu = [
             {"endpoint": "main_blueprint.dashboard", "title": "Панель"},
+            {"endpoint": "main_blueprint.alarms_page", "title": "Аварии"},
             {"endpoint": "data_blueprint.page", "title": "Данные"},
             {"endpoint": "data_blueprint.charts_page", "title": "Графики"},
         ]

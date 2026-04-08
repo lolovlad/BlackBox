@@ -64,5 +64,50 @@
             <button type="submit" class="btn" name="action" value="save">Сохранить и применить</button>
         </div>
     </form>
+
+    <fieldset>
+        <legend>Правила аварий по условиям</legend>
+        <p class="hint">Условие — выражение для <a href="https://pypi.org/project/simpleeval/" rel="noopener noreferrer">simpleeval</a>: сравнения, <code>and</code>/<code>or</code>/<code>not</code>, <code>in</code> для проверки текста аварии в списке bitfield. Имена переменных должны совпадать с полями <code>name</code> в settings.json (включая имена с точками, например <code>Gov.Reg.Value</code>). Для дискретов и аналогов — те же имена; для ошибок в <code>in</code> — строки из секций <code>bits</code> у bitfield. Допустимы функции: abs, min, max, round, len.</p>
+
+        {% if emergency_conditions %}
+        <div class="table-wrap">
+            <table class="rules-table">
+                <thead>
+                <tr>
+                    <th>№</th>
+                    <th>Условие</th>
+                    <th></th>
+                </tr>
+                </thead>
+                <tbody>
+                {% for rule in emergency_conditions %}
+                <tr>
+                    <td>{{ rule.id }}</td>
+                    <td class="rule-condition-cell">{{ rule.condition }}</td>
+                    <td>
+                        <form method="post" action="{{ url_for('main_blueprint.emergency_rule_delete', rule_id=rule.id) }}" class="row">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                            <button type="submit" class="btn secondary">Удалить</button>
+                        </form>
+                    </td>
+                </tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <p class="hint">Правил пока нет.</p>
+        {% endif %}
+
+        <form method="post" action="{{ url_for('main_blueprint.emergency_rule_add') }}" class="settings-form" style="margin-top: 12px;">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <label class="filter-field">Условие
+                <textarea name="rule_condition" class="rule-expression" required spellcheck="false" placeholder="UbusL1L2 &gt; 400 or Engine_running"></textarea>
+            </label>
+            <div class="row actions">
+                <button type="submit" class="btn">Добавить правило</button>
+            </div>
+        </form>
+    </fieldset>
 </section>
 {% endblock %}

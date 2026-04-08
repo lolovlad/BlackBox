@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
 
 from flask import Blueprint, current_app, flash, redirect, render_template, request, url_for
 from flask_login import current_user, login_required
@@ -16,7 +17,9 @@ from src.webui.data_labels import (
     filter_valid_discrete,
 )
 from src.webui.paths import TEMPLATES_DIR
+from src.webui.emergency_rule_validation import validate_emergency_rule_expression
 from src.webui.repositories.data_repository import DataRepository
+from src.webui.repositories.emergency_repository import EmergencyRepository
 from src.webui.modbus_service import analog_discrete_for_csv, decode_to_processed
 from src.webui.modbus_service import reload_settings_cache
 from src.webui.system_settings import (
@@ -30,6 +33,21 @@ from src.webui.system_settings import (
 
 main_router = Blueprint("main", __name__, template_folder=str(TEMPLATES_DIR))
 DATETIME_UI_FORMAT = "%d.%m.%Y %H:%M:%S"
+
+
+def _effective_parser_settings_path() -> Path:
+    raw = current_app.config.get("PARSER_SETTINGS_PATH", "settings/settings.json")
+    p = Path(raw)
+    return p if p.is_absolute() else Path.cwd() / p
+
+
+def _settings_page_context(env_values: dict, parser_text: str) -> dict:
+    er_repo = EmergencyRepository(current_app.extensions["session_factory"])
+    return {
+        "env_values": env_values,
+        "parser_text": parser_text,
+        "emergency_conditions": er_repo.list_conditions(),
+    }
 
 
 @main_router.route("/", methods=["GET"])
@@ -57,17 +75,17 @@ def settings():
     env_path = current_app.extensions["env_path"]
     env_current = read_env_file(env_path)
     values = {k: env_current.get(k, ENV_DEFAULTS[k]) for k in ENV_DEFAULTS}
-    parser_path = current_app.config.get("PARSER_SETTINGS_PATH", "settings/settings.json")
-    with open(parser_path, "r", encoding="utf-8") as f:
+    parser_path = _effective_parser_settings_path()
+    with parser_path.open("r", encoding="utf-8") as f:
         parser_text = f.read()
-    return render_template("settings/index.html", env_values=values, parser_text=parser_text)
+    return render_template("settings/index.html", **_settings_page_context(values, parser_text))
 
 
 @main_router.route("/settings", methods=["POST"])
 @admin_required
 def settings_save():
     env_path = current_app.extensions["env_path"]
-    parser_path = current_app.config.get("PARSER_SETTINGS_PATH", "settings/settings.json")
+    parser_path = _effective_parser_settings_path()
     static_csv_dir = current_app.extensions["static_csv_dir"]
     collector = current_app.extensions["modbus_collector"]
 
@@ -87,17 +105,17 @@ def settings_save():
         uploaded = request.files.get("import_file")
         if uploaded is None or not uploaded.filename:
             flash("Выберите JSON-файл для импорта.", "error")
-            return render_template("settings/index.html", env_values=posted_env, parser_text=parser_text), 400
+            return render_template("settings/index.html", **_settings_page_context(posted_env, parser_text)), 400
         try:
             raw = uploaded.read().decode("utf-8")
             payload = json.loads(raw)
         except Exception as exc:
             flash(f"Ошибка чтения файла импорта: {exc}", "error")
-            return render_template("settings/index.html", env_values=posted_env, parser_text=parser_text), 400
+            return render_template("settings/index.html", **_settings_page_context(posted_env, parser_text)), 400
 
         if not isinstance(payload, dict):
             flash("Файл импорта должен быть JSON-объектом.", "error")
-            return render_template("settings/index.html", env_values=posted_env, parser_text=parser_text), 400
+            return render_template("settings/index.html", **_settings_page_context(posted_env, parser_text)), 400
 
         imported_env = dict(posted_env)
         env_block = payload.get("runtime") or payload.get("env") or payload
@@ -117,8 +135,7 @@ def settings_save():
             flash(f"Импортирован JSON, но parser-секция невалидна: {err}", "error")
             return render_template(
                 "settings/index.html",
-                env_values=imported_env,
-                parser_text=imported_parser_text,
+                **_settings_page_context(imported_env, imported_parser_text),
             ), 400
         try:
             _ = effective_runtime_from_env(static_csv_dir, imported_env)
@@ -126,28 +143,26 @@ def settings_save():
             flash(f"Импортирован JSON, но runtime-секция невалидна: {exc}", "error")
             return render_template(
                 "settings/index.html",
-                env_values=imported_env,
-                parser_text=imported_parser_text,
+                **_settings_page_context(imported_env, imported_parser_text),
             ), 400
 
         _ = parser_cfg_import
         flash("Импорт выполнен. Проверьте значения и нажмите 'Проверить' или 'Сохранить и применить'.", "success")
         return render_template(
             "settings/index.html",
-            env_values=imported_env,
-            parser_text=imported_parser_text,
+            **_settings_page_context(imported_env, imported_parser_text),
         )
 
     parser_cfg, err = validate_parser_json(parser_text)
     if err:
         flash(err, "error")
-        return render_template("settings/index.html", env_values=posted_env, parser_text=parser_text), 400
+        return render_template("settings/index.html", **_settings_page_context(posted_env, parser_text)), 400
 
     try:
         runtime = effective_runtime_from_env(static_csv_dir, posted_env)
     except Exception as exc:
         flash(f"Некорректные значения runtime: {exc}", "error")
-        return render_template("settings/index.html", env_values=posted_env, parser_text=parser_text), 400
+        return render_template("settings/index.html", **_settings_page_context(posted_env, parser_text)), 400
 
     # Avoid serial-port contention: stop background collector during active test.
     collector.stop()
@@ -155,16 +170,16 @@ def settings_save():
     if not ok:
         collector.start()
         flash(msg, "error")
-        return render_template("settings/index.html", env_values=posted_env, parser_text=parser_text), 400
+        return render_template("settings/index.html", **_settings_page_context(posted_env, parser_text)), 400
 
     if action == "test":
         collector.start()
         flash(msg, "success")
-        return render_template("settings/index.html", env_values=posted_env, parser_text=parser_text)
+        return render_template("settings/index.html", **_settings_page_context(posted_env, parser_text))
 
     # action == save: test already passed.
     write_env_file(env_path, posted_env)
-    with open(parser_path, "w", encoding="utf-8") as f:
+    with parser_path.open("w", encoding="utf-8") as f:
         f.write(parser_text.strip() + "\n")
 
     # Apply without full app restart.
@@ -175,6 +190,40 @@ def settings_save():
     collector.restart(new_config=runtime)
 
     flash("Настройки сохранены и применены. Процесс чтения перезапущен.", "success")
+    return redirect(url_for("main_blueprint.settings"))
+
+
+@main_router.route("/alarms", methods=["GET"])
+@login_required
+def alarms_page():
+    er_repo = EmergencyRepository(current_app.extensions["session_factory"])
+    emergency_rows = er_repo.list_recent_emergencies(limit=200)
+    return render_template("alarms/index.html", emergency_rows=emergency_rows)
+
+
+@main_router.route("/settings/emergency-rules", methods=["POST"])
+@admin_required
+def emergency_rule_add():
+    condition = (request.form.get("rule_condition") or "").strip()
+    parser_path = _effective_parser_settings_path()
+    ok, err = validate_emergency_rule_expression(condition, settings_path=parser_path)
+    if not ok:
+        flash(err or "Некорректное правило.", "error")
+        return redirect(url_for("main_blueprint.settings"))
+    er_repo = EmergencyRepository(current_app.extensions["session_factory"])
+    er_repo.create_condition(condition=condition)
+    flash("Правило аварии сохранено.", "success")
+    return redirect(url_for("main_blueprint.settings"))
+
+
+@main_router.route("/settings/emergency-rules/<int:rule_id>/delete", methods=["POST"])
+@admin_required
+def emergency_rule_delete(rule_id: int):
+    er_repo = EmergencyRepository(current_app.extensions["session_factory"])
+    if er_repo.delete_condition(rule_id):
+        flash("Правило удалено.", "success")
+    else:
+        flash("Правило не найдено.", "error")
     return redirect(url_for("main_blueprint.settings"))
 
 
