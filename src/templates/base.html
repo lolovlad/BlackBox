@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{% block title %}BlackBox{% endblock %}</title>
     <script src="{{ url_for('static', filename='vendor/htmx.min.js') }}"></script>
+    <script defer src="{{ url_for('static', filename='vendor/alpine.min.js') }}"></script>
     <link rel="stylesheet" href="{{ url_for('static', filename='vendor/tailwind.min.css') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='css/app.css') }}">
 </head>

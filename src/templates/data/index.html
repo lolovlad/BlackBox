@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}Данные{% endblock %}
 {% block content %}
-<section class="card data-page">
+<section class="card data-page" x-data="dataPage()" x-init="init()">
     <h2>Данные</h2>
     <form id="data-filter-form" onsubmit="return false;" lang="ru">
         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
@@ -50,7 +50,7 @@
 
         <div class="row actions">
             <button type="button" class="btn secondary" id="btn-refresh-table">Обновить таблицу</button>
-            <button type="button" class="btn secondary" id="btn-filter-reset">Сбросить</button>
+            <button type="button" class="btn secondary" id="btn-filter-reset" @click="resetFiltersToDefault()">Сбросить</button>
         </div>
     </form>
 
@@ -70,15 +70,15 @@
     </div>
 </section>
 
-<button type="button" class="export-fab" id="btn-export-open" title="Экспорт данных" aria-label="Экспорт данных">
+<button type="button" class="export-fab" id="btn-export-open" title="Экспорт данных" aria-label="Экспорт данных" @click="openExportModal()">
     <span class="export-fab-icon" aria-hidden="true">⬇</span>
 </button>
 
-<div id="export-overlay" class="chart-filters-overlay" aria-hidden="true"></div>
-<aside id="export-modal" class="chart-filters-panel export-panel-drawer" aria-hidden="true">
+<div id="export-overlay" class="chart-filters-overlay" aria-hidden="true" :class="{open: exportModalOpen}" @click="toggleExportModal(false)"></div>
+<aside id="export-modal" class="chart-filters-panel export-panel-drawer" aria-hidden="true" :class="{open: exportModalOpen}" :aria-hidden="exportModalOpen ? 'false' : 'true'">
     <div class="panel-head">
         <h3>Экспорт данных</h3>
-        <button type="button" class="btn secondary" id="export-cancel">Exit</button>
+        <button type="button" class="btn secondary" id="export-cancel" @click="toggleExportModal(false)">Exit</button>
     </div>
     <p class="hint">Выберите период, таблицы и нужные поля. Экспорт без лимита пагинации.</p>
     <form id="export-form">
@@ -140,158 +140,145 @@
     </form>
     <div id="export-outcome"></div>
     <div class="modal-actions">
-        <button type="button" class="btn" id="export-confirm-btn">Экспортировать</button>
+        <button type="button" class="btn" id="export-confirm-btn" @click="submitExport()" :disabled="exportLoading" x-text="exportLoading ? 'Экспорт...' : 'Экспортировать'"></button>
     </div>
 </aside>
 
 <script>
-(function () {
-    function syncColPanels() {
-        const tab = document.querySelector('input[name="active_tab"]:checked');
-        const root = document.getElementById('filter-root');
-        if (tab && root) root.dataset.cols = tab.value;
-        const t = tab ? tab.value : 'analog';
-        document.querySelectorAll('.col-panel-analog input[name="analog_col"]').forEach(function (i) {
-            i.disabled = t !== 'analog';
-        });
-        document.querySelectorAll('.col-panel-discrete input[name="discrete_col"]').forEach(function (i) {
-            i.disabled = t !== 'discrete';
-        });
-    }
+function dataPage() {
+    return {
+        exportModalOpen: false,
+        exportLoading: false,
+        lastActiveTab: null,
+        init() {
+            this.syncColPanels();
+            this.syncExportPanels();
 
-    function resetFiltersToDefault() {
-        var f = document.getElementById('data-filter-form');
-        var df = f.querySelector('[name="date_from"]');
-        var dt = f.querySelector('[name="date_to"]');
-        if (df) df.value = '';
-        if (dt) dt.value = '';
-        var sort = f.querySelector('[name="sort"]');
-        if (sort) sort.value = 'desc';
-        document.getElementById('data-page-num').value = '1';
-        var analogTab = f.querySelector('input[name="active_tab"][value="analog"]');
-        if (analogTab) analogTab.checked = true;
-        f.querySelectorAll('input[name="analog_col"]').forEach(function (c) { c.checked = true; });
-        f.querySelectorAll('input[name="discrete_col"]').forEach(function (c) { c.checked = true; });
-        syncColPanels();
-        document.getElementById('btn-refresh-table').click();
-    }
-
-    document.getElementById('btn-filter-reset').addEventListener('click', resetFiltersToDefault);
-
-    var lastActiveTab = null;
-    document.body.addEventListener('htmx:beforeRequest', function (evt) {
-        var t = evt.detail.target;
-        if (t && t.id === 'tab-panel') {
-            syncColPanels();
-            var fd = new FormData(document.getElementById('data-filter-form'));
-            var tab = fd.get('active_tab');
-            if (lastActiveTab !== null && lastActiveTab !== tab) {
-                document.getElementById('data-page-num').value = '1';
-            }
-            lastActiveTab = tab;
-        }
-    });
-    document.body.addEventListener('htmx:afterSwap', function (evt) {
-        if (evt.detail.target && evt.detail.target.id === 'tab-panel') {
-            var meta = document.getElementById('data-table-result');
-            if (meta && meta.dataset.page) {
-                document.getElementById('data-page-num').value = meta.dataset.page;
-            }
-        }
-    });
-    ['sort', 'date_from', 'date_to'].forEach(function (name) {
-        var el = document.querySelector('#data-filter-form [name="' + name + '"]');
-        if (el) {
-            el.addEventListener('change', function () {
-                document.getElementById('data-page-num').value = '1';
+            document.body.addEventListener('htmx:beforeRequest', (evt) => {
+                const t = evt.detail.target;
+                if (t && t.id === 'tab-panel') {
+                    this.syncColPanels();
+                    const fd = new FormData(document.getElementById('data-filter-form'));
+                    const tab = fd.get('active_tab');
+                    if (this.lastActiveTab !== null && this.lastActiveTab !== tab) {
+                        document.getElementById('data-page-num').value = '1';
+                    }
+                    this.lastActiveTab = tab;
+                }
             });
-        }
-    });
-    document.body.addEventListener('click', function (ev) {
-        var pageInp = document.getElementById('data-page-num');
-        var refreshBtn = document.getElementById('btn-refresh-table');
-        if (!pageInp || !refreshBtn) return;
-        if (ev.target.closest('.btn-page-prev')) {
-            var p = parseInt(pageInp.value, 10) || 1;
-            if (p > 1) {
-                pageInp.value = String(p - 1);
-                refreshBtn.click();
-            }
-        } else if (ev.target.closest('.btn-page-next')) {
-            var meta = document.getElementById('data-table-result');
-            var maxP = parseInt(meta && meta.dataset.totalPages ? meta.dataset.totalPages : '1', 10);
-            var p2 = parseInt(pageInp.value, 10) || 1;
-            if (p2 < maxP) {
-                pageInp.value = String(p2 + 1);
-                refreshBtn.click();
-            }
-        }
-    });
-    syncColPanels();
-
-    const modal = document.getElementById('export-modal');
-    const exportOverlay = document.getElementById('export-overlay');
-    const exportConfirmBtn = document.getElementById('export-confirm-btn');
-    const exportOutcome = document.getElementById('export-outcome');
-    function toggleExportModal(open) {
-        modal.classList.toggle('open', !!open);
-        exportOverlay.classList.toggle('open', !!open);
-        modal.setAttribute('aria-hidden', open ? 'false' : 'true');
-        exportOverlay.setAttribute('aria-hidden', open ? 'false' : 'true');
-    }
-    function syncExportPanels() {
-        const analogOn = !!document.querySelector('#export-form input[name="table_analog"]:checked');
-        const discreteOn = !!document.querySelector('#export-form input[name="table_discrete"]:checked');
-        const alarmsOn = !!document.querySelector('#export-form input[name="table_alarms"]:checked');
-        const setPanel = function (selector, enabled) {
-            document.querySelectorAll(selector).forEach(function (el) {
-                el.style.display = enabled ? '' : 'none';
-                el.querySelectorAll('input').forEach(function (i) { i.disabled = !enabled; });
+            document.body.addEventListener('htmx:afterSwap', (evt) => {
+                if (evt.detail.target && evt.detail.target.id === 'tab-panel') {
+                    const meta = document.getElementById('data-table-result');
+                    if (meta && meta.dataset.page) {
+                        document.getElementById('data-page-num').value = meta.dataset.page;
+                    }
+                }
             });
-        };
-        setPanel('#export-col-root .col-panel-analog', analogOn);
-        setPanel('#export-col-root .col-panel-discrete', discreteOn);
-        setPanel('#export-col-root .col-panel-alarms', alarmsOn);
-    }
-    document.querySelectorAll('#export-form input[name="table_analog"], #export-form input[name="table_discrete"], #export-form input[name="table_alarms"]')
-        .forEach(function (el) { el.addEventListener('change', syncExportPanels); });
-
-    document.getElementById('btn-export-open').addEventListener('click', function () {
-        const dataForm = document.getElementById('data-filter-form');
-        document.getElementById('export-date-from').value = dataForm.querySelector('[name="date_from"]').value || '';
-        document.getElementById('export-date-to').value = dataForm.querySelector('[name="date_to"]').value || '';
-        document.getElementById('export-sort').value = dataForm.querySelector('[name="sort"]').value || 'desc';
-        exportOutcome.innerHTML = '';
-        syncExportPanels();
-        toggleExportModal(true);
-    });
-    document.getElementById('export-cancel').addEventListener('click', function () {
-        toggleExportModal(false);
-    });
-    exportOverlay.addEventListener('click', function () {
-        toggleExportModal(false);
-    });
-    exportConfirmBtn.addEventListener('click', function () {
-        exportConfirmBtn.disabled = true;
-        exportConfirmBtn.textContent = 'Экспорт...';
-        exportOutcome.innerHTML = '';
-        fetch("{{ url_for('data_blueprint.export_batch') }}", {
-            method: 'POST',
-            body: new FormData(document.getElementById('export-form')),
-        })
-            .then(function (resp) { return resp.text(); })
-            .then(function (html) {
-                exportOutcome.innerHTML = html;
+            ['sort', 'date_from', 'date_to'].forEach((name) => {
+                const el = document.querySelector('#data-filter-form [name="' + name + '"]');
+                if (el) {
+                    el.addEventListener('change', () => {
+                        document.getElementById('data-page-num').value = '1';
+                    });
+                }
+            });
+            document.body.addEventListener('click', (ev) => {
+                const pageInp = document.getElementById('data-page-num');
+                const refreshBtn = document.getElementById('btn-refresh-table');
+                if (!pageInp || !refreshBtn) return;
+                if (ev.target.closest('.btn-page-prev')) {
+                    const p = parseInt(pageInp.value, 10) || 1;
+                    if (p > 1) {
+                        pageInp.value = String(p - 1);
+                        refreshBtn.click();
+                    }
+                } else if (ev.target.closest('.btn-page-next')) {
+                    const meta = document.getElementById('data-table-result');
+                    const maxP = parseInt(meta && meta.dataset.totalPages ? meta.dataset.totalPages : '1', 10);
+                    const p2 = parseInt(pageInp.value, 10) || 1;
+                    if (p2 < maxP) {
+                        pageInp.value = String(p2 + 1);
+                        refreshBtn.click();
+                    }
+                }
+            });
+            document.querySelectorAll('#export-form input[name="table_analog"], #export-form input[name="table_discrete"], #export-form input[name="table_alarms"]')
+                .forEach((el) => el.addEventListener('change', () => this.syncExportPanels()));
+        },
+        syncColPanels() {
+            const tab = document.querySelector('input[name="active_tab"]:checked');
+            const root = document.getElementById('filter-root');
+            if (tab && root) root.dataset.cols = tab.value;
+            const t = tab ? tab.value : 'analog';
+            document.querySelectorAll('.col-panel-analog input[name="analog_col"]').forEach((i) => {
+                i.disabled = t !== 'analog';
+            });
+            document.querySelectorAll('.col-panel-discrete input[name="discrete_col"]').forEach((i) => {
+                i.disabled = t !== 'discrete';
+            });
+        },
+        resetFiltersToDefault() {
+            const f = document.getElementById('data-filter-form');
+            const df = f.querySelector('[name="date_from"]');
+            const dt = f.querySelector('[name="date_to"]');
+            if (df) df.value = '';
+            if (dt) dt.value = '';
+            const sort = f.querySelector('[name="sort"]');
+            if (sort) sort.value = 'desc';
+            document.getElementById('data-page-num').value = '1';
+            const analogTab = f.querySelector('input[name="active_tab"][value="analog"]');
+            if (analogTab) analogTab.checked = true;
+            f.querySelectorAll('input[name="analog_col"]').forEach((c) => { c.checked = true; });
+            f.querySelectorAll('input[name="discrete_col"]').forEach((c) => { c.checked = true; });
+            this.syncColPanels();
+            document.getElementById('btn-refresh-table').click();
+        },
+        toggleExportModal(open) {
+            this.exportModalOpen = !!open;
+        },
+        openExportModal() {
+            const dataForm = document.getElementById('data-filter-form');
+            document.getElementById('export-date-from').value = dataForm.querySelector('[name="date_from"]').value || '';
+            document.getElementById('export-date-to').value = dataForm.querySelector('[name="date_to"]').value || '';
+            document.getElementById('export-sort').value = dataForm.querySelector('[name="sort"]').value || 'desc';
+            document.getElementById('export-outcome').innerHTML = '';
+            this.syncExportPanels();
+            this.toggleExportModal(true);
+        },
+        syncExportPanels() {
+            const analogOn = !!document.querySelector('#export-form input[name="table_analog"]:checked');
+            const discreteOn = !!document.querySelector('#export-form input[name="table_discrete"]:checked');
+            const alarmsOn = !!document.querySelector('#export-form input[name="table_alarms"]:checked');
+            const setPanel = (selector, enabled) => {
+                document.querySelectorAll(selector).forEach((el) => {
+                    el.style.display = enabled ? '' : 'none';
+                    el.querySelectorAll('input').forEach((i) => { i.disabled = !enabled; });
+                });
+            };
+            setPanel('#export-col-root .col-panel-analog', analogOn);
+            setPanel('#export-col-root .col-panel-discrete', discreteOn);
+            setPanel('#export-col-root .col-panel-alarms', alarmsOn);
+        },
+        submitExport() {
+            this.exportLoading = true;
+            const exportOutcome = document.getElementById('export-outcome');
+            exportOutcome.innerHTML = '';
+            fetch("{{ url_for('data_blueprint.export_batch') }}", {
+                method: 'POST',
+                body: new FormData(document.getElementById('export-form')),
             })
-            .catch(function (err) {
-                exportOutcome.innerHTML = '<div class="flash error">Ошибка экспорта: ' + String(err) + '</div>';
-            })
-            .finally(function () {
-                exportConfirmBtn.disabled = false;
-                exportConfirmBtn.textContent = 'Экспортировать';
-            });
-    });
-    syncExportPanels();
-})();
+                .then((resp) => resp.text())
+                .then((html) => {
+                    exportOutcome.innerHTML = html;
+                })
+                .catch((err) => {
+                    exportOutcome.innerHTML = '<div class="flash error">Ошибка экспорта: ' + String(err) + '</div>';
+                })
+                .finally(() => {
+                    this.exportLoading = false;
+                });
+        },
+    };
+}
 </script>
 {% endblock %}

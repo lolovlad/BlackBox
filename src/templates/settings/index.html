@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}Настройки{% endblock %}
 {% block content %}
-<section class="card settings-page">
+<section class="card settings-page" x-data="settingsPage()">
     <h2>Настройки системы</h2>
     <p class="hint">Здесь доступны только параметры чтения данных и JSON-настройки парсера. Параметры web-интерфейса не редактируются.</p>
 
@@ -142,13 +142,13 @@
             </label>
             <div class="row actions">
                 <button type="submit" class="btn">Добавить правило</button>
-                <button type="button" class="btn secondary" id="open-rules-help">Инструкция по правилам</button>
+                <button type="button" class="btn secondary" @click="openRulesHelp()">Инструкция по правилам</button>
             </div>
         </form>
     </fieldset>
 </section>
 
-<dialog id="rules-help-modal" class="rules-help-modal">
+<dialog id="rules-help-modal" class="rules-help-modal" x-ref="rulesHelpModal">
     <form method="dialog" class="rules-help-modal__panel">
         <h3>Как писать правила аварий</h3>
         <p>Правило должно возвращать <code>True</code> или <code>False</code>.</p>
@@ -167,17 +167,15 @@
 </dialog>
 
 <script>
-(() => {
-    const modal = document.getElementById("rules-help-modal");
-    const openBtn = document.getElementById("open-rules-help");
-    if (!modal || !openBtn || typeof modal.showModal !== "function") {
-        return;
-    }
-    openBtn.addEventListener("click", () => modal.showModal());
-})();
-
-(() => {
-    // Reserved for settings page client-side behavior.
-})();
+function settingsPage() {
+    return {
+        openRulesHelp() {
+            const modal = this.$refs.rulesHelpModal;
+            if (modal && typeof modal.showModal === "function") {
+                modal.showModal();
+            }
+        },
+    };
+}
 </script>
 {% endblock %}
