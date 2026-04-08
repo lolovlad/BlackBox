@@ -253,7 +253,7 @@ function chartsPage() {
         }));
         this.chart.setOption(
             {
-                xAxis: [{ data: this.xData, boundaryGap: false }],
+                xAxis: { data: this.xData, boundaryGap: false },
                 series: series,
             },
             false
