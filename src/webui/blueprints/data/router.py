@@ -3,16 +3,17 @@ from __future__ import annotations
 import base64
 import binascii
 import csv
-import io
 import json
+import tempfile
 import zipfile
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from flask import Blueprint, current_app, jsonify, render_template, request, url_for
+from flask import Blueprint, Response, current_app, jsonify, render_template, request, stream_with_context, url_for
 from flask_login import login_required
 
+from src.database import Alarms, Samples
 from src.webui.data_labels import (
     all_analog_keys,
     all_discrete_keys,
@@ -62,6 +63,12 @@ def tables():
 @login_required
 def export_submit():
     flt = parse_data_filter(request.form)
+    if flt.date_from is None or flt.date_to is None:
+        return render_template(
+            "data/_export_result.html",
+            error="Для экспорта укажите дату/время начала и конца.",
+            download_url=None,
+        )
     static_csv_dir: Path = current_app.extensions["static_csv_dir"]
     svc = _service()
     try:
@@ -160,6 +167,8 @@ def export_batch():
         _parse_dt_local(request.form.get("date_from")),
         _parse_dt_local(request.form.get("date_to")),
     )
+    if date_from is None or date_to is None:
+        return render_template("data/_export_result.html", error="Для экспорта укажите дату/время начала и конца.", download_url=None)
     sort_desc = (request.form.get("sort") or "desc").lower() != "asc"
     analog_keys = request.form.getlist("analog_col_export")
     discrete_keys = request.form.getlist("discrete_col_export")
@@ -177,46 +186,65 @@ def export_batch():
             download_url=None,
         )
 
-    static_csv_dir: Path = current_app.extensions["static_csv_dir"]
-    static_csv_dir.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    dataset: dict[str, tuple[list[str], list[list[Any]]]] = {}
-    for table in tables:
-        if table == "analog":
-            rows_db = repo.list_analogs(created_from=date_from, created_to=date_to, sort_desc=sort_desc, offset=0, limit=None)
-        elif table == "discrete":
-            rows_db = repo.list_discretes(
-                created_from=date_from,
-                created_to=date_to,
-                sort_desc=sort_desc,
-                offset=0,
-                limit=None,
-            )
-        else:
-            rows_db = repo.list_alarms(created_from=date_from, created_to=date_to, sort_desc=sort_desc, offset=0, limit=None)
-        dataset[table] = _build_rows_for_export(
-            table=table,
-            rows_db=rows_db,
-            analog_keys=analog_keys,
-            discrete_keys=discrete_keys,
-        )
+    session_factory = current_app.extensions["session_factory"]
 
     if export_format == "csv_zip":
-        out_path = static_csv_dir / f"export_package_{stamp}.zip"
-        with zipfile.ZipFile(out_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-            for table in tables:
-                headers, body = dataset[table]
-                sio = io.StringIO()
-                writer = csv.writer(sio, delimiter=";")
-                writer.writerow(headers)
-                writer.writerows(body)
-                zf.writestr(f"{table}.csv", sio.getvalue().encode("utf-8-sig"))
-        rel = out_path.relative_to(current_app.static_folder)
-        return render_template(
-            "data/_export_result.html",
-            error=None,
-            download_url=url_for("static", filename=str(rel).replace("\\", "/")),
-        )
+        zip_tmp = tempfile.NamedTemporaryFile(prefix="export_package_", suffix=".zip", delete=False)
+        zip_tmp_path = Path(zip_tmp.name)
+        zip_tmp.close()
+        try:
+            with zipfile.ZipFile(zip_tmp_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+                with session_factory() as session:
+                    for table in tables:
+                        csv_tmp = tempfile.NamedTemporaryFile(prefix=f"{table}_", suffix=".csv", delete=False, mode="w", newline="", encoding="utf-8-sig")
+                        csv_tmp_path = Path(csv_tmp.name)
+                        try:
+                            writer = csv.writer(csv_tmp, delimiter=";")
+                            if table == "analog":
+                                writer.writerow(["Дата", "Время", *analog_keys])
+                                stmt = session.query(Samples).filter(Samples.created_at >= date_from, Samples.created_at <= date_to)
+                                stmt = stmt.order_by(Samples.created_at.desc() if sort_desc else Samples.created_at.asc())
+                                for item in stmt.yield_per(1000):
+                                    processed = decode_to_processed(item.date)
+                                    analog, _ = analog_discrete_for_csv(processed)
+                                    writer.writerow([item.created_at.strftime("%Y-%m-%d"), item.created_at.strftime("%H:%M:%S"), *[analog.get(k, "") for k in analog_keys]])
+                            elif table == "discrete":
+                                writer.writerow(["Дата", "Время", *discrete_keys])
+                                stmt = session.query(Samples).filter(Samples.created_at >= date_from, Samples.created_at <= date_to)
+                                stmt = stmt.order_by(Samples.created_at.desc() if sort_desc else Samples.created_at.asc())
+                                for item in stmt.yield_per(1000):
+                                    processed = decode_to_processed(item.date)
+                                    _, discrete = analog_discrete_for_csv(processed)
+                                    writer.writerow([item.created_at.strftime("%Y-%m-%d"), item.created_at.strftime("%H:%M:%S"), *[1 if bool(discrete.get(k, False)) else 0 for k in discrete_keys]])
+                            else:
+                                writer.writerow(["Дата", "Время", "Название"])
+                                stmt = session.query(Alarms).filter(Alarms.created_at >= date_from, Alarms.created_at <= date_to)
+                                stmt = stmt.order_by(Alarms.created_at.desc() if sort_desc else Alarms.created_at.asc())
+                                for item in stmt.yield_per(1000):
+                                    writer.writerow([item.created_at.strftime("%Y-%m-%d"), item.created_at.strftime("%H:%M:%S"), item.name])
+                        finally:
+                            csv_tmp.close()
+                        zf.write(csv_tmp_path, arcname=f"{table}.csv")
+                        csv_tmp_path.unlink(missing_ok=True)
+
+            def iter_file_chunks(path: Path, chunk_size: int = 64 * 1024):
+                with path.open("rb") as f:
+                    while True:
+                        chunk = f.read(chunk_size)
+                        if not chunk:
+                            break
+                        yield chunk
+                path.unlink(missing_ok=True)
+
+            headers = {
+                "Content-Disposition": f'attachment; filename="export_package_{stamp}.zip"',
+                "Content-Type": "application/zip",
+            }
+            return Response(stream_with_context(iter_file_chunks(zip_tmp_path)), headers=headers)
+        except Exception:
+            zip_tmp_path.unlink(missing_ok=True)
+            raise
 
     try:
         from openpyxl import Workbook
@@ -227,19 +255,57 @@ def export_batch():
             download_url=None,
         )
 
-    wb = Workbook()
-    wb.remove(wb.active)
-    sheet_title = {"analog": "Аналоги", "discrete": "Дискреты", "alarms": "Аварии"}
-    for table in tables:
-        ws = wb.create_sheet(sheet_title.get(table, table))
-        headers, body = dataset[table]
-        ws.append(headers)
-        for row in body:
-            ws.append(row)
-    out_path = static_csv_dir / f"export_package_{stamp}.xlsx"
-    wb.save(out_path)
-    rel = out_path.relative_to(current_app.static_folder)
-    return render_template("data/_export_result.html", error=None, download_url=url_for("static", filename=str(rel).replace("\\", "/")))
+    xlsx_tmp = tempfile.NamedTemporaryFile(prefix="export_package_", suffix=".xlsx", delete=False)
+    xlsx_tmp_path = Path(xlsx_tmp.name)
+    xlsx_tmp.close()
+    try:
+        wb = Workbook()
+        wb.remove(wb.active)
+        sheet_title = {"analog": "Аналоги", "discrete": "Дискреты", "alarms": "Аварии"}
+        with session_factory() as session:
+            for table in tables:
+                ws = wb.create_sheet(sheet_title.get(table, table))
+                if table == "analog":
+                    ws.append(["Дата", "Время", *analog_keys])
+                    stmt = session.query(Samples).filter(Samples.created_at >= date_from, Samples.created_at <= date_to)
+                    stmt = stmt.order_by(Samples.created_at.desc() if sort_desc else Samples.created_at.asc())
+                    for item in stmt.yield_per(1000):
+                        processed = decode_to_processed(item.date)
+                        analog, _ = analog_discrete_for_csv(processed)
+                        ws.append([item.created_at.strftime("%Y-%m-%d"), item.created_at.strftime("%H:%M:%S"), *[analog.get(k, "") for k in analog_keys]])
+                elif table == "discrete":
+                    ws.append(["Дата", "Время", *discrete_keys])
+                    stmt = session.query(Samples).filter(Samples.created_at >= date_from, Samples.created_at <= date_to)
+                    stmt = stmt.order_by(Samples.created_at.desc() if sort_desc else Samples.created_at.asc())
+                    for item in stmt.yield_per(1000):
+                        processed = decode_to_processed(item.date)
+                        _, discrete = analog_discrete_for_csv(processed)
+                        ws.append([item.created_at.strftime("%Y-%m-%d"), item.created_at.strftime("%H:%M:%S"), *[1 if bool(discrete.get(k, False)) else 0 for k in discrete_keys]])
+                else:
+                    ws.append(["Дата", "Время", "Название"])
+                    stmt = session.query(Alarms).filter(Alarms.created_at >= date_from, Alarms.created_at <= date_to)
+                    stmt = stmt.order_by(Alarms.created_at.desc() if sort_desc else Alarms.created_at.asc())
+                    for item in stmt.yield_per(1000):
+                        ws.append([item.created_at.strftime("%Y-%m-%d"), item.created_at.strftime("%H:%M:%S"), item.name])
+        wb.save(xlsx_tmp_path)
+
+        def iter_file_chunks(path: Path, chunk_size: int = 64 * 1024):
+            with path.open("rb") as f:
+                while True:
+                    chunk = f.read(chunk_size)
+                    if not chunk:
+                        break
+                    yield chunk
+            path.unlink(missing_ok=True)
+
+        headers = {
+            "Content-Disposition": f'attachment; filename="export_package_{stamp}.xlsx"',
+            "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        }
+        return Response(stream_with_context(iter_file_chunks(xlsx_tmp_path)), headers=headers)
+    except Exception:
+        xlsx_tmp_path.unlink(missing_ok=True)
+        raise
 
 
 def _parse_dt_local(raw: str | None) -> datetime | None:
@@ -314,10 +380,14 @@ def _collect_second_points(rows: list[Any], table: str, columns: list[str]) -> l
 
     points: list[dict[str, Any]] = []
     for sec in sorted(by_second.keys()):
+        date_label = format_in_configured_timezone(sec, "%d.%m.%Y")
+        time_label = format_in_configured_timezone(sec, "%H:%M")
         points.append(
             {
                 "ts": sec.strftime(DATETIME_API_FORMAT),
-                "label": format_in_configured_timezone(sec, DATETIME_UI_FORMAT),
+                "date_label": date_label,
+                "time_label": time_label,
+                "label": f"{date_label}\n{time_label}",
                 "values": by_second[sec],
             }
         )
