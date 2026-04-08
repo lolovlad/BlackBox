@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 import os
 import shutil
@@ -337,6 +339,23 @@ def render_live_dashboard_html(analog_columns: list[str], discrete_columns: list
     return render_template("dashboard/_live_panels.html", **ctx)
 
 
+def _decode_off_fields(raw: str | None) -> set[str]:
+    if raw is None:
+        return set()
+    text = str(raw).strip()
+    if not text:
+        return set()
+    padded = text + ("=" * ((4 - len(text) % 4) % 4))
+    try:
+        decoded = base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8")
+        payload = json.loads(decoded)
+        if not isinstance(payload, list):
+            return set()
+        return {str(v) for v in payload}
+    except (ValueError, UnicodeDecodeError, binascii.Error):
+        return set()
+
+
 def _collect_system_monitor() -> dict[str, Any]:
     stats: dict[str, Any] = {
         "disk": {"used_gb": None, "total_gb": None, "free_gb": None, "percent": None},
@@ -380,8 +399,12 @@ def _collect_system_monitor() -> dict[str, Any]:
 @main_router.route("/dashboard/live", methods=["GET"])
 @login_required
 def dashboard_live():
-    analog_requested = request.args.getlist("analog_col")
-    discrete_requested = request.args.getlist("discrete_col")
-    analog_columns = filter_valid_analog(analog_requested if analog_requested else None)
-    discrete_columns = filter_valid_discrete(discrete_requested if discrete_requested else None)
+    analog_off = _decode_off_fields(request.args.get("analog_off_b64"))
+    discrete_off = _decode_off_fields(request.args.get("discrete_off_b64"))
+    analog_columns = [k for k in filter_valid_analog(None) if k not in analog_off]
+    discrete_columns = [k for k in filter_valid_discrete(None) if k not in discrete_off]
+    if not analog_columns:
+        analog_columns = filter_valid_analog(None)
+    if not discrete_columns:
+        discrete_columns = filter_valid_discrete(None)
     return render_live_dashboard_html(analog_columns, discrete_columns)
