@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from datetime import datetime, tzinfo
+from datetime import datetime, timezone, tzinfo
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 

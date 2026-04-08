@@ -59,3 +59,16 @@ class EmergencyRepository:
         )
         with self._session_factory() as session:
             return list(session.execute(stmt).unique().scalars().all())
+
+    def get_emergency_event(self, event_id: int) -> Emergency | None:
+        stmt = (
+            select(Emergency)
+            .options(joinedload(Emergency.emergency_condition))
+            .where(
+                Emergency.id == event_id,
+                Emergency.is_deleted.is_(False),
+            )
+            .limit(1)
+        )
+        with self._session_factory() as session:
+            return session.execute(stmt).scalar_one_or_none()

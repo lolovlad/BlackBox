@@ -90,6 +90,14 @@
             <div class="monitor-hint">
                 Ядра: {{ system_monitor.cpu.cores_physical or "?" }} физ / {{ system_monitor.cpu.cores_logical or "?" }} лог
             </div>
+            <div class="monitor-hint">
+                Вентилятор CPU:
+                {% if system_monitor.cpu.fan_rpm is not none %}
+                    {{ system_monitor.cpu.fan_rpm }} RPM
+                {% else %}
+                    n/a
+                {% endif %}
+            </div>
         </div>
         <div class="monitor-item">
             <div class="monitor-title">RAM</div>
@@ -120,5 +128,38 @@
                 {% endif %}
             </div>
         </div>
+    </div>
+    <div class="monitor-disks">
+        <h4>Подключенные диски</h4>
+        {% if system_monitor.disks %}
+            <div class="table-wrap monitor-disks-table">
+                <table>
+                    <thead>
+                    <tr>
+                        <th>Устройство</th>
+                        <th>Точка монтирования</th>
+                        <th>ФС</th>
+                        <th>Занято</th>
+                        <th>Использование</th>
+                        <th>Свободно</th>
+                    </tr>
+                    </thead>
+                    <tbody>
+                    {% for d in system_monitor.disks %}
+                        <tr>
+                            <td>{{ d.device or "-" }}</td>
+                            <td>{{ d.mount }}</td>
+                            <td>{{ d.fstype or "-" }}</td>
+                            <td>{{ d.used_gb }} / {{ d.total_gb }} ГБ</td>
+                            <td>{{ d.percent }}%</td>
+                            <td>{{ d.free_gb }} ГБ</td>
+                        </tr>
+                    {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        {% else %}
+            <p class="hint">Список дисков недоступен.</p>
+        {% endif %}
     </div>
 </section>

@@ -15,6 +15,156 @@
                 <th>Правило</th>
                 <th>№ условия</th>
                 <th>Условие</th>
+                <th></th>
+            </tr>
+            </thead>
+            <tbody>
+            {% for row in emergency_rows %}
+            <tr>
+                <td>{{ format_in_configured_timezone(row.datetime, '%d.%m.%Y %H:%M:%S') }}</td>
+                <td>{{ format_in_configured_timezone((row.ended_at or row.datetime), '%d.%m.%Y %H:%M:%S') }}</td>
+                <td>{{ ((row.ended_at or row.datetime) - row.datetime) }}</td>
+                <td>{{ row.emergency_condition.name }}</td>
+                <td>{{ row.emergency_condition.id }}</td>
+                <td class="mono-cell">{{ row.emergency_condition.condition }}</td>
+                <td>
+                    <button
+                        type="button"
+                        class="btn secondary alarm-export-open"
+                        data-event-id="{{ row.id }}"
+                        data-event-start="{{ format_in_configured_timezone(row.datetime, '%d.%m.%Y %H:%M:%S') }}"
+                        data-event-end="{{ format_in_configured_timezone((row.ended_at or row.datetime), '%d.%m.%Y %H:%M:%S') }}"
+                    >
+                        Экспорт
+                    </button>
+                </td>
+            </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% else %}
+    <p class="hint">Пока нет записей. После настройки правил и фоновой проверки события появятся здесь.</p>
+    {% endif %}
+</section>
+
+<div id="alarm-export-overlay" class="chart-filters-overlay" aria-hidden="true"></div>
+<aside id="alarm-export-panel" class="chart-filters-panel export-panel-drawer" aria-hidden="true">
+    <div class="panel-head">
+        <h3>Экспорт по аварийному событию</h3>
+        <button type="button" class="btn secondary" id="alarm-export-close" title="Закрыть" aria-label="Закрыть">✕</button>
+    </div>
+    <p class="hint" id="alarm-export-range-hint">Диапазон берется автоматически: начало -10 минут, окончание +10 минут.</p>
+    <form id="alarm-export-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+        <input type="hidden" name="event_id" id="alarm-export-event-id" value="">
+        <div class="filter-grid">
+            <label class="filter-field">Сортировка
+                <select name="sort">
+                    <option value="desc" selected>Новые сверху</option>
+                    <option value="asc">Старые сверху</option>
+                </select>
+            </label>
+        </div>
+        <fieldset>
+            <legend>Таблицы для экспорта</legend>
+            <div class="checkbox-grid">
+                <label class="chk"><input type="checkbox" name="table_analog" value="1" checked> Аналоги</label>
+                <label class="chk"><input type="checkbox" name="table_discrete" value="1" checked> Дискреты</label>
+                <label class="chk"><input type="checkbox" name="table_alarms" value="1" checked> Аварии</label>
+            </div>
+        </fieldset>
+        <fieldset>
+            <legend>Поля (аналоги)</legend>
+            <div class="checkbox-grid">
+                {% for key, ru in analog_options %}
+                    <label class="chk"><input type="checkbox" name="analog_col_export" value="{{ key }}" checked> {{ ru }}</label>
+                {% endfor %}
+            </div>
+        </fieldset>
+        <fieldset>
+            <legend>Поля (дискреты)</legend>
+            <div class="checkbox-grid">
+                {% for key, ru in discrete_options %}
+                    <label class="chk"><input type="checkbox" name="discrete_col_export" value="{{ key }}" checked> {{ ru }}</label>
+                {% endfor %}
+            </div>
+        </fieldset>
+        <fieldset>
+            <legend>Формат</legend>
+            <div class="checkbox-grid">
+                <label class="chk"><input type="radio" name="export_format" value="csv_zip" checked> Пакет CSV (ZIP)</label>
+                <label class="chk"><input type="radio" name="export_format" value="excel"> Excel</label>
+            </div>
+        </fieldset>
+    </form>
+    <div id="alarm-export-outcome"></div>
+    <div class="modal-actions">
+        <button type="button" class="btn" id="alarm-export-submit">Экспортировать</button>
+    </div>
+</aside>
+
+<script>
+(() => {
+    const overlay = document.getElementById("alarm-export-overlay");
+    const panel = document.getElementById("alarm-export-panel");
+    const closeBtn = document.getElementById("alarm-export-close");
+    const submitBtn = document.getElementById("alarm-export-submit");
+    const eventInput = document.getElementById("alarm-export-event-id");
+    const rangeHint = document.getElementById("alarm-export-range-hint");
+    const outcome = document.getElementById("alarm-export-outcome");
+    const form = document.getElementById("alarm-export-form");
+    const openButtons = document.querySelectorAll(".alarm-export-open");
+    if (!overlay || !panel || !closeBtn || !submitBtn || !eventInput || !rangeHint || !outcome || !form) return;
+
+    const close = () => {
+        overlay.classList.remove("open");
+        panel.classList.remove("open");
+        overlay.setAttribute("aria-hidden", "true");
+        panel.setAttribute("aria-hidden", "true");
+    };
+    const open = (eventId, start, end) => {
+        eventInput.value = String(eventId || "");
+        rangeHint.textContent = "Диапазон: " + start + " - 10 минут, " + end + " + 10 минут.";
+        outcome.innerHTML = "";
+        overlay.classList.add("open");
+        panel.classList.add("open");
+        overlay.setAttribute("aria-hidden", "false");
+        panel.setAttribute("aria-hidden", "false");
+    };
+    openButtons.forEach((btn) => {
+        btn.addEventListener("click", () => open(btn.dataset.eventId, btn.dataset.eventStart, btn.dataset.eventEnd));
+    });
+    closeBtn.addEventListener("click", close);
+    overlay.addEventListener("click", close);
+    submitBtn.addEventListener("click", () => {
+        outcome.innerHTML = "";
+        fetch("{{ url_for('main_blueprint.alarms_export') }}", { method: "POST", body: new FormData(form) })
+            .then((resp) => resp.text())
+            .then((html) => { outcome.innerHTML = html; })
+            .catch((err) => { outcome.innerHTML = '<div class="flash error">Ошибка экспорта: ' + String(err) + '</div>'; });
+    });
+})();
+</script>
+{% endblock %}
+
+{% extends "base.html" %}
+{% block title %}Аварии{% endblock %}
+{% block content %}
+<section class="card alarms-page">
+    <h2>События по правилам</h2>
+    <p class="hint">Здесь отображаются зарегистрированные срабатывания условий аварий. Управление правилами — в разделе «Настройки».</p>
+    {% if emergency_rows %}
+    <div class="table-wrap">
+        <table>
+            <thead>
+            <tr>
+                <th>Начало</th>
+                <th>Окончание</th>
+                <th>Длительность</th>
+                <th>Правило</th>
+                <th>№ условия</th>
+                <th>Условие</th>
             </tr>
             </thead>
             <tbody>

@@ -2,10 +2,14 @@ from __future__ import annotations
 
 import base64
 import binascii
+import csv
+import io
 import json
 import os
 import shutil
 import time
+import zipfile
+from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
@@ -222,7 +226,163 @@ def settings_save():
 def alarms_page():
     er_repo = EmergencyRepository(current_app.extensions["session_factory"])
     emergency_rows = er_repo.list_recent_emergencies(limit=200)
-    return render_template("alarms/index.html", emergency_rows=emergency_rows)
+    analog_opts = analog_labels_for(all_analog_keys())
+    discrete_opts = discrete_labels_for(all_discrete_keys())
+    return render_template(
+        "alarms/index.html",
+        emergency_rows=emergency_rows,
+        analog_options=analog_opts,
+        discrete_options=discrete_opts,
+    )
+
+
+def _alarm_export_rows(
+    *,
+    table: str,
+    rows_db: list[Any],
+    analog_keys: list[str],
+    discrete_keys: list[str],
+) -> tuple[list[str], list[list[Any]]]:
+    if table == "alarms":
+        headers = ["Дата", "Время", "Название"]
+        body = [
+            [item.created_at.strftime("%Y-%m-%d"), item.created_at.strftime("%H:%M:%S"), item.name]
+            for item in rows_db
+        ]
+        return headers, body
+
+    if table == "analog":
+        headers = ["Дата", "Время", *analog_keys]
+        body: list[list[Any]] = []
+        for item in rows_db:
+            processed = decode_to_processed(item.date)
+            analog, _ = analog_discrete_for_csv(processed)
+            body.append(
+                [
+                    item.created_at.strftime("%Y-%m-%d"),
+                    item.created_at.strftime("%H:%M:%S"),
+                    *[analog.get(k, "") for k in analog_keys],
+                ]
+            )
+        return headers, body
+
+    headers = ["Дата", "Время", *discrete_keys]
+    body = []
+    for item in rows_db:
+        processed = decode_to_processed(item.date)
+        _, discrete = analog_discrete_for_csv(processed)
+        body.append(
+            [
+                item.created_at.strftime("%Y-%m-%d"),
+                item.created_at.strftime("%H:%M:%S"),
+                *[1 if bool(discrete.get(k, False)) else 0 for k in discrete_keys],
+            ]
+        )
+    return headers, body
+
+
+@main_router.route("/alarms/export", methods=["POST"])
+@login_required
+def alarms_export():
+    try:
+        event_id = int((request.form.get("event_id") or "").strip())
+    except Exception:
+        return render_template("data/_export_result.html", error="Некорректный идентификатор события.", download_url=None), 400
+    er_repo = EmergencyRepository(current_app.extensions["session_factory"])
+    event = er_repo.get_emergency_event(event_id)
+    if event is None:
+        return render_template("data/_export_result.html", error="Событие не найдено.", download_url=None), 404
+
+    tables: list[str] = []
+    if request.form.get("table_analog") == "1":
+        tables.append("analog")
+    if request.form.get("table_discrete") == "1":
+        tables.append("discrete")
+    if request.form.get("table_alarms") == "1":
+        tables.append("alarms")
+    if not tables:
+        return render_template("data/_export_result.html", error="Выберите хотя бы одну таблицу для экспорта.", download_url=None)
+
+    export_format = (request.form.get("export_format") or "csv_zip").strip().lower()
+    if export_format not in ("csv_zip", "excel"):
+        return render_template("data/_export_result.html", error="Некорректный формат экспорта.", download_url=None)
+
+    sort_desc = (request.form.get("sort") or "desc").lower() != "asc"
+    analog_keys = filter_valid_analog(request.form.getlist("analog_col_export") or None)
+    discrete_keys = filter_valid_discrete(request.form.getlist("discrete_col_export") or None)
+    if "analog" in tables and not analog_keys:
+        return render_template("data/_export_result.html", error="Для таблицы «Аналоги» выберите хотя бы одно поле.", download_url=None)
+    if "discrete" in tables and not discrete_keys:
+        return render_template("data/_export_result.html", error="Для таблицы «Дискреты» выберите хотя бы одно поле.", download_url=None)
+
+    window_from = event.datetime - timedelta(minutes=10)
+    window_to = (event.ended_at or event.datetime) + timedelta(minutes=10)
+
+    repo = DataRepository(current_app.extensions["session_factory"])
+    collector = current_app.extensions["modbus_collector"]
+    if "alarms" in tables and not collector._alarms_enabled:
+        return render_template(
+            "data/_export_result.html",
+            error="Таблица аварий недоступна (нет таблицы в БД). Выполните миграции.",
+            download_url=None,
+        )
+
+    static_csv_dir: Path = current_app.extensions["static_csv_dir"]
+    static_csv_dir.mkdir(parents=True, exist_ok=True)
+    stamp = event.datetime.strftime("%Y%m%d_%H%M%S")
+    dataset: dict[str, tuple[list[str], list[list[Any]]]] = {}
+    for table in tables:
+        if table == "analog":
+            rows_db = repo.list_analogs(created_from=window_from, created_to=window_to, sort_desc=sort_desc, offset=0, limit=None)
+        elif table == "discrete":
+            rows_db = repo.list_discretes(created_from=window_from, created_to=window_to, sort_desc=sort_desc, offset=0, limit=None)
+        else:
+            rows_db = repo.list_alarms(created_from=window_from, created_to=window_to, sort_desc=sort_desc, offset=0, limit=None)
+        dataset[table] = _alarm_export_rows(
+            table=table,
+            rows_db=rows_db,
+            analog_keys=analog_keys,
+            discrete_keys=discrete_keys,
+        )
+
+    if export_format == "csv_zip":
+        out_path = static_csv_dir / f"alarm_event_export_{event_id}_{stamp}.zip"
+        with zipfile.ZipFile(out_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+            for table in tables:
+                headers, body = dataset[table]
+                sio = io.StringIO()
+                writer = csv.writer(sio, delimiter=";")
+                writer.writerow(headers)
+                writer.writerows(body)
+                zf.writestr(f"{table}.csv", sio.getvalue().encode("utf-8-sig"))
+        rel = out_path.relative_to(current_app.static_folder)
+        return render_template(
+            "data/_export_result.html",
+            error=None,
+            download_url=url_for("static", filename=str(rel).replace("\\", "/")),
+        )
+
+    try:
+        from openpyxl import Workbook
+    except Exception:
+        return render_template(
+            "data/_export_result.html",
+            error="Для Excel-экспорта требуется пакет openpyxl. Установите зависимость и повторите.",
+            download_url=None,
+        )
+    wb = Workbook()
+    wb.remove(wb.active)
+    sheet_title = {"analog": "Аналоги", "discrete": "Дискреты", "alarms": "Аварии"}
+    for table in tables:
+        ws = wb.create_sheet(sheet_title.get(table, table))
+        headers, body = dataset[table]
+        ws.append(headers)
+        for row in body:
+            ws.append(row)
+    out_path = static_csv_dir / f"alarm_event_export_{event_id}_{stamp}.xlsx"
+    wb.save(out_path)
+    rel = out_path.relative_to(current_app.static_folder)
+    return render_template("data/_export_result.html", error=None, download_url=url_for("static", filename=str(rel).replace("\\", "/")))
 
 
 @main_router.route("/settings/emergency-rules", methods=["POST"])
@@ -359,9 +519,10 @@ def _decode_off_fields(raw: str | None) -> set[str]:
 def _collect_system_monitor() -> dict[str, Any]:
     stats: dict[str, Any] = {
         "disk": {"used_gb": None, "total_gb": None, "free_gb": None, "percent": None},
-        "cpu": {"percent": None, "cores_logical": None, "cores_physical": None},
+        "cpu": {"percent": None, "cores_logical": None, "cores_physical": None, "fan_rpm": None},
         "memory": {"used_gb": None, "total_gb": None, "percent": None},
         "process": {"pid": os.getpid(), "uptime_sec": None},
+        "disks": [],
     }
     try:
         du = shutil.disk_usage(Path.cwd())
@@ -384,12 +545,56 @@ def _collect_system_monitor() -> dict[str, Any]:
             "cores_logical": int(psutil.cpu_count(logical=True) or 0),
             "cores_physical": int(psutil.cpu_count(logical=False) or 0),
         }
+        try:
+            fans = psutil.sensors_fans()
+            selected_rpm = None
+            for source_name, entries in fans.items():
+                for entry in entries:
+                    label = (getattr(entry, "label", "") or "").lower()
+                    candidate = getattr(entry, "current", None)
+                    if candidate is None:
+                        continue
+                    if "cpu" in label or "proc" in label or "cpu" in source_name.lower():
+                        selected_rpm = int(candidate)
+                        break
+                    if selected_rpm is None:
+                        selected_rpm = int(candidate)
+                if selected_rpm is not None:
+                    break
+            stats["cpu"]["fan_rpm"] = selected_rpm
+        except Exception:
+            pass
         stats["memory"] = {
             "used_gb": round((vm.total - vm.available) / (1024**3), 2),
             "total_gb": round(vm.total / (1024**3), 2),
             "percent": round(float(vm.percent), 1),
         }
         stats["process"]["uptime_sec"] = int(max(0.0, (time.time() - proc.create_time())))
+        disks: list[dict[str, Any]] = []
+        seen_mounts: set[str] = set()
+        for part in psutil.disk_partitions(all=False):
+            mount = str(getattr(part, "mountpoint", "") or "")
+            device = str(getattr(part, "device", "") or "")
+            fstype = str(getattr(part, "fstype", "") or "")
+            if not mount or mount in seen_mounts:
+                continue
+            seen_mounts.add(mount)
+            try:
+                usage = psutil.disk_usage(mount)
+            except Exception:
+                continue
+            disks.append(
+                {
+                    "mount": mount,
+                    "device": device,
+                    "fstype": fstype,
+                    "used_gb": round((usage.total - usage.free) / (1024**3), 2),
+                    "total_gb": round(usage.total / (1024**3), 2),
+                    "free_gb": round(usage.free / (1024**3), 2),
+                    "percent": round(float(usage.percent), 1),
+                }
+            )
+        stats["disks"] = disks
     except Exception:
         pass
 
