@@ -27,6 +27,11 @@ htmlcov/
 .ruff_cache/
 .pyre/
 
+# Local environment (secrets, machine-specific)
+.env
+.env.*
+!.env.example
+
 # IDE / editor files
 .idea/
 .vscode/
