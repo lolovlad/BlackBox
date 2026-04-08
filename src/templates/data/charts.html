@@ -156,6 +156,20 @@ function chartsPage() {
             if (!this.chart) this.chart = echarts.init(chartEl);
             return this.chart;
         },
+        buildChartOption(series) {
+            return {
+                tooltip: { trigger: 'axis' },
+                legend: { type: 'scroll' },
+                grid: { left: 45, right: 25, top: 45, bottom: 90 },
+                xAxis: { type: 'category', data: this.xData, boundaryGap: false },
+                yAxis: { type: 'value' },
+                dataZoom: [
+                    { type: 'inside', xAxisIndex: 0, filterMode: 'none' },
+                    { type: 'slider', xAxisIndex: 0, height: 24, bottom: 18 }
+                ],
+                series: series,
+            };
+        },
         renderEmpty(msg) {
             const chartEl = document.getElementById('echarts-main');
             const chartMeta = document.getElementById('chart-meta');
@@ -203,18 +217,7 @@ function chartsPage() {
                 data: this.seriesData[col],
             };
         });
-        this.ensureChart().setOption({
-            tooltip: { trigger: 'axis' },
-            legend: { type: 'scroll' },
-            grid: { left: 45, right: 25, top: 45, bottom: 90 },
-            xAxis: { type: 'category', data: this.xData, boundaryGap: false },
-            yAxis: { type: 'value' },
-            dataZoom: [
-                { type: 'inside', xAxisIndex: 0, filterMode: 'none' },
-                { type: 'slider', xAxisIndex: 0, height: 24, bottom: 18 }
-            ],
-            series: series
-        }, true);
+        this.ensureChart().setOption(this.buildChartOption(series), true);
         this.lastTs = payload.last_ts || null;
     },
     appendUpdates(payload) {
@@ -233,13 +236,7 @@ function chartsPage() {
             showSymbol: false,
             data: this.seriesData[col],
         }));
-        this.chart.setOption(
-            {
-                xAxis: { type: 'category', data: this.xData, boundaryGap: false },
-                series: series,
-            },
-            false
-        );
+        this.chart.setOption(this.buildChartOption(series), true);
         this.lastTs = payload.last_ts || this.lastTs;
     },
     fetchInit() {
