@@ -54,4 +54,6 @@ alarms/
 !/src/templates/alarms/
 backup/
 src/static/csv/*.csv
+settings.json
+settings/
 

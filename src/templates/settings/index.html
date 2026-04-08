@@ -3,7 +3,6 @@
 {% block content %}
 <section class="card settings-page" x-data="settingsPage()">
     <h2>Настройки системы</h2>
-    <p class="hint">Здесь доступны только параметры чтения данных и JSON-настройки парсера. Параметры web-интерфейса не редактируются.</p>
 
     <form method="post" class="settings-form" enctype="multipart/form-data">
         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
@@ -16,11 +15,9 @@
                         <option value="{{ file_name }}" {% if active_settings_file == file_name %}selected{% endif %}>{{ file_name }}</option>
                         {% endfor %}
                     </select>
-                    <small class="field-help">Можно хранить несколько файлов в папке settings и переключать активный.</small>
                 </label>
                 <label class="filter-field">Загрузить JSON-файл
                     <input type="file" name="settings_file_upload" accept=".json,application/json">
-                    <small class="field-help">Кнопка ниже загружает файл в папку settings, выбирает его активным и перезапускает чтение.</small>
                 </label>
             </div>
             <div class="row actions">

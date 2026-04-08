@@ -54,6 +54,11 @@ def create_app() -> Flask:
 
     static_csv_dir.mkdir(parents=True, exist_ok=True)
     session_dir.mkdir(parents=True, exist_ok=True)
+    settings_dir = Path.cwd() / "settings"
+    settings_dir.mkdir(parents=True, exist_ok=True)
+    default_settings_file = settings_dir / "settings.json"
+    if not default_settings_file.exists():
+        default_settings_file.write_text("", encoding="utf-8")
 
     app = Flask(
         __name__,

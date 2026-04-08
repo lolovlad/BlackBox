@@ -48,7 +48,11 @@ DATETIME_UI_FORMAT = "%d.%m.%Y %H:%M:%S"
 def _effective_parser_settings_path() -> Path:
     raw = current_app.config.get("PARSER_SETTINGS_PATH", "settings/settings.json")
     p = Path(raw)
-    return p if p.is_absolute() else Path.cwd() / p
+    resolved = p if p.is_absolute() else Path.cwd() / p
+    resolved.parent.mkdir(parents=True, exist_ok=True)
+    if not resolved.exists():
+        resolved.write_text("", encoding="utf-8")
+    return resolved
 
 
 def _settings_dir() -> Path:

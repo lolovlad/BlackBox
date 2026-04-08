@@ -52,8 +52,23 @@ class SettingsCache:
     def get(self, *, force_reload: bool = False) -> dict[str, Any]:
         with self._lock:
             if force_reload or self._cached is None:
-                with self._path.open("r", encoding="utf-8") as f:
-                    self._cached = json.load(f)
+                try:
+                    self._path.parent.mkdir(parents=True, exist_ok=True)
+                    if not self._path.exists():
+                        self._path.write_text("", encoding="utf-8")
+                    raw = self._path.read_text(encoding="utf-8")
+                    if not raw.strip():
+                        self._cached = {"requests": [], "fields": []}
+                    else:
+                        loaded = json.loads(raw)
+                        if isinstance(loaded, dict):
+                            self._cached = loaded
+                        else:
+                            logger.warning("Settings JSON root is not object, using empty config: %s", self._path)
+                            self._cached = {"requests": [], "fields": []}
+                except Exception:
+                    logger.exception("Cannot read settings file, using empty config: %s", self._path)
+                    self._cached = {"requests": [], "fields": []}
             if self._cached is None:
                 raise RuntimeError("Settings cache is not initialized")
             return self._cached
