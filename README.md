@@ -87,7 +87,7 @@ uv run python -m src.seed
 9) Запуск сервера (Uvicorn, полный лог в консоль):
 
 ```powershell
-uv run uvicorn src.web_app:app --host 0.0.0.0 --port 5000 --log-level debug --access-log
+uv run uvicorn src.web_app:asgi_app --host 0.0.0.0 --port 5000 --log-level debug --access-log
 ```
 
 10) Открыть в браузере:

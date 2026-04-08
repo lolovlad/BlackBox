@@ -13,8 +13,12 @@ from src.webui.blueprints.main.router import render_live_dashboard_html
 from src.webui.data_labels import all_analog_keys, all_discrete_keys
 
 flask_app = create_app()
-app = FastAPI()
-app.mount("/", WSGIMiddleware(flask_app))
+# Keep Flask CLI compatibility: FLASK_APP=src.web_app:app
+app = flask_app
+
+# ASGI app for uvicorn + native WebSocket endpoint.
+asgi_app = FastAPI()
+asgi_app.mount("/", WSGIMiddleware(flask_app))
 
 
 def _normalized_columns(payload: dict[str, Any]) -> tuple[list[str], list[str]]:
@@ -29,7 +33,7 @@ def _normalized_columns(payload: dict[str, Any]) -> tuple[list[str], list[str]]:
     return analog, discrete
 
 
-@app.websocket("/ws/dashboard")
+@asgi_app.websocket("/ws/dashboard")
 async def ws_dashboard(websocket: WebSocket):
     await websocket.accept()
     analog_cols = list(all_analog_keys())
@@ -58,4 +62,4 @@ if __name__ == "__main__":
     port = int(os.getenv("PORT", "5000"))
     import uvicorn
 
-    uvicorn.run("src.web_app:app", host=host, port=port, log_level="debug")
+    uvicorn.run("src.web_app:asgi_app", host=host, port=port, log_level="debug")
