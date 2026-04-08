@@ -51,6 +51,7 @@ instance/
 *.db
 blackbox.db
 alarms/
+!/src/templates/alarms/
 backup/
 src/static/csv/*.csv
 
