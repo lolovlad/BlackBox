@@ -1,22 +1,22 @@
 {% extends "base.html" %}
 {% block title %}Графики{% endblock %}
 {% block content %}
-<section class="card charts-page" x-data="chartsPage()" x-init="init()">
+<section class="card charts-page">
     <div class="charts-head">
         <h2>Графики</h2>
         <p class="hint charts-subtitle">Выберите таблицу, период и поля. Без дат включается online-обновление раз в секунду.</p>
     </div>
     <div class="row actions">
-        <button type="button" class="btn secondary" @click="toggleFilters(true)">Фильтры</button>
-        <button type="button" class="btn secondary" @click="resetFilters()">Сбросить фильтры</button>
-        <button type="button" class="btn" @click="renderChart()">Построить график</button>
+        <button type="button" class="btn secondary" id="btn-open-filters">Фильтры</button>
+        <button type="button" class="btn secondary" id="btn-reset-filters">Сбросить фильтры</button>
+        <button type="button" class="btn" id="btn-render-chart">Построить график</button>
     </div>
 
-    <div id="chart-filters-overlay" class="chart-filters-overlay" aria-hidden="true" :class="{open: filtersOpen}" @click="toggleFilters(false)"></div>
-    <aside id="chart-filters-panel" class="chart-filters-panel" aria-hidden="true" :class="{open: filtersOpen}" :aria-hidden="filtersOpen ? 'false' : 'true'">
+    <div id="chart-filters-overlay" class="chart-filters-overlay" aria-hidden="true"></div>
+    <aside id="chart-filters-panel" class="chart-filters-panel" aria-hidden="true">
         <div class="panel-head">
             <h3>Фильтры графика</h3>
-            <button type="button" class="btn secondary" @click="toggleFilters(false)">Закрыть</button>
+            <button type="button" class="btn secondary" id="btn-close-filters">Закрыть</button>
         </div>
         <form id="chart-form" class="chart-form" onsubmit="return false;">
             <div class="filter-grid">
@@ -77,255 +77,210 @@
 
 <script src="{{ url_for('static', filename='vendor/echarts.min.js') }}"></script>
 <script>
-function chartsPage() {
-    return {
-        INIT_URL: "{{ url_for('data_blueprint.charts_api_init') }}",
-        UPDATE_URL: "{{ url_for('data_blueprint.charts_api_update') }}",
-        filtersOpen: false,
-        chart: null,
-        lastTs: null,
-        pollTimer: null,
-        interactingUntil: 0,
-        currentColumns: [],
-        currentLabels: {},
-        xData: [],
-        seriesData: {},
-        init() {
-            this.syncColPanels();
-            const form = document.getElementById('chart-form');
-            form.addEventListener('click', (ev) => {
-                const btn = ev.target.closest('.btn-fields');
-                if (!btn) return;
-                const target = btn.getAttribute('data-target');
-                const action = btn.getAttribute('data-action');
-                form.querySelectorAll('input[name="' + target + '"]').forEach((el) => {
-                    if (el.closest('.chk') && el.closest('.chk').style.display === 'none') return;
-                    el.checked = action === 'all';
-                });
-            });
-            form.querySelectorAll('.field-search').forEach((input) => {
-                input.addEventListener('input', () => {
-                    this.filterFieldList(input.getAttribute('data-target'), input.value);
-                });
-            });
-            document.getElementById('chart-table').addEventListener('change', () => this.syncColPanels());
-            window.addEventListener('resize', () => { if (this.chart) this.chart.resize(); });
-        },
-        toggleFilters(open) {
-            this.filtersOpen = !!open;
-        },
-        syncColPanels() {
-            const t = document.getElementById('chart-table').value;
-            const root = document.getElementById('chart-col-root');
-            root.dataset.cols = t;
-        },
-        filterFieldList(targetName, query) {
-            const form = document.getElementById('chart-form');
-            const normalized = (query || '').trim().toLowerCase();
-            form.querySelectorAll('input[name="' + targetName + '"]').forEach((input) => {
-                const row = input.closest('.chk');
-                if (!row) return;
-                const text = row.getAttribute('data-label') || row.textContent.toLowerCase();
-                row.style.display = (!normalized || text.indexOf(normalized) !== -1) ? '' : 'none';
-            });
-        },
-        selectedColumns(table) {
-            const form = document.getElementById('chart-form');
-            const out = [];
-            if (table === 'analog') {
-                form.querySelectorAll('input[name="analog_col"]:checked').forEach((el) => out.push(el.value));
-            } else {
-                form.querySelectorAll('input[name="discrete_col"]:checked').forEach((el) => out.push(el.value));
-            }
-            return out;
-        },
-        buildQuery(includeSince) {
-            const form = document.getElementById('chart-form');
-            const table = form.querySelector('[name="table"]').value;
-            const q = new URLSearchParams();
-            q.set('table', table);
-            q.set('date_from', form.querySelector('[name="date_from"]').value);
-            q.set('date_to', form.querySelector('[name="date_to"]').value);
-            this.selectedColumns(table).forEach((col) => {
-                q.append(table === 'analog' ? 'analog_col' : 'discrete_col', col);
-            });
-            if (includeSince && this.lastTs) q.set('since', this.lastTs);
-            return q;
-        },
-        ensureChart() {
-            const chartEl = document.getElementById('echarts-main');
-            if (!this.chart) this.chart = echarts.init(chartEl);
-            return this.chart;
-        },
-        recreateChart() {
-            const chartEl = document.getElementById('echarts-main');
-            if (this.chart) {
-                this.chart.dispose();
-                this.chart = null;
-            }
-            this.chart = echarts.init(chartEl);
-            this.chart.on('datazoom', () => { this.interactingUntil = Date.now() + 1200; });
-            this.chart.on('legendselectchanged', () => { this.interactingUntil = Date.now() + 1200; });
-            return this.chart;
-        },
-        buildChartOption(series) {
-            return {
-                tooltip: { trigger: 'axis' },
-                legend: { type: 'scroll' },
-                grid: { left: 45, right: 25, top: 45, bottom: 90 },
-                xAxis: { type: 'category', data: this.xData, boundaryGap: false },
-                yAxis: { type: 'value' },
-                dataZoom: [
-                    { type: 'inside', xAxisIndex: 0, filterMode: 'none' },
-                    { type: 'slider', xAxisIndex: 0, height: 24, bottom: 18 }
-                ],
-                series: series,
-            };
-        },
-        renderEmpty(msg) {
-            const chartEl = document.getElementById('echarts-main');
-            const chartMeta = document.getElementById('chart-meta');
-            if (this.chart) this.chart.clear();
-            chartEl.style.display = 'none';
-            chartMeta.textContent = msg;
-        },
-        setFullData(payload) {
+(function () {
+    var INIT_URL = "{{ url_for('data_blueprint.charts_api_init') }}";
+    var UPDATE_URL = "{{ url_for('data_blueprint.charts_api_update') }}";
+
+    function syncColPanels() {
+        var t = document.getElementById('chart-table').value;
+        var root = document.getElementById('chart-col-root');
+        root.dataset.cols = t;
+    }
+    function filterFieldList(targetName, query) {
+        var normalized = (query || '').trim().toLowerCase();
+        form.querySelectorAll('input[name="' + targetName + '"]').forEach(function (input) {
+            var row = input.closest('.chk');
+            if (!row) return;
+            var text = row.getAttribute('data-label') || row.textContent.toLowerCase();
+            row.style.display = (!normalized || text.indexOf(normalized) !== -1) ? '' : 'none';
+        });
+    }
+
+    var panel = document.getElementById('chart-filters-panel');
+    var overlay = document.getElementById('chart-filters-overlay');
+    var form = document.getElementById('chart-form');
+    var chartMeta = document.getElementById('chart-meta');
+    var chartEl = document.getElementById('echarts-main');
+    var chart = null;
+    var lastTs = null;
+    var pollTimer = null;
+
+    function toggleFilters(open) {
+        if (!open && panel.contains(document.activeElement)) {
+            document.activeElement.blur();
+        }
+        panel.classList.toggle('open', !!open);
+        overlay.classList.toggle('open', !!open);
+        panel.setAttribute('aria-hidden', open ? 'false' : 'true');
+        overlay.setAttribute('aria-hidden', open ? 'false' : 'true');
+    }
+
+    function selectedColumns(table) {
+        var out = [];
+        if (table === 'analog') {
+            form.querySelectorAll('input[name="analog_col"]:checked').forEach(function (el) { out.push(el.value); });
+        } else {
+            form.querySelectorAll('input[name="discrete_col"]:checked').forEach(function (el) { out.push(el.value); });
+        }
+        return out;
+    }
+
+    function buildQuery(includeSince) {
+        var table = form.querySelector('[name="table"]').value;
+        var q = new URLSearchParams();
+        q.set('table', table);
+        q.set('date_from', form.querySelector('[name="date_from"]').value);
+        q.set('date_to', form.querySelector('[name="date_to"]').value);
+        selectedColumns(table).forEach(function (col) {
+            q.append(table === 'analog' ? 'analog_col' : 'discrete_col', col);
+        });
+        if (includeSince && lastTs) q.set('since', lastTs);
+        return q;
+    }
+
+    function ensureChart() {
+        if (!chart) chart = echarts.init(chartEl);
+        return chart;
+    }
+
+    function renderEmpty(msg) {
+        if (chart) chart.clear();
+        chartEl.style.display = 'none';
+        chartMeta.textContent = msg;
+    }
+
+    function setFullData(payload) {
         if (!payload.columns || payload.columns.length === 0) {
-            this.renderEmpty('График пуст. Выберите поля и нажмите "Построить график".');
-            this.lastTs = null;
-            this.currentColumns = [];
-            this.currentLabels = {};
-            this.xData = [];
-            this.seriesData = {};
+            renderEmpty('График пуст. Выберите поля и нажмите "Построить график".');
+            lastTs = null;
             return;
         }
         if (!payload.points || payload.points.length === 0) {
-            this.renderEmpty('Нет данных за выбранный период.');
-            this.lastTs = null;
-            this.currentColumns = [];
-            this.currentLabels = {};
-            this.xData = [];
-            this.seriesData = {};
+            renderEmpty('Нет данных за выбранный период.');
+            lastTs = null;
             return;
         }
 
-        const chartEl = document.getElementById('echarts-main');
-        const chartMeta = document.getElementById('chart-meta');
         chartEl.style.display = '';
         chartMeta.textContent = 'Записей: ' + payload.row_count + '. Для online-режима показывается только текущий день.';
-        const labels = payload.column_labels || {};
-        this.currentColumns = payload.columns.slice();
-        this.currentLabels = labels;
-        this.xData = payload.points.map(function (p) { return p.label; });
-        this.seriesData = {};
-        this.currentColumns.forEach((col) => {
-            this.seriesData[col] = payload.points.map(function (p) { return p.values[col]; });
-        });
-        const series = this.currentColumns.map((col) => {
+        var x = payload.points.map(function (p) { return p.label; });
+        var labels = payload.column_labels || {};
+        var series = payload.columns.map(function (col) {
             return {
-                id: col,
                 name: labels[col] || col,
                 type: 'line',
                 showSymbol: false,
-                data: this.seriesData[col],
+                data: payload.points.map(function (p) { return p.values[col]; })
             };
         });
-        this.recreateChart().setOption(this.buildChartOption(series), true);
-        this.lastTs = payload.last_ts || null;
-    },
-    appendUpdates(payload) {
-        if (!payload.points || payload.points.length === 0 || !this.chart) return;
-        if (!this.currentColumns || this.currentColumns.length === 0) return;
-        if (Date.now() < this.interactingUntil) return;
-        payload.points.forEach((p) => {
-            this.xData.push(p.label);
-            this.currentColumns.forEach((col) => {
-                if (!this.seriesData[col]) this.seriesData[col] = [];
-                this.seriesData[col].push(p.values[col]);
+        ensureChart().setOption({
+            tooltip: { trigger: 'axis' },
+            legend: { type: 'scroll' },
+            grid: { left: 45, right: 25, top: 45, bottom: 90 },
+            xAxis: { type: 'category', data: x, boundaryGap: false },
+            yAxis: { type: 'value' },
+            dataZoom: [
+                { type: 'inside', xAxisIndex: 0, filterMode: 'none' },
+                { type: 'slider', xAxisIndex: 0, height: 24, bottom: 18 }
+            ],
+            series: series
+        }, true);
+        lastTs = payload.last_ts || null;
+    }
+
+    function appendUpdates(payload) {
+        if (!payload.points || payload.points.length === 0 || !chart) return;
+        var option = chart.getOption();
+        if (!option || !option.series || option.series.length === 0) return;
+        payload.points.forEach(function (p) {
+            option.xAxis[0].data.push(p.label);
+            var labels = payload.column_labels || {};
+            option.series.forEach(function (s) {
+                var key = null;
+                for (var k in labels) {
+                    if ((labels[k] || k) === s.name) { key = k; break; }
+                }
+                if (!key) key = s.name;
+                s.data.push(p.values[key]);
             });
         });
-        const series = this.currentColumns.map((col) => ({
-            id: col,
-            name: this.currentLabels[col] || col,
-            type: 'line',
-            showSymbol: false,
-            data: this.seriesData[col],
-        }));
-        this.chart.setOption(
-            {
-                xAxis: { data: this.xData, boundaryGap: false },
-                series: series,
-            },
-            false
-        );
-        this.lastTs = payload.last_ts || this.lastTs;
-    },
-    fetchInit() {
-        const query = this.buildQuery(false);
-        fetch(this.INIT_URL + '?' + query.toString())
-            .then((r) => {
-                if (!r.ok) throw new Error('HTTP ' + r.status);
-                return r.json();
-            })
-            .then((payload) => { this.setFullData(payload); this.restartPolling(); })
-            .catch((err) => {
-                this.renderEmpty('Ошибка загрузки графика: ' + err.message);
-            });
-    },
-    fetchUpdate() {
-        const query = this.buildQuery(true);
-        fetch(this.UPDATE_URL + '?' + query.toString())
-            .then((r) => {
-                if (!r.ok) throw new Error('HTTP ' + r.status);
-                return r.json();
-            })
-            .then((payload) => { this.appendUpdates(payload); })
-            .catch(() => {
-                // Keep current chart state, next poll will retry.
-            });
-    },
-    restartPolling() {
-        const form = document.getElementById('chart-form');
-        if (this.pollTimer) {
-            clearInterval(this.pollTimer);
-            this.pollTimer = null;
+        chart.setOption(option, false);
+        lastTs = payload.last_ts || lastTs;
+    }
+
+    function fetchInit() {
+        var query = buildQuery(false);
+        fetch(INIT_URL + '?' + query.toString())
+            .then(function (r) { return r.json(); })
+            .then(function (payload) { setFullData(payload); restartPolling(); });
+    }
+
+    function fetchUpdate() {
+        var query = buildQuery(true);
+        fetch(UPDATE_URL + '?' + query.toString())
+            .then(function (r) { return r.json(); })
+            .then(function (payload) { appendUpdates(payload); });
+    }
+
+    function restartPolling() {
+        if (pollTimer) {
+            clearInterval(pollTimer);
+            pollTimer = null;
         }
-        const df = form.querySelector('[name="date_from"]').value;
-        const dt = form.querySelector('[name="date_to"]').value;
-        const table = form.querySelector('[name="table"]').value;
-        const cols = this.selectedColumns(table);
+        var df = form.querySelector('[name="date_from"]').value;
+        var dt = form.querySelector('[name="date_to"]').value;
+        var table = form.querySelector('[name="table"]').value;
+        var cols = selectedColumns(table);
         if (!df && !dt && cols.length > 0) {
-            this.pollTimer = setInterval(() => this.fetchUpdate(), 1000);
+            pollTimer = setInterval(fetchUpdate, 1000);
         }
-    },
-    renderChart() {
-        this.toggleFilters(false);
-        this.recreateChart();
-        this.fetchInit();
-    },
-    resetFilters() {
-        const form = document.getElementById('chart-form');
+    }
+
+    document.getElementById('btn-open-filters').addEventListener('click', function () { toggleFilters(true); });
+    document.getElementById('btn-close-filters').addEventListener('click', function () { toggleFilters(false); });
+    overlay.addEventListener('click', function () { toggleFilters(false); });
+    document.getElementById('btn-render-chart').addEventListener('click', function () {
+        toggleFilters(false);
+        fetchInit();
+    });
+
+    document.getElementById('btn-reset-filters').addEventListener('click', function () {
         form.querySelector('[name="table"]').value = 'analog';
         form.querySelector('[name="date_from"]').value = '';
         form.querySelector('[name="date_to"]').value = '';
         form.querySelectorAll('input[name="analog_col"]').forEach(function (el) { el.checked = true; });
         form.querySelectorAll('input[name="discrete_col"]').forEach(function (el) { el.checked = true; });
         form.querySelectorAll('.field-search').forEach(function (el) { el.value = ''; });
-        this.filterFieldList('analog_col', '');
-        this.filterFieldList('discrete_col', '');
-        this.syncColPanels();
-        if (this.pollTimer) {
-            clearInterval(this.pollTimer);
-            this.pollTimer = null;
+        filterFieldList('analog_col', '');
+        filterFieldList('discrete_col', '');
+        syncColPanels();
+        if (pollTimer) {
+            clearInterval(pollTimer);
+            pollTimer = null;
         }
-        this.lastTs = null;
-        this.currentColumns = [];
-        this.currentLabels = {};
-        this.xData = [];
-        this.seriesData = {};
-        this.renderEmpty('График пуст. Выберите поля и нажмите "Построить график".');
-    },
-    };
-}
+        lastTs = null;
+        renderEmpty('График пуст. Выберите поля и нажмите "Построить график".');
+    });
+
+    form.addEventListener('click', function (ev) {
+        var btn = ev.target.closest('.btn-fields');
+        if (!btn) return;
+        var target = btn.getAttribute('data-target');
+        var action = btn.getAttribute('data-action');
+        form.querySelectorAll('input[name="' + target + '"]').forEach(function (el) {
+            if (el.closest('.chk') && el.closest('.chk').style.display === 'none') return;
+            el.checked = action === 'all';
+        });
+    });
+    form.querySelectorAll('.field-search').forEach(function (input) {
+        input.addEventListener('input', function () {
+            filterFieldList(input.getAttribute('data-target'), input.value);
+        });
+    });
+
+    document.getElementById('chart-table').addEventListener('change', syncColPanels);
+    window.addEventListener('resize', function () { if (chart) chart.resize(); });
+    syncColPanels();
+})();
 </script>
 {% endblock %}
