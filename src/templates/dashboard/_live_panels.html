@@ -36,7 +36,12 @@
 </div>
 
 <section class="card">
-    <h3>Сообщения аварий</h3>
+    <h3>
+        Сообщения аварий
+        {% if alarms_enabled %}
+            <small class="hint">Сейчас: {{ alarm_rows|length }}</small>
+        {% endif %}
+    </h3>
     {% if not alarms_enabled %}
         <p class="hint">Таблица аварий недоступна. Выполните миграции БД.</p>
     {% elif alarm_rows %}

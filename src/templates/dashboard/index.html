@@ -3,10 +3,6 @@
 {% block content %}
 <section class="card dashboard-page" x-data="dashboardLivePage()" x-init="init()">
     <h2>Главная панель</h2>
-    <p class="hint">
-        Live-канал:
-        <strong x-text="socketStatus"></strong>
-    </p>
 
     <form id="dashboard-live-form" class="dashboard-controls" onsubmit="return false;" lang="ru" @change="onFiltersChanged()">
         <fieldset>
@@ -34,45 +30,44 @@
     <p><a class="btn" href="{{ url_for('data_blueprint.page') }}">Открыть расширенные таблицы</a></p>
 </section>
 
-<script src="/socket.io/socket.io.js"></script>
 <script>
 function dashboardLivePage() {
     return {
         socket: null,
-        socketStatus: "connecting",
         fallbackTimer: null,
         init() {
-            if (typeof io === "undefined") {
-                this.socketStatus = "fallback (polling)";
-                this.startFallbackPolling();
-                return;
-            }
             this.connectSocket();
         },
         connectSocket() {
-            this.socket = io("/dashboard", { transports: ["websocket", "polling"] });
-            this.socket.on("connect", () => {
-                this.socketStatus = "online";
+            const scheme = window.location.protocol === "https:" ? "wss" : "ws";
+            const wsUrl = `${scheme}://${window.location.host}/ws/dashboard`;
+            this.socket = new WebSocket(wsUrl);
+            this.socket.onopen = () => {
                 this.stopFallbackPolling();
                 this.sendSubscription();
-            });
-            this.socket.on("connect_error", () => {
-                this.socketStatus = "reconnecting";
+            };
+            this.socket.onclose = () => {
                 this.startFallbackPolling();
-            });
-            this.socket.on("disconnect", () => {
-                this.socketStatus = "offline";
+                setTimeout(() => this.connectSocket(), 2000);
+            };
+            this.socket.onerror = () => {
                 this.startFallbackPolling();
-            });
-            this.socket.on("dashboard_live_update", (payload) => {
-                if (!payload || !payload.html) {
+            };
+            this.socket.onmessage = (event) => {
+                let payload = null;
+                try {
+                    payload = JSON.parse(event.data);
+                } catch (_) {
+                    return;
+                }
+                if (!payload || payload.type !== "dashboard_live_update" || !payload.html) {
                     return;
                 }
                 const root = document.getElementById("dashboard-live-root");
                 if (root) {
                     root.innerHTML = payload.html;
                 }
-            });
+            };
         },
         selectedValues(name) {
             const out = [];
@@ -80,16 +75,17 @@ function dashboardLivePage() {
             return out;
         },
         sendSubscription() {
-            if (!this.socket || !this.socket.connected) {
+            if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
                 return;
             }
-            this.socket.emit("dashboard_subscribe", {
+            this.socket.send(JSON.stringify({
+                type: "subscribe",
                 analog_col: this.selectedValues("analog_col"),
                 discrete_col: this.selectedValues("discrete_col"),
-            });
+            }));
         },
         onFiltersChanged() {
-            if (this.socket && this.socket.connected) {
+            if (this.socket && this.socket.readyState === WebSocket.OPEN) {
                 this.sendSubscription();
                 return;
             }
