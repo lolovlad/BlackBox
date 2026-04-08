@@ -85,6 +85,10 @@ function chartsPage() {
         chart: null,
         lastTs: null,
         pollTimer: null,
+        currentColumns: [],
+        currentLabels: {},
+        xData: [],
+        seriesData: {},
         init() {
             this.syncColPanels();
             const form = document.getElementById('chart-form');
@@ -163,11 +167,19 @@ function chartsPage() {
         if (!payload.columns || payload.columns.length === 0) {
             this.renderEmpty('График пуст. Выберите поля и нажмите "Построить график".');
             this.lastTs = null;
+            this.currentColumns = [];
+            this.currentLabels = {};
+            this.xData = [];
+            this.seriesData = {};
             return;
         }
         if (!payload.points || payload.points.length === 0) {
             this.renderEmpty('Нет данных за выбранный период.');
             this.lastTs = null;
+            this.currentColumns = [];
+            this.currentLabels = {};
+            this.xData = [];
+            this.seriesData = {};
             return;
         }
 
@@ -175,21 +187,27 @@ function chartsPage() {
         const chartMeta = document.getElementById('chart-meta');
         chartEl.style.display = '';
         chartMeta.textContent = 'Записей: ' + payload.row_count + '. Для online-режима показывается только текущий день.';
-        const x = payload.points.map(function (p) { return p.label; });
         const labels = payload.column_labels || {};
-        const series = payload.columns.map(function (col) {
+        this.currentColumns = payload.columns.slice();
+        this.currentLabels = labels;
+        this.xData = payload.points.map(function (p) { return p.label; });
+        this.seriesData = {};
+        this.currentColumns.forEach((col) => {
+            this.seriesData[col] = payload.points.map(function (p) { return p.values[col]; });
+        });
+        const series = this.currentColumns.map((col) => {
             return {
                 name: labels[col] || col,
                 type: 'line',
                 showSymbol: false,
-                data: payload.points.map(function (p) { return p.values[col]; })
+                data: this.seriesData[col],
             };
         });
         this.ensureChart().setOption({
             tooltip: { trigger: 'axis' },
             legend: { type: 'scroll' },
             grid: { left: 45, right: 25, top: 45, bottom: 90 },
-            xAxis: { type: 'category', data: x, boundaryGap: false },
+            xAxis: { type: 'category', data: this.xData, boundaryGap: false },
             yAxis: { type: 'value' },
             dataZoom: [
                 { type: 'inside', xAxisIndex: 0, filterMode: 'none' },
@@ -201,21 +219,27 @@ function chartsPage() {
     },
     appendUpdates(payload) {
         if (!payload.points || payload.points.length === 0 || !this.chart) return;
-        var option = this.chart.getOption();
-        if (!option || !option.series || option.series.length === 0) return;
-        payload.points.forEach(function (p) {
-            option.xAxis[0].data.push(p.label);
-            var labels = payload.column_labels || {};
-            option.series.forEach(function (s) {
-                var key = null;
-                for (var k in labels) {
-                    if ((labels[k] || k) === s.name) { key = k; break; }
-                }
-                if (!key) key = s.name;
-                s.data.push(p.values[key]);
+        if (!this.currentColumns || this.currentColumns.length === 0) return;
+        payload.points.forEach((p) => {
+            this.xData.push(p.label);
+            this.currentColumns.forEach((col) => {
+                if (!this.seriesData[col]) this.seriesData[col] = [];
+                this.seriesData[col].push(p.values[col]);
             });
         });
-        this.chart.setOption(option, false);
+        const series = this.currentColumns.map((col) => ({
+            name: this.currentLabels[col] || col,
+            type: 'line',
+            showSymbol: false,
+            data: this.seriesData[col],
+        }));
+        this.chart.setOption(
+            {
+                xAxis: { type: 'category', data: this.xData, boundaryGap: false },
+                series: series,
+            },
+            false
+        );
         this.lastTs = payload.last_ts || this.lastTs;
     },
     fetchInit() {
@@ -276,6 +300,10 @@ function chartsPage() {
             this.pollTimer = null;
         }
         this.lastTs = null;
+        this.currentColumns = [];
+        this.currentLabels = {};
+        this.xData = [];
+        this.seriesData = {};
         this.renderEmpty('График пуст. Выберите поля и нажмите "Построить график".');
     },
     };
