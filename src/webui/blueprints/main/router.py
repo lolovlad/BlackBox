@@ -13,8 +13,9 @@ from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
-from flask import Blueprint, Response, current_app, flash, redirect, render_template, request, url_for
+from flask import Blueprint, Response, current_app, flash, redirect, render_template, render_template_string, request, url_for
 from flask_login import current_user, login_required
+from jinja2 import TemplateNotFound
 
 from src.webui.auth_utils import admin_required
 from src.webui.data_labels import (
@@ -171,7 +172,41 @@ def settings():
 def event_logs_page():
     repo = DataRepository(current_app.extensions["session_factory"])
     rows = repo.list_event_logs(limit=500)
-    return render_template("settings/event_logs.html", rows=rows)
+    try:
+        return render_template("settings/event_logs.html", rows=rows)
+    except TemplateNotFound:
+        return render_template_string(
+            """
+{% extends "base.html" %}
+{% block title %}Логи событий · BlackBox{% endblock %}
+{% block content %}
+<section class="card">
+    <h2>Логи событий системы</h2>
+    <p class="hint">Показаны последние 500 записей (новые сверху).</p>
+    <div class="table-wrap">
+        <table>
+            <thead>
+            <tr><th>Время</th><th>Уровень</th><th>Код</th><th>Сообщение</th><th>Payload</th></tr>
+            </thead>
+            <tbody>
+            {% for row in rows %}
+                <tr>
+                    <td>{{ format_in_configured_timezone(row.created_at, "%d.%m.%Y %H:%M:%S") }}</td>
+                    <td>{{ row.level }}</td>
+                    <td>{{ row.code }}</td>
+                    <td>{{ row.message }}</td>
+                    <td><code>{{ row.payload_json or '' }}</code></td>
+                </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% if not rows %}<p class="hint">Записей пока нет.</p>{% endif %}
+</section>
+{% endblock %}
+""",
+            rows=rows,
+        )
 
 
 @main_router.route("/settings/instructions/<slug>", methods=["GET"])
