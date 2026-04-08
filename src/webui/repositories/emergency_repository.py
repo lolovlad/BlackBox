@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime
+
 from sqlalchemy import select
 from sqlalchemy.orm import joinedload, sessionmaker
 
@@ -11,24 +13,39 @@ class EmergencyRepository:
         self._session_factory = session_factory
 
     def list_conditions(self) -> list[EmergencyConditions]:
-        stmt = select(EmergencyConditions).order_by(EmergencyConditions.id.asc())
+        stmt = (
+            select(EmergencyConditions)
+            .where(EmergencyConditions.is_deleted.is_(False))
+            .order_by(EmergencyConditions.id.asc())
+        )
         with self._session_factory() as session:
             return list(session.execute(stmt).scalars().all())
 
-    def create_condition(self, *, condition: str) -> EmergencyConditions:
-        row = EmergencyConditions(condition=condition)
+    def create_condition(self, *, name: str, condition: str) -> EmergencyConditions:
+        row = EmergencyConditions(name=name, condition=condition)
         with self._session_factory() as session:
             session.add(row)
             session.commit()
             session.refresh(row)
             return row
 
-    def delete_condition(self, condition_id: int) -> bool:
+    def update_condition(self, *, condition_id: int, name: str, condition: str) -> bool:
         with self._session_factory() as session:
             row = session.get(EmergencyConditions, condition_id)
-            if row is None:
+            if row is None or row.is_deleted:
                 return False
-            session.delete(row)
+            row.name = name
+            row.condition = condition
+            session.commit()
+            return True
+
+    def soft_delete_condition(self, condition_id: int) -> bool:
+        with self._session_factory() as session:
+            row = session.get(EmergencyConditions, condition_id)
+            if row is None or row.is_deleted:
+                return False
+            row.is_deleted = True
+            row.deleted_at = datetime.now()
             session.commit()
             return True
 

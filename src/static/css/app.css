@@ -247,6 +247,7 @@ th { background: #c3cce0; color: #2d3540; font-weight: 600; }
 
 .settings-page .rules-table { width: 100%; font-size: 13px; margin-top: 8px; }
 .settings-page .rules-table td { vertical-align: top; }
+.settings-page .rule-edit-form { background: #f8f9ff; border: 1px dashed var(--md-outline); border-radius: 10px; padding: 10px; }
 .settings-page .rule-condition-cell {
     font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
     font-size: 11px;
@@ -262,6 +263,32 @@ th { background: #c3cce0; color: #2d3540; font-weight: 600; }
     font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
     font-size: 12px;
     box-sizing: border-box;
+}
+
+.rules-help-modal {
+    border: 0;
+    padding: 0;
+    background: transparent;
+    max-width: min(880px, 95vw);
+}
+.rules-help-modal::backdrop {
+    background: rgba(0, 0, 0, 0.45);
+}
+.rules-help-modal__panel {
+    background: var(--md-surface);
+    border: 1px solid var(--md-outline);
+    border-radius: 14px;
+    padding: 14px 16px;
+    box-shadow: var(--md-shadow);
+}
+.rules-help-modal__panel h3 {
+    margin: 0 0 8px;
+}
+.rules-help-modal__panel ul {
+    margin: 8px 0 10px;
+    padding-left: 18px;
+    display: grid;
+    gap: 6px;
 }
 
 .parser-json {

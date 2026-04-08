@@ -204,15 +204,40 @@ def alarms_page():
 @main_router.route("/settings/emergency-rules", methods=["POST"])
 @admin_required
 def emergency_rule_add():
+    name = (request.form.get("rule_name") or "").strip()
     condition = (request.form.get("rule_condition") or "").strip()
+    if not name:
+        flash("Укажите название правила.", "error")
+        return redirect(url_for("main_blueprint.settings"))
     parser_path = _effective_parser_settings_path()
     ok, err = validate_emergency_rule_expression(condition, settings_path=parser_path)
     if not ok:
         flash(err or "Некорректное правило.", "error")
         return redirect(url_for("main_blueprint.settings"))
     er_repo = EmergencyRepository(current_app.extensions["session_factory"])
-    er_repo.create_condition(condition=condition)
+    er_repo.create_condition(name=name, condition=condition)
     flash("Правило аварии сохранено.", "success")
+    return redirect(url_for("main_blueprint.settings"))
+
+
+@main_router.route("/settings/emergency-rules/<int:rule_id>/edit", methods=["POST"])
+@admin_required
+def emergency_rule_edit(rule_id: int):
+    name = (request.form.get("rule_name") or "").strip()
+    condition = (request.form.get("rule_condition") or "").strip()
+    if not name:
+        flash("Укажите название правила.", "error")
+        return redirect(url_for("main_blueprint.settings"))
+    parser_path = _effective_parser_settings_path()
+    ok, err = validate_emergency_rule_expression(condition, settings_path=parser_path)
+    if not ok:
+        flash(err or "Некорректное правило.", "error")
+        return redirect(url_for("main_blueprint.settings"))
+    er_repo = EmergencyRepository(current_app.extensions["session_factory"])
+    if er_repo.update_condition(condition_id=rule_id, name=name, condition=condition):
+        flash("Правило обновлено.", "success")
+    else:
+        flash("Правило не найдено.", "error")
     return redirect(url_for("main_blueprint.settings"))
 
 
@@ -220,8 +245,8 @@ def emergency_rule_add():
 @admin_required
 def emergency_rule_delete(rule_id: int):
     er_repo = EmergencyRepository(current_app.extensions["session_factory"])
-    if er_repo.delete_condition(rule_id):
-        flash("Правило удалено.", "success")
+    if er_repo.soft_delete_condition(rule_id):
+        flash("Правило помечено удалённым.", "success")
     else:
         flash("Правило не найдено.", "error")
     return redirect(url_for("main_blueprint.settings"))

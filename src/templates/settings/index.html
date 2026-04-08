@@ -75,6 +75,7 @@
                 <thead>
                 <tr>
                     <th>№</th>
+                    <th>Название</th>
                     <th>Условие</th>
                     <th></th>
                 </tr>
@@ -83,11 +84,30 @@
                 {% for rule in emergency_conditions %}
                 <tr>
                     <td>{{ rule.id }}</td>
+                    <td>{{ rule.name }}</td>
                     <td class="rule-condition-cell">{{ rule.condition }}</td>
                     <td>
                         <form method="post" action="{{ url_for('main_blueprint.emergency_rule_delete', rule_id=rule.id) }}" class="row">
                             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                             <button type="submit" class="btn secondary">Удалить</button>
+                        </form>
+                    </td>
+                </tr>
+                <tr>
+                    <td colspan="4">
+                        <form method="post" action="{{ url_for('main_blueprint.emergency_rule_edit', rule_id=rule.id) }}" class="settings-form rule-edit-form">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                            <div class="settings-grid">
+                                <label class="filter-field">Название
+                                    <input type="text" name="rule_name" maxlength="255" value="{{ rule.name }}" required>
+                                </label>
+                            </div>
+                            <label class="filter-field">Условие
+                                <textarea name="rule_condition" class="rule-expression" required spellcheck="false">{{ rule.condition }}</textarea>
+                            </label>
+                            <div class="row actions">
+                                <button type="submit" class="btn secondary">Сохранить изменения</button>
+                            </div>
                         </form>
                     </td>
                 </tr>
@@ -101,13 +121,48 @@
 
         <form method="post" action="{{ url_for('main_blueprint.emergency_rule_add') }}" class="settings-form" style="margin-top: 12px;">
             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <div class="settings-grid">
+                <label class="filter-field">Название
+                    <input type="text" name="rule_name" maxlength="255" required placeholder="Например: Низкое давление масла">
+                </label>
+            </div>
             <label class="filter-field">Условие
                 <textarea name="rule_condition" class="rule-expression" required spellcheck="false" placeholder="UbusL1L2 &gt; 400 or Engine_running"></textarea>
             </label>
             <div class="row actions">
                 <button type="submit" class="btn">Добавить правило</button>
+                <button type="button" class="btn secondary" id="open-rules-help">Инструкция по правилам</button>
             </div>
         </form>
     </fieldset>
 </section>
+
+<dialog id="rules-help-modal" class="rules-help-modal">
+    <form method="dialog" class="rules-help-modal__panel">
+        <h3>Как писать правила аварий</h3>
+        <p>Правило должно возвращать <code>True</code> или <code>False</code>.</p>
+        <ul>
+            <li>Проверка активной аварии по тексту: <code>'1670 EmergStop DI24' in active_alarms</code></li>
+            <li>Комбинация с аналогом: <code>('Start Fail' in active_alarms) and (RPM &lt; 300)</code></li>
+            <li>Комбинация с дискретом: <code>('1770 Low Oil Press. DI92' in active_alarms) and Engine_running</code></li>
+            <li>Логические операторы: <code>and</code>, <code>or</code>, <code>not</code></li>
+            <li>Разрешенные функции: <code>abs</code>, <code>min</code>, <code>max</code>, <code>round</code>, <code>len</code></li>
+        </ul>
+        <p class="hint">Имена переменных берите из <code>settings.json</code> (поле <code>name</code>). Для <code>in active_alarms</code> используйте точный текст аварии из секций <code>bits</code>.</p>
+        <div class="row actions">
+            <button type="submit" class="btn">Закрыть</button>
+        </div>
+    </form>
+</dialog>
+
+<script>
+(() => {
+    const modal = document.getElementById("rules-help-modal");
+    const openBtn = document.getElementById("open-rules-help");
+    if (!modal || !openBtn || typeof modal.showModal !== "function") {
+        return;
+    }
+    openBtn.addEventListener("click", () => modal.showModal());
+})();
+</script>
 {% endblock %}

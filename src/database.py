@@ -56,9 +56,9 @@ class Alarms(db.Model, DateMixin):
     description: Mapped[str] = mapped_column(String(255), nullable=True)
 
 
-class EmergencyConditions(db.Model):
+class EmergencyConditions(db.Model, DeleteMixin):
     __tablename__ = "emergency_conditions"
-    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
     condition: Mapped[str] = mapped_column(Text, nullable=False)
     emergencies: Mapped[list["Emergency"]] = relationship(back_populates="emergency_condition")
 
