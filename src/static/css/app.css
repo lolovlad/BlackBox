@@ -278,6 +278,10 @@ th { background: #c3cce0; color: #2d3540; font-weight: 600; }
     margin-top: 2px;
     flex: 0 0 auto;
 }
+.export-panel-drawer .chk .bi {
+    margin-top: 1px;
+    color: var(--md-primary);
+}
 .export-panel-drawer fieldset {
     border: 1px solid var(--md-outline);
     border-radius: 12px;
@@ -364,6 +368,32 @@ th { background: #c3cce0; color: #2d3540; font-weight: 600; }
 .discrete-list li.state-off { border-color: #9ca3af; background: #f9fafb; }
 .alarm-time { color: #6b7280; font-size: 12px; }
 .alarm-text { font-weight: 600; color: var(--md-accent); }
+.monitor-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 10px;
+}
+.monitor-item {
+    border: 1px solid #e5e7eb;
+    border-radius: 10px;
+    padding: 10px 12px;
+    background: #fafafa;
+}
+.monitor-title {
+    font-size: 12px;
+    color: #6b7280;
+}
+.monitor-value {
+    font-size: 20px;
+    font-weight: 700;
+    line-height: 1.2;
+    margin-top: 4px;
+}
+.monitor-hint {
+    margin-top: 6px;
+    font-size: 12px;
+    color: #374151;
+}
 
 /* System settings page */
 .settings-page .hint { color: var(--md-subtext); margin-top: 6px; }

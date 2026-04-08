@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
+import time
 from pathlib import Path
+from typing import Any
 
 from flask import Blueprint, current_app, flash, redirect, render_template, request, url_for
 from flask_login import current_user, login_required
@@ -316,6 +319,8 @@ def _build_live_dashboard_context(
         for item in alarms
     ]
 
+    system_monitor = _collect_system_monitor()
+
     return {
         "analog_time": analog_time,
         "analog_items": analog_items,
@@ -323,7 +328,48 @@ def _build_live_dashboard_context(
         "discrete_items": discrete_items,
         "alarm_rows": alarm_rows,
         "alarms_enabled": collector._alarms_enabled,
+        "system_monitor": system_monitor,
     }
+
+
+def _collect_system_monitor() -> dict[str, Any]:
+    stats: dict[str, Any] = {
+        "disk": {"used_gb": None, "total_gb": None, "free_gb": None, "percent": None},
+        "cpu": {"percent": None, "cores_logical": None, "cores_physical": None},
+        "memory": {"used_gb": None, "total_gb": None, "percent": None},
+        "process": {"pid": os.getpid(), "uptime_sec": None},
+    }
+    try:
+        du = shutil.disk_usage(Path.cwd())
+        stats["disk"] = {
+            "used_gb": round((du.total - du.free) / (1024**3), 2),
+            "total_gb": round(du.total / (1024**3), 2),
+            "free_gb": round(du.free / (1024**3), 2),
+            "percent": round(((du.total - du.free) / du.total) * 100.0, 1) if du.total else 0.0,
+        }
+    except Exception:
+        pass
+
+    try:
+        import psutil  # type: ignore
+
+        vm = psutil.virtual_memory()
+        proc = psutil.Process(os.getpid())
+        stats["cpu"] = {
+            "percent": round(psutil.cpu_percent(interval=None), 1),
+            "cores_logical": int(psutil.cpu_count(logical=True) or 0),
+            "cores_physical": int(psutil.cpu_count(logical=False) or 0),
+        }
+        stats["memory"] = {
+            "used_gb": round((vm.total - vm.available) / (1024**3), 2),
+            "total_gb": round(vm.total / (1024**3), 2),
+            "percent": round(float(vm.percent), 1),
+        }
+        stats["process"]["uptime_sec"] = int(max(0.0, (time.time() - proc.create_time())))
+    except Exception:
+        pass
+
+    return stats
 
 
 @main_router.route("/dashboard/live", methods=["GET"])

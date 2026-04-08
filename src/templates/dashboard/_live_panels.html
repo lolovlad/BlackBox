@@ -52,3 +52,68 @@
         <p class="hint">Активных аварийных сообщений нет.</p>
     {% endif %}
 </section>
+
+<section class="card">
+    <h3>Мониторинг устройства</h3>
+    <div class="monitor-grid">
+        <div class="monitor-item">
+            <div class="monitor-title">Диск</div>
+            <div class="monitor-value">
+                {% if system_monitor.disk.percent is not none %}
+                    {{ system_monitor.disk.percent }}%
+                {% else %}
+                    n/a
+                {% endif %}
+            </div>
+            <div class="monitor-hint">
+                {% if system_monitor.disk.used_gb is not none %}
+                    {{ system_monitor.disk.used_gb }} / {{ system_monitor.disk.total_gb }} ГБ, свободно {{ system_monitor.disk.free_gb }} ГБ
+                {% else %}
+                    Данные недоступны
+                {% endif %}
+            </div>
+        </div>
+        <div class="monitor-item">
+            <div class="monitor-title">CPU</div>
+            <div class="monitor-value">
+                {% if system_monitor.cpu.percent is not none %}
+                    {{ system_monitor.cpu.percent }}%
+                {% else %}
+                    n/a
+                {% endif %}
+            </div>
+            <div class="monitor-hint">
+                Ядра: {{ system_monitor.cpu.cores_physical or "?" }} физ / {{ system_monitor.cpu.cores_logical or "?" }} лог
+            </div>
+        </div>
+        <div class="monitor-item">
+            <div class="monitor-title">RAM</div>
+            <div class="monitor-value">
+                {% if system_monitor.memory.percent is not none %}
+                    {{ system_monitor.memory.percent }}%
+                {% else %}
+                    n/a
+                {% endif %}
+            </div>
+            <div class="monitor-hint">
+                {% if system_monitor.memory.used_gb is not none %}
+                    {{ system_monitor.memory.used_gb }} / {{ system_monitor.memory.total_gb }} ГБ
+                {% else %}
+                    Данные недоступны
+                {% endif %}
+            </div>
+        </div>
+        <div class="monitor-item">
+            <div class="monitor-title">Процесс</div>
+            <div class="monitor-value">PID {{ system_monitor.process.pid }}</div>
+            <div class="monitor-hint">
+                Uptime:
+                {% if system_monitor.process.uptime_sec is not none %}
+                    {{ system_monitor.process.uptime_sec }} сек
+                {% else %}
+                    n/a
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</section>

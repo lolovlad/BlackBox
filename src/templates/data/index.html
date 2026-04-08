@@ -79,7 +79,9 @@
 <aside id="export-modal" class="chart-filters-panel export-panel-drawer" aria-hidden="true" :class="{open: exportModalOpen}" :aria-hidden="exportModalOpen ? 'false' : 'true'">
     <div class="panel-head">
         <h3>Экспорт данных</h3>
-        <button type="button" class="btn secondary" id="export-cancel" @click="toggleExportModal(false)">Exit</button>
+        <button type="button" class="btn secondary" id="export-cancel" @click="toggleExportModal(false)" title="Закрыть" aria-label="Закрыть">
+            <i class="bi bi-x-lg"></i>
+        </button>
     </div>
     <p class="hint">Выберите период, таблицы и нужные поля. Экспорт без лимита пагинации.</p>
     <form id="export-form">
@@ -134,8 +136,8 @@
             <fieldset>
                 <legend>Формат экспорта</legend>
                 <div class="checkbox-grid">
-                    <label class="chk"><input type="radio" name="export_format" value="csv_zip" checked> Пакет CSV (ZIP-архив)</label>
-                    <label class="chk"><input type="radio" name="export_format" value="excel"> Excel (1 файл, 3 листа)</label>
+                    <label class="chk"><input type="radio" name="export_format" value="csv_zip" checked> <i class="bi bi-file-earmark-zip"></i> Пакет CSV (ZIP-архив)</label>
+                    <label class="chk"><input type="radio" name="export_format" value="excel"> <i class="bi bi-file-earmark-excel"></i> Excel (1 файл, 3 листа)</label>
                 </div>
             </fieldset>
     </form>
