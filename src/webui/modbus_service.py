@@ -7,7 +7,7 @@ import struct
 import threading
 import time
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -400,6 +400,8 @@ class ModbusCollector:
                 # Persist timestamps already in configured APP_TIMEZONE.
                 created_at = now_in_configured_timezone_naive()
                 processed = parse_fields(config, source_values)
+                if self._alarms_enabled:
+                    self._persist_alarm_snapshot(created_at=created_at, processed=processed)
                 self._append({"created_at": created_at, "sources": source_values, "processed": processed})
                 try:
                     self._events_queue.put_nowait((created_at, dict(processed)))
@@ -467,27 +469,16 @@ class ModbusCollector:
     def _flush(self, batch: list[dict[str, Any]]) -> None:
         session = self._session_factory()
         flush_started = time.monotonic()
-        alarms_written = 0
         try:
             for sample in batch:
                 created_at = sample["created_at"]
                 blob = pack_snapshot(dict(sample.get("sources", {})))
                 session.add(Samples(created_at=created_at, date=blob))
             session.commit()
-
-            if self._alarms_enabled:
-                for sample in batch:
-                    created_at = sample["created_at"]
-                    processed = sample.get("processed")
-                    if not isinstance(processed, dict):
-                        processed = parse_fields(_load_settings(), dict(sample.get("sources", {})))
-                    alarms_written += self._sync_alarm_states(session=session, created_at=created_at, processed=processed)
-                session.commit()
             elapsed_ms = (time.monotonic() - flush_started) * 1000.0
             logger.info(
-                "DB flush: samples_written=%d alarms_written=%d elapsed_ms=%.1f",
+                "DB flush: samples_written=%d elapsed_ms=%.1f",
                 len(batch),
-                alarms_written,
                 elapsed_ms,
             )
         except OperationalError:
@@ -514,30 +505,6 @@ class ModbusCollector:
         for alarm_name in sorted(active_now):
             is_new = alarm_name not in self._active_alarm_names
             if is_new:
-                last_row_stmt = (
-                    select(Alarms)
-                    .where(Alarms.name == alarm_name)
-                    .order_by(Alarms.created_at.desc(), Alarms.id.desc())
-                    .limit(1)
-                )
-                last_row = session.execute(last_row_stmt).scalar_one_or_none()
-                if last_row is not None and str(getattr(last_row, "state", "active")) == "active" and created_at > last_row.created_at:
-                    close_payload = {
-                        "alarm": alarm_name,
-                        "created_at": created_at.isoformat(),
-                        "state": "inactive",
-                        "reason": "auto_close_before_reopen",
-                    }
-                    session.add(
-                        Alarms(
-                            created_at=created_at,
-                            date=json.dumps(close_payload, ensure_ascii=False).encode("utf-8"),
-                            name=alarm_name,
-                            state="inactive",
-                            description="Alarm auto-closed before reopen",
-                        )
-                    )
-                    written += 1
                 payload = {"alarm": alarm_name, "created_at": created_at.isoformat(), "state": "active"}
                 session.add(
                     Alarms(
@@ -567,6 +534,18 @@ class ModbusCollector:
             self._active_alarm_names.discard(alarm_name)
 
         return written
+
+    def _persist_alarm_snapshot(self, *, created_at: datetime, processed: dict[str, Any]) -> None:
+        session = self._session_factory()
+        try:
+            written = self._sync_alarm_states(session=session, created_at=created_at, processed=processed)
+            if written:
+                session.commit()
+        except Exception:
+            session.rollback()
+            logger.exception("Failed to persist alarm states")
+        finally:
+            session.close()
 
     def _close_all_active_alarms(self, *, created_at: datetime, reason: str) -> None:
         if not self._active_alarm_names:
