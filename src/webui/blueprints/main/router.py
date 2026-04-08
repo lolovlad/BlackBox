@@ -13,7 +13,7 @@ from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
-from flask import Blueprint, current_app, flash, redirect, render_template, request, url_for
+from flask import Blueprint, Response, current_app, flash, redirect, render_template, request, url_for
 from flask_login import current_user, login_required
 
 from src.webui.auth_utils import admin_required
@@ -125,6 +125,16 @@ def _settings_page_context(env_values: dict, parser_text: str) -> dict:
     }
 
 
+def _instructions_dir() -> Path:
+    return Path.cwd() / "instructions"
+
+
+_INSTRUCTION_FILES: dict[str, str] = {
+    "emergency-rules": "emergency-rules.md",
+    "settings-json": "settings-json.md",
+}
+
+
 @main_router.route("/", methods=["GET"])
 def index():
     if current_user.is_authenticated:
@@ -154,6 +164,19 @@ def settings():
     with parser_path.open("r", encoding="utf-8") as f:
         parser_text = f.read()
     return render_template("settings/index.html", **_settings_page_context(values, parser_text))
+
+
+@main_router.route("/settings/instructions/<slug>", methods=["GET"])
+@admin_required
+def settings_instruction(slug: str):
+    filename = _INSTRUCTION_FILES.get(str(slug).strip().lower())
+    if not filename:
+        return Response("Инструкция не найдена.", status=404, mimetype="text/plain")
+    path = _instructions_dir() / filename
+    if not path.exists():
+        return Response("Файл инструкции отсутствует.", status=404, mimetype="text/plain")
+    text = path.read_text(encoding="utf-8")
+    return Response(text, status=200, mimetype="text/plain")
 
 
 @main_router.route("/settings", methods=["POST"])

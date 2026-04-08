@@ -74,7 +74,6 @@
         <fieldset>
             <legend>Редактирование активного файла ({{ active_settings_file }})</legend>
             <textarea name="parser_json" class="parser-json" spellcheck="false">{{ parser_text }}</textarea>
-            <p class="hint">Для скрытых служебных полей добавьте <code>"system": true</code> (также поддерживаются <code>"is_system"</code> и <code>"internal"</code>): поле останется доступным для выражений, но не попадет в интерфейс и экспорт.</p>
         </fieldset>
 
         <div class="row actions">
@@ -148,7 +147,8 @@
             </label>
             <div class="row actions">
                 <button type="submit" class="btn">Добавить правило</button>
-                <button type="button" class="btn secondary" @click="openRulesHelp()">Инструкция по правилам</button>
+                <button type="button" class="btn secondary" @click="openInstruction('emergency-rules', 'Инструкция по правилам')">Инструкция по правилам</button>
+                <button type="button" class="btn secondary" @click="openInstruction('settings-json', 'Инструкция по settings.json')">Инструкция по settings.json</button>
             </div>
         </form>
     </fieldset>
@@ -156,36 +156,30 @@
 
 <dialog id="rules-help-modal" class="rules-help-modal" x-ref="rulesHelpModal">
     <form method="dialog" class="rules-help-modal__panel">
-        <h3>Как писать правила аварий</h3>
-        <p class="hint">Условие — выражение для <a href="https://pypi.org/project/simpleeval/" rel="noopener noreferrer">simpleeval</a>: сравнения, <code>and</code>/<code>or</code>/<code>not</code>, <code>in</code> для проверки текста аварии в списке bitfield. Имена переменных должны совпадать с полями <code>name</code> в <code>settings.json</code> (включая имена с точками, например <code>Gov.Reg.Value</code>). Для дискретов и аналогов — те же имена; для ошибок в <code>in</code> — строки из секций <code>bits</code> у bitfield. Допустимы функции: <code>abs</code>, <code>min</code>, <code>max</code>, <code>round</code>, <code>len</code>.</p>
-        <p>Правило должно возвращать <code>True</code> или <code>False</code>.</p>
-        <ul>
-            <li>Проверка активной аварии по тексту: <code>'1670 EmergStop DI24' in active_alarms</code></li>
-            <li>Комбинация с аналогом: <code>('Start Fail' in active_alarms) and (RPM &lt; 300)</code></li>
-            <li>Комбинация с дискретом: <code>('1770 Low Oil Press. DI92' in active_alarms) and Engine_running</code></li>
-            <li>Логические операторы: <code>and</code>, <code>or</code>, <code>not</code></li>
-            <li>Разрешенные функции: <code>abs</code>, <code>min</code>, <code>max</code>, <code>round</code>, <code>len</code></li>
-        </ul>
-        <p class="hint">Имена переменных берите из <code>settings.json</code> (поле <code>name</code>). Для <code>in active_alarms</code> используйте точный текст аварии из секций <code>bits</code>.</p>
+        <h3 x-text="instructionTitle">Инструкция</h3>
+        <div id="instruction-content" class="hint"></div>
         <div class="row actions">
             <button type="submit" class="btn">Закрыть</button>
         </div>
     </form>
 </dialog>
 
+<script src="{{ url_for('static', filename='vendor/marked.min.js') }}"></script>
+<script src="{{ url_for('static', filename='js/instructions-modal.js') }}"></script>
 <script>
 function settingsPage() {
     return {
-        openRulesHelp() {
+        instructionTitle: "Инструкция",
+        async openInstruction(slug, title) {
+            this.instructionTitle = title || "Инструкция";
             const modal = this.$refs?.rulesHelpModal || document.getElementById("rules-help-modal");
-            if (!modal) {
-                return;
-            }
-            if (typeof modal.showModal === "function") {
-                modal.showModal();
-                return;
-            }
-            modal.setAttribute("open", "open");
+            if (!modal) return;
+            const contentNode = document.getElementById("instruction-content");
+            if (!contentNode) return;
+            contentNode.innerHTML = "<p>Загрузка...</p>";
+            if (typeof modal.showModal === "function") modal.showModal();
+            else modal.setAttribute("open", "open");
+            await window.InstructionsModal.loadMarkdownToNode(`/settings/instructions/${slug}`, contentNode);
         },
     };
 }
