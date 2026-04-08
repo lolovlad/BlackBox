@@ -18,7 +18,6 @@ app = flask_app
 
 # ASGI app for uvicorn + native WebSocket endpoint.
 asgi_app = FastAPI()
-asgi_app.mount("/", WSGIMiddleware(flask_app))
 
 
 def _normalized_columns(payload: dict[str, Any]) -> tuple[list[str], list[str]]:
@@ -55,6 +54,10 @@ async def ws_dashboard(websocket: WebSocket):
             await websocket.send_json({"type": "dashboard_live_update", "html": html})
     except WebSocketDisconnect:
         return
+
+
+# Mount Flask routes after websocket routes, so /ws/* is handled by ASGI first.
+asgi_app.mount("/", WSGIMiddleware(flask_app))
 
 
 if __name__ == "__main__":
