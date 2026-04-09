@@ -248,12 +248,17 @@ th { background: #c3cce0; color: #2d3540; font-weight: 600; }
     opacity: 0;
     pointer-events: none;
     transition: transform 0.2s ease, opacity 0.2s ease;
-    overflow: auto;
+    overflow: hidden;
 }
 .export-panel-drawer.open {
     transform: translateY(0);
     opacity: 1;
     pointer-events: auto;
+}
+.export-panel-drawer .export-modal-content {
+    height: 100%;
+    overflow: auto;
+    padding: 2px 2px 12px 2px;
 }
 .export-panel-drawer .filter-grid {
     grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
@@ -294,7 +299,27 @@ th { background: #c3cce0; color: #2d3540; font-weight: 600; }
     top: 0;
     background: #fff;
     z-index: 1;
-    padding-bottom: 8px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    margin: 0 0 10px;
+    padding: 6px 0 8px;
+    border-bottom: 1px solid #eef0f5;
+}
+.export-panel-drawer .panel-head h3 {
+    margin: 0;
+    line-height: 1.2;
+}
+.export-close-btn {
+    width: 34px;
+    height: 34px;
+    min-width: 34px;
+    border-radius: 10px;
+    padding: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
 }
 .export-panel-drawer .filter-field input,
 .export-panel-drawer .filter-field select {
@@ -308,7 +333,7 @@ th { background: #c3cce0; color: #2d3540; font-weight: 600; }
 }
 #export-outcome { margin-top: 10px; }
 .export-loading-overlay {
-    position: fixed;
+    position: absolute;
     inset: 0;
     z-index: 130;
     background: rgba(17, 24, 39, 0.45);

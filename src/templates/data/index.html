@@ -77,14 +77,15 @@
 
 <div id="export-overlay" class="chart-filters-overlay" aria-hidden="true" :class="{open: exportModalOpen}" @click="toggleExportModal(false)"></div>
 <aside id="export-modal" class="chart-filters-panel export-panel-drawer" aria-hidden="true" :class="{open: exportModalOpen}" :aria-hidden="exportModalOpen ? 'false' : 'true'">
-    <div class="panel-head">
-        <h3>Экспорт данных</h3>
-        <button type="button" class="btn secondary" id="export-cancel" @click="toggleExportModal(false)" title="Закрыть" aria-label="Закрыть">
-            <i class="bi bi-x-lg"></i>
-        </button>
-    </div>
-    <p class="hint">Выберите период, таблицы и нужные поля. Экспорт без лимита пагинации.</p>
-    <form id="export-form" onsubmit="return false;">
+    <div class="export-modal-content">
+        <div class="panel-head">
+            <h3>Экспорт данных</h3>
+            <button type="button" class="btn secondary export-close-btn" id="export-cancel" @click="toggleExportModal(false)" title="Закрыть" aria-label="Закрыть">
+                <i class="bi bi-x-lg"></i>
+            </button>
+        </div>
+        <p class="hint">Выберите период, таблицы и нужные поля. Экспорт без лимита пагинации.</p>
+        <form id="export-form" onsubmit="return false;">
             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
             <div class="filter-grid">
                 <label class="filter-field">Дата/время начала
@@ -140,10 +141,11 @@
                     <label class="chk"><input type="radio" name="export_format" value="excel"> <i class="bi bi-file-earmark-excel"></i> Excel (1 файл, 3 листа)</label>
                 </div>
             </fieldset>
-    </form>
-    <div id="export-outcome"></div>
-    <div class="modal-actions">
-        <button type="button" class="btn" id="export-confirm-btn" @click="submitExport()" :disabled="exportLoading" x-text="exportLoading ? 'Экспорт...' : 'Экспортировать'"></button>
+        </form>
+        <div id="export-outcome"></div>
+        <div class="modal-actions">
+            <button type="button" class="btn" id="export-confirm-btn" @click="submitExport()" :disabled="exportLoading" x-text="exportLoading ? 'Экспорт...' : 'Экспортировать'"></button>
+        </div>
     </div>
     <div class="export-loading-overlay" x-show="exportLoading" x-transition.opacity>
         <div class="export-loading-card">
