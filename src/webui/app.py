@@ -10,7 +10,7 @@ from flask import Flask
 from flask_login import current_user
 from flask_wtf.csrf import generate_csrf
 from flask_migrate import Migrate
-from sqlalchemy import inspect
+from sqlalchemy import event, inspect
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import joinedload, sessionmaker
 
@@ -87,6 +87,10 @@ def create_app() -> Flask:
         SECRET_KEY=os.getenv("SECRET_KEY", "change-me"),
         PARSER_SETTINGS_PATH=os.getenv("PARSER_SETTINGS_PATH", "settings/settings.json"),
         SQLALCHEMY_DATABASE_URI=f"sqlite:///{db_file.as_posix()}",
+        SQLALCHEMY_ENGINE_OPTIONS={
+            # Несколько потоков (Modbus + emergency) + веб: SQLite ждёт блокировку до timeout сек.
+            "connect_args": {"check_same_thread": False, "timeout": 60.0},
+        },
         SQLALCHEMY_TRACK_MODIFICATIONS=False,
         PROPAGATE_EXCEPTIONS=True,
         TRAP_HTTP_EXCEPTIONS=False,
@@ -111,6 +115,18 @@ def create_app() -> Flask:
     logger.info("Static dir: %s (exists=%s)", static_dir, static_dir.exists())
 
     db.init_app(app)
+    if app.config["SQLALCHEMY_DATABASE_URI"].startswith("sqlite"):
+
+        @event.listens_for(db.engine, "connect")
+        def _sqlite_pragmas(dbapi_connection, _connection_record):  # noqa: WPS430
+            cur = dbapi_connection.cursor()
+            try:
+                cur.execute("PRAGMA journal_mode=WAL")
+                cur.execute("PRAGMA synchronous=NORMAL")
+                cur.execute("PRAGMA busy_timeout=60000")
+            finally:
+                cur.close()
+
     Migrate(app, db, compare_type=True, render_as_batch=True)
     csrf.init_app(app)
     server_session.init_app(app)

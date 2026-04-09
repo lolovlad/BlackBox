@@ -274,6 +274,8 @@ class ModbusCollector:
         self._rules_snapshot: list[tuple[int, str]] = []
         self._active_alarm_names: set[str] = set()
         self._modbus_data_unavailable = False
+        # SQLite: один writer за раз из потоков опроса / emergency — иначе database is locked.
+        self._db_write_lock = threading.Lock()
 
     def start(self) -> None:
         with self._thread_lock:
@@ -467,28 +469,29 @@ class ModbusCollector:
             self._flush(batch)
 
     def _flush(self, batch: list[dict[str, Any]]) -> None:
-        session = self._session_factory()
         flush_started = time.monotonic()
-        try:
-            for sample in batch:
-                created_at = sample["created_at"]
-                blob = pack_snapshot(dict(sample.get("sources", {})))
-                session.add(Samples(created_at=created_at, date=blob))
-            session.commit()
-            elapsed_ms = (time.monotonic() - flush_started) * 1000.0
-            logger.info(
-                "DB flush: samples_written=%d elapsed_ms=%.1f",
-                len(batch),
-                elapsed_ms,
-            )
-        except OperationalError:
-            session.rollback()
-            logger.exception("Database flush failed. Run migrations: flask db upgrade")
-        except Exception:
-            session.rollback()
-            logger.exception("Database flush failed for %d samples", len(batch))
-        finally:
-            session.close()
+        with self._db_write_lock:
+            session = self._session_factory()
+            try:
+                for sample in batch:
+                    created_at = sample["created_at"]
+                    blob = pack_snapshot(dict(sample.get("sources", {})))
+                    session.add(Samples(created_at=created_at, date=blob))
+                session.commit()
+                elapsed_ms = (time.monotonic() - flush_started) * 1000.0
+                logger.info(
+                    "DB flush: samples_written=%d elapsed_ms=%.1f",
+                    len(batch),
+                    elapsed_ms,
+                )
+            except OperationalError:
+                session.rollback()
+                logger.exception("Database flush failed. Run migrations: flask db upgrade")
+            except Exception:
+                session.rollback()
+                logger.exception("Database flush failed for %d samples", len(batch))
+            finally:
+                session.close()
 
     def flush_remaining(self) -> None:
         with self._lock:
@@ -536,44 +539,46 @@ class ModbusCollector:
         return written
 
     def _persist_alarm_snapshot(self, *, created_at: datetime, processed: dict[str, Any]) -> None:
-        session = self._session_factory()
-        try:
-            written = self._sync_alarm_states(session=session, created_at=created_at, processed=processed)
-            if written:
-                session.commit()
-        except Exception:
-            session.rollback()
-            logger.exception("Failed to persist alarm states")
-        finally:
-            session.close()
+        with self._db_write_lock:
+            session = self._session_factory()
+            try:
+                written = self._sync_alarm_states(session=session, created_at=created_at, processed=processed)
+                if written:
+                    session.commit()
+            except Exception:
+                session.rollback()
+                logger.exception("Failed to persist alarm states")
+            finally:
+                session.close()
 
     def _close_all_active_alarms(self, *, created_at: datetime, reason: str) -> None:
         if not self._active_alarm_names:
             return
-        session = self._session_factory()
-        try:
-            for alarm_name in sorted(self._active_alarm_names):
-                payload = {
-                    "alarm": alarm_name,
-                    "created_at": created_at.isoformat(),
-                    "state": "inactive",
-                    "reason": reason,
-                }
-                session.add(
-                    Alarms(
-                        created_at=created_at,
-                        date=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-                        name=alarm_name,
-                        state="inactive",
-                        description="Alarm closed due to Modbus data loss",
+        with self._db_write_lock:
+            session = self._session_factory()
+            try:
+                for alarm_name in sorted(self._active_alarm_names):
+                    payload = {
+                        "alarm": alarm_name,
+                        "created_at": created_at.isoformat(),
+                        "state": "inactive",
+                        "reason": reason,
+                    }
+                    session.add(
+                        Alarms(
+                            created_at=created_at,
+                            date=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+                            name=alarm_name,
+                            state="inactive",
+                            description="Alarm closed due to Modbus data loss",
+                        )
                     )
-                )
-            session.commit()
-        except Exception:
-            session.rollback()
-            logger.exception("Failed to close active alarms on Modbus data loss")
-        finally:
-            session.close()
+                session.commit()
+            except Exception:
+                session.rollback()
+                logger.exception("Failed to close active alarms on Modbus data loss")
+            finally:
+                session.close()
             self._active_alarm_names.clear()
 
     def _log_event(
@@ -585,23 +590,24 @@ class ModbusCollector:
         message: str,
         payload: dict[str, Any] | None = None,
     ) -> None:
-        session = self._session_factory()
-        try:
-            session.add(
-                EventLog(
-                    created_at=created_at,
-                    level=str(level),
-                    code=str(code),
-                    message=str(message),
-                    payload_json=json.dumps(payload or {}, ensure_ascii=False),
+        with self._db_write_lock:
+            session = self._session_factory()
+            try:
+                session.add(
+                    EventLog(
+                        created_at=created_at,
+                        level=str(level),
+                        code=str(code),
+                        message=str(message),
+                        payload_json=json.dumps(payload or {}, ensure_ascii=False),
+                    )
                 )
-            )
-            session.commit()
-        except Exception:
-            session.rollback()
-            logger.exception("Failed to write event log: %s", code)
-        finally:
-            session.close()
+                session.commit()
+            except Exception:
+                session.rollback()
+                logger.exception("Failed to write event log: %s", code)
+            finally:
+                session.close()
 
     def _events_loop(self) -> None:
         logger.info("Emergency events worker started")
@@ -638,28 +644,29 @@ class ModbusCollector:
         processed: dict[str, Any],
         rules_snapshot: list[tuple[int, str]],
     ) -> None:
-        session = self._session_factory()
-        changed = False
-        try:
-            for condition_id, rule_expr in rules_snapshot:
-                ok, fired, err = evaluate_emergency_rule_expression(rule_expr, processed=processed)
-                if not ok:
-                    logger.warning("Emergency rule %s evaluation error: %s", condition_id, err)
-                    continue
-                if not fired:
-                    continue
-                changed = self._upsert_emergency_event(
-                    session=session,
-                    condition_id=condition_id,
-                    fired_at=created_at,
-                ) or changed
-            if changed:
-                session.commit()
-        except Exception:
-            session.rollback()
-            raise
-        finally:
-            session.close()
+        with self._db_write_lock:
+            session = self._session_factory()
+            changed = False
+            try:
+                for condition_id, rule_expr in rules_snapshot:
+                    ok, fired, err = evaluate_emergency_rule_expression(rule_expr, processed=processed)
+                    if not ok:
+                        logger.warning("Emergency rule %s evaluation error: %s", condition_id, err)
+                        continue
+                    if not fired:
+                        continue
+                    changed = self._upsert_emergency_event(
+                        session=session,
+                        condition_id=condition_id,
+                        fired_at=created_at,
+                    ) or changed
+                if changed:
+                    session.commit()
+            except Exception:
+                session.rollback()
+                raise
+            finally:
+                session.close()
 
     def _upsert_emergency_event(self, *, session, condition_id: int, fired_at: datetime) -> bool:
         stmt = (

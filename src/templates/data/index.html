@@ -74,7 +74,6 @@
 <button type="button" class="export-fab" id="btn-export-open" title="Экспорт данных" aria-label="Экспорт данных" @click="openExportModal()">
     <span class="export-fab-icon" aria-hidden="true"><i class="bi bi-download"></i></span>
 </button>
-<iframe name="export-download-frame" style="display:none;"></iframe>
 
 <div id="export-overlay" class="chart-filters-overlay" aria-hidden="true" :class="{open: exportModalOpen}" @click="toggleExportModal(false)"></div>
 <aside id="export-modal" class="chart-filters-panel export-panel-drawer" aria-hidden="true" :class="{open: exportModalOpen}" :aria-hidden="exportModalOpen ? 'false' : 'true'">
@@ -85,7 +84,7 @@
         </button>
     </div>
     <p class="hint">Выберите период, таблицы и нужные поля. Экспорт без лимита пагинации.</p>
-    <form id="export-form" method="post" action="{{ url_for('data_blueprint.export_batch') }}" target="export-download-frame">
+    <form id="export-form" onsubmit="return false;">
             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
             <div class="filter-grid">
                 <label class="filter-field">Дата/время начала
@@ -282,10 +281,20 @@ function dataPage() {
                 this.exportLoading = false;
                 return;
             }
-            formEl.submit();
-            setTimeout(() => {
-                this.exportLoading = false;
-            }, 1200);
+            fetch("{{ url_for('data_blueprint.export_batch') }}", {
+                method: 'POST',
+                body: new FormData(formEl),
+            })
+                .then((resp) => resp.text())
+                .then((html) => {
+                    exportOutcome.innerHTML = html;
+                })
+                .catch((err) => {
+                    exportOutcome.innerHTML = '<div class="flash error">Ошибка экспорта: ' + String(err) + '</div>';
+                })
+                .finally(() => {
+                    this.exportLoading = false;
+                });
         },
     };
 }
