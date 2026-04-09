@@ -134,8 +134,8 @@
     {"name": "RPM", "source": "hr", "address": 38, "type": "uint16"},
     {"name": "Sgen", "source": "hr", "address": 39, "type": "uint16"},
     {"name": "Usupply", "source": "hr", "address": 46, "type": "uint16", "expr": "x / 10"},
-    {"name": "PT100_1", "source": "hr", "address": 47, "type": "uint16"},
-    {"name": "PT100_2", "source": "hr", "address": 48, "type": "uint16"},
+    {"name": "PT100_1", "display_name": "PT100 1", "source": "hr", "address": 47, "type": "int16"},
+    {"name": "PT100_2", "display_name": "PT100 2", "source": "hr", "address": 48, "type": "int16"},
     {"name": "Analog_input_E4", "source": "hr", "address": 58, "type": "uint16"},
     {
       "name": "AlarmReg_70",

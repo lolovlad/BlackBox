@@ -244,23 +244,18 @@
         var labels = payload.column_labels || {};
         var n = payload.points.length;
         var series = payload.columns.map(function (col) {
-            var ser = {
+            return {
+                id: 'chart-col:' + col,
                 name: labels[col] || col,
                 type: 'line',
                 showSymbol: n <= 120,
                 symbolSize: 4,
-                large: n > 2000,
-                largeThreshold: 2000,
                 connectNulls: false,
                 data: payload.points.map(function (p) {
                     var y = lastTable === 'discrete' ? coerceDiscrete(p.values[col]) : coerceAnalog(p.values[col]);
                     return [p.ts_ms, y];
                 })
             };
-            if (n > 800) {
-                ser.sampling = 'lttb';
-            }
-            return ser;
         });
         var yAxis = yAxisConfig(lastTable, payload.points, payload.columns);
         ensureChart().setOption({
@@ -335,11 +330,15 @@
         if (!option || !option.series || option.series.length === 0) return;
         var cols = payload.columns || lastColumns;
         if (!cols.length) return;
+        var tbl = payload.table || lastTable;
+        var prefix = 'chart-col:';
         payload.points.forEach(function (p) {
-            option.series.forEach(function (s, idx) {
-                var col = cols[idx];
+            option.series.forEach(function (s) {
+                var sid = s.id != null ? String(s.id) : '';
+                var col = sid.indexOf(prefix) === 0 ? sid.slice(prefix.length) : null;
                 if (!col || !s.data) return;
-                var y = (payload.table || lastTable) === 'discrete' ? coerceDiscrete(p.values[col]) : coerceAnalog(p.values[col]);
+                if (cols.indexOf(col) === -1) return;
+                var y = tbl === 'discrete' ? coerceDiscrete(p.values[col]) : coerceAnalog(p.values[col]);
                 s.data.push([p.ts_ms, y]);
             });
         });

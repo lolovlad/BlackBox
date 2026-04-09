@@ -95,6 +95,11 @@ def _eval_expr(expr: str, context: dict[str, Any]) -> Any:
     return eval(expr, {"__builtins__": {}}, context)
 
 
+def _uint16_to_int16(raw: int) -> int:
+    u = int(raw) & 0xFFFF
+    return u - 65536 if u >= 32768 else u
+
+
 def _pick_sources_for_snapshot(source_values: dict[str, list[Any]]) -> tuple[list[int], list[bool]]:
     config = _load_settings()
     registers: list[int] = []
@@ -175,6 +180,9 @@ def parse_fields(config: dict[str, Any], source_values: dict[str, list[Any]]) ->
             hi = int(values[address]) if address < len(values) else 0
             lo = int(values[address + 1]) if (address + 1) < len(values) else 0
             value: Any = (hi << 16) | lo
+        elif f_type in ("int16", "sint16"):
+            raw_u = int(values[address]) if address < len(values) else 0
+            value = _uint16_to_int16(raw_u)
         elif f_type == "bool":
             value = bool(values[address]) if address < len(values) else False
         else:

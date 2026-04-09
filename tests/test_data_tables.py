@@ -9,7 +9,7 @@ import pytest
 from werkzeug.datastructures import MultiDict
 
 from src.database import Samples, TypeUser, User, db
-from src.webui.modbus_service import pack_snapshot
+from src.webui.modbus_service import pack_snapshot, parse_fields
 from src.webui.repositories.data_repository import DataRepository
 from src.webui.services.data_service import (
     TABLE_PAGE_SIZE,
@@ -187,3 +187,16 @@ def test_http_data_tables_returns_rows_for_admin(memory_app) -> None:
     assert "03.01.2026" in body
     assert "data-table-result" in body
     assert "Всего записей: 3" in body
+
+
+def test_parse_fields_int16_signed_temperature_raw() -> None:
+    cfg = {
+        "requests": [{"name": "hr", "fc": 3, "address": 1, "count": 2}],
+        "fields": [
+            {"name": "PT100_2", "source": "hr", "address": 0, "type": "int16"},
+            {"name": "warm", "source": "hr", "address": 1, "type": "int16"},
+        ],
+    }
+    out = parse_fields(cfg, {"hr": [0xFFF6, 850]})
+    assert out["PT100_2"] == -10
+    assert out["warm"] == 850
