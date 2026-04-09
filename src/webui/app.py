@@ -15,15 +15,17 @@ from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import joinedload, sessionmaker
 
 from src.database import User, db
-from src.database import Emergency, EmergencyConditions, EventLog  # noqa: F401 — метаданные для Alembic / Flask-Migrate
+from src.database import Emergency, EmergencyConditions, EventLog, Video  # noqa: F401 — метаданные для Alembic / Flask-Migrate
 from src.webui.blueprints.auth import auth_router
+from src.webui.blueprints.api import api_router
 from src.webui.blueprints.data import data_router
 from src.webui.blueprints.main import main_router
 from src.webui.extensions import csrf, login_manager, server_session
 from src.webui.modbus_service import RuntimeConfig, configure_settings_path, reload_settings_cache
 from src.webui.paths import SRC_DIR, STATIC_DIR, TEMPLATES_DIR
 from src.webui.reader_supervisor import ReaderSupervisor
-from src.webui.system_settings import ENV_DEFAULTS, ensure_env_file, load_env_into_os
+from src.webui.background_tasks import MaintenanceScheduler
+from src.webui.system_settings import load_env_into_os
 from src.webui.timezone_utils import configured_timezone_name, format_in_configured_timezone
 
 logger = logging.getLogger(__name__)
@@ -69,15 +71,10 @@ def create_app() -> Flask:
     )
 
     env_path = Path.cwd() / ".env"
-    # First launch: create .env with all runtime settings.
-    ensure_env_file(
-        env_path,
-        defaults={
-            key: os.getenv(key, default)
-            for key, default in ENV_DEFAULTS.items()
-        },
-    )
-    # Next launches: read values from existing .env.
+    if not env_path.exists():
+        raise RuntimeError(
+            "Файл .env не найден. Создайте его вручную в корне проекта перед запуском приложения."
+        )
     load_env_into_os(env_path, override=True)
     config = _build_runtime_config(static_csv_dir)
     db_file = Path(config.db_path).resolve()
@@ -199,16 +196,24 @@ def create_app() -> Flask:
         session_factory = sessionmaker(bind=db.engine, autoflush=False, autocommit=False, expire_on_commit=False)
 
     collector = ReaderSupervisor(runtime=config, alarms_enabled=alarms_enabled, instance_dir=instance_dir)
+    maintenance = MaintenanceScheduler(
+        session_factory=session_factory,
+        env_path=env_path,
+    )
+    maintenance.start()
+    atexit.register(maintenance.stop)
     if os.getenv("DISABLE_MODBUS_COLLECTOR", "0") != "1" and not missing_required:
         collector.start()
         atexit.register(collector.stop)
 
     app.extensions["session_factory"] = session_factory
     app.extensions["modbus_collector"] = collector
+    app.extensions["maintenance_scheduler"] = maintenance
     app.extensions["static_csv_dir"] = static_csv_dir
     app.extensions["env_path"] = env_path
 
     app.register_blueprint(auth_router, name="auth_blueprint")
+    app.register_blueprint(api_router, name="api_blueprint")
     app.register_blueprint(main_router, name="main_blueprint")
     app.register_blueprint(data_router, name="data_blueprint")
     return app

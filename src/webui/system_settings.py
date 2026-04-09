@@ -12,6 +12,7 @@ from src.webui.modbus_service import RuntimeConfig, parse_fields
 
 
 ENV_DEFAULTS: dict[str, str] = {
+    "BLACKBOX_DB_PATH": "instance/blackbox.db",
     "MODBUS_PORT": "/dev/ttyAMA0",
     "MODBUS_SLAVE": "1",
     "MODBUS_BAUDRATE": "9600",
@@ -20,12 +21,17 @@ ENV_DEFAULTS: dict[str, str] = {
     "MODBUS_ADDRESS_OFFSET": "1",
     "RAM_BATCH_SIZE": "60",
     "APP_TIMEZONE": "UTC",
+    "DB_CLEANUP_INTERVAL_MINUTES": "60",
+    "DB_RETENTION_DAYS": "30",
+    "VIDEO_STORAGE_DIR": "",
+    "VIDEO_GC_INTERVAL_DAYS": "10",
 }
 
 
 class RuntimeEnvModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    BLACKBOX_DB_PATH: str = Field(min_length=1, max_length=2048)
     MODBUS_PORT: str = Field(min_length=1, max_length=255)
     MODBUS_SLAVE: int = Field(ge=1, le=247)
     MODBUS_BAUDRATE: int = Field(ge=1200, le=115200)
@@ -34,6 +40,10 @@ class RuntimeEnvModel(BaseModel):
     MODBUS_ADDRESS_OFFSET: int = Field(ge=0, le=10000)
     RAM_BATCH_SIZE: int = Field(ge=1, le=10000)
     APP_TIMEZONE: str = Field(min_length=1, max_length=128)
+    DB_CLEANUP_INTERVAL_MINUTES: int = Field(ge=1, le=100000)
+    DB_RETENTION_DAYS: int = Field(ge=1, le=36500)
+    VIDEO_STORAGE_DIR: str = Field(default="", max_length=2048)
+    VIDEO_GC_INTERVAL_DAYS: int = Field(ge=1, le=36500)
 
 
 class RequestModel(BaseModel):
@@ -111,7 +121,7 @@ def effective_runtime_from_env(static_csv_dir: Path, env_map: dict[str, str]) ->
     merged.update(env_map)
     validated = RuntimeEnvModel.model_validate(merged)
     return RuntimeConfig(
-        db_path=os.getenv("BLACKBOX_DB_PATH", "instance/blackbox.db"),
+        db_path=validated.BLACKBOX_DB_PATH,
         modbus_port=validated.MODBUS_PORT,
         modbus_slave=validated.MODBUS_SLAVE,
         modbus_baudrate=validated.MODBUS_BAUDRATE,

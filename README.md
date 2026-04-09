@@ -26,24 +26,42 @@ uv sync
 uv lock
 ```
 
-3) Настройка переменных окружения (пример):
+3) Создайте файл `.env` вручную в корне проекта.
+
+> Важно: приложение **не запустится**, если файла `.env` нет.
+> Файл создается только вручную (автогенерации больше нет).
+
+Пример содержимого `.env`:
 
 ```powershell
-$env:BLACKBOX_DB_PATH="/home/agk/app/BlackBox/instance/blackbox.db"
-$env:MODBUS_PORT="/dev/ttyAMA0"
-$env:MODBUS_SLAVE="1"
-$env:MODBUS_BAUDRATE="9600"
-$env:MODBUS_TIMEOUT="0.35"
-$env:MODBUS_INTERVAL="0.12"
-$env:MODBUS_ADDRESS_OFFSET="1"
-$env:RAM_BATCH_SIZE="60"
-$env:APP_USERNAME="admin"
-$env:APP_PASSWORD="admin"
-$env:SECRET_KEY="change-me"
-$env:HOST="0.0.0.0"
-$env:PORT="5000"
-$env:PUBLIC_IP="10.109.114.106"
+BLACKBOX_DB_PATH=C:/BlackBoxData/blackbox.db
+MODBUS_PORT=COM3
+MODBUS_SLAVE=1
+MODBUS_BAUDRATE=9600
+MODBUS_TIMEOUT=0.35
+MODBUS_INTERVAL=0.12
+MODBUS_ADDRESS_OFFSET=1
+RAM_BATCH_SIZE=60
+APP_TIMEZONE=Europe/Moscow
+DB_CLEANUP_INTERVAL_MINUTES=60
+DB_RETENTION_DAYS=30
+VIDEO_STORAGE_DIR=D:/Archive/blackbox-videos
+VIDEO_GC_INTERVAL_DAYS=10
+SECRET_KEY=change-me
+HOST=0.0.0.0
+PORT=5000
+PUBLIC_IP=10.109.114.106
+PARSER_SETTINGS_PATH=settings/settings.json
+SESSION_COOKIE_SECURE=0
+FLASK_INSTANCE_PATH=instance
+DISABLE_MODBUS_COLLECTOR=0
+SEED_ADMIN_USERNAME=admin
+SEED_ADMIN_PASSWORD=admin
+SEED_USER_USERNAME=user
+SEED_USER_PASSWORD=user
 ```
+
+`BLACKBOX_DB_PATH` может указывать на любой диск/путь (например приложение на `C:`, БД на `D:`).
 
 4) Настройка Flask CLI для миграций:
 
@@ -95,6 +113,49 @@ uv run uvicorn src.web_app:app --host 0.0.0.0 --port 5000 --interface wsgi --log
 ```text
 http://10.109.114.106:5000/
 ```
+
+## API: добавление видео
+
+Добавлен endpoint:
+
+- `POST /api/video/add`
+
+Тело запроса (`application/json`):
+
+```json
+{
+  "path": "D:/Archive/blackbox-videos/camera_1_(2026-04-09_14-22-11).mp4"
+}
+```
+
+Правила:
+
+- из имени файла извлекаются дата/время (поддерживаются форматы вроде `YYYY-MM-DD_HH-MM-SS`, в том числе в скобках);
+- запись сохраняется в таблицу `videos`;
+- видео сохраняется только если его `captured_at` попадает в активный интервал в таблице `alarms` (переходы `state=active/inactive`).
+
+Ответ при успехе:
+
+```json
+{
+  "ok": true,
+  "video_id": 1,
+  "alarm_id": 12,
+  "alarm_name": "Low oil pressure",
+  "captured_at": "2026-04-09T14:22:11",
+  "file_name": "camera_1_(2026-04-09_14-22-11).mp4"
+}
+```
+
+## Фоновые задачи
+
+1. Очистка БД от старых записей:
+   - запускается каждые `DB_CLEANUP_INTERVAL_MINUTES`;
+   - удаляет записи старше `DB_RETENTION_DAYS` из `samples`, `alarms`, `event_logs`.
+
+2. Очистка видеофайлов:
+   - запускается каждые `VIDEO_GC_INTERVAL_DAYS` (по умолчанию 10 дней);
+   - в `VIDEO_STORAGE_DIR` удаляет файлы, которых нет в таблице `videos`.
 
 ### Linux: запуск в фоне + автозапуск при старте
 

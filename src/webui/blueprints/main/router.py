@@ -231,6 +231,7 @@ def settings_save():
     collector = current_app.extensions["modbus_collector"]
 
     posted_env = {
+        "BLACKBOX_DB_PATH": (request.form.get("BLACKBOX_DB_PATH") or "").strip(),
         "MODBUS_PORT": (request.form.get("MODBUS_PORT") or "").strip(),
         "MODBUS_SLAVE": (request.form.get("MODBUS_SLAVE") or "").strip(),
         "MODBUS_BAUDRATE": (request.form.get("MODBUS_BAUDRATE") or "").strip(),
@@ -242,6 +243,10 @@ def settings_save():
             (request.form.get("APP_TIMEZONE_CUSTOM") or "").strip()
             or (request.form.get("APP_TIMEZONE") or "").strip()
         ),
+        "DB_CLEANUP_INTERVAL_MINUTES": (request.form.get("DB_CLEANUP_INTERVAL_MINUTES") or "").strip(),
+        "DB_RETENTION_DAYS": (request.form.get("DB_RETENTION_DAYS") or "").strip(),
+        "VIDEO_STORAGE_DIR": (request.form.get("VIDEO_STORAGE_DIR") or "").strip(),
+        "VIDEO_GC_INTERVAL_DAYS": (request.form.get("VIDEO_GC_INTERVAL_DAYS") or "").strip(),
     }
     parser_text = request.form.get("parser_json") or ""
     action = (request.form.get("action") or "test").strip().lower()

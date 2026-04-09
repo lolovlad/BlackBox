@@ -55,6 +55,7 @@ class Alarms(db.Model, DateMixin):
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     state: Mapped[str] = mapped_column(String(32), nullable=False, default="active")
     description: Mapped[str] = mapped_column(String(255), nullable=True)
+    videos: Mapped[list["Video"]] = relationship(back_populates="alarm")
 
 
 class EventLog(db.Model):
@@ -80,3 +81,14 @@ class Emergency(db.Model, DeleteMixin):
     ended_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     id_emergency_condition: Mapped[int] = mapped_column(ForeignKey("emergency_conditions.id"), nullable=False)
     emergency_condition: Mapped[EmergencyConditions] = relationship(back_populates="emergencies")
+
+
+class Video(db.Model):
+    __tablename__ = "videos"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.now)
+    captured_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    file_path: Mapped[str] = mapped_column(String(1024), nullable=False, unique=True)
+    file_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    alarm_id: Mapped[int | None] = mapped_column(ForeignKey("alarms.id"), nullable=True)
+    alarm: Mapped[Alarms | None] = relationship(back_populates="videos")

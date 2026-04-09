@@ -29,6 +29,10 @@
         <fieldset>
             <legend>Параметры Modbus / чтения данных</legend>
             <div class="settings-grid">
+                <label class="filter-field">BLACKBOX_DB_PATH
+                    <input type="text" name="BLACKBOX_DB_PATH" value="{{ env_values.BLACKBOX_DB_PATH }}">
+                    <small class="field-help">Полный или относительный путь к файлу SQLite БД (можно на другом диске).</small>
+                </label>
                 <label class="filter-field">MODBUS_PORT
                     <input type="text" name="MODBUS_PORT" value="{{ env_values.MODBUS_PORT }}">
                     <small class="field-help">Порт устройства, например `/dev/ttyAMA0` или `COM3`.</small>
@@ -67,6 +71,22 @@
                         {% endfor %}
                     </select>
                     <small class="field-help">Часовые пояса РФ (UTC+2 ... UTC+12).</small>
+                </label>
+                <label class="filter-field">DB_CLEANUP_INTERVAL_MINUTES
+                    <input type="number" name="DB_CLEANUP_INTERVAL_MINUTES" min="1" step="1" value="{{ env_values.DB_CLEANUP_INTERVAL_MINUTES }}">
+                    <small class="field-help">Период запуска очистки старых записей БД (в минутах).</small>
+                </label>
+                <label class="filter-field">DB_RETENTION_DAYS
+                    <input type="number" name="DB_RETENTION_DAYS" min="1" step="1" value="{{ env_values.DB_RETENTION_DAYS }}">
+                    <small class="field-help">Сколько дней хранить данные в БД до удаления.</small>
+                </label>
+                <label class="filter-field">VIDEO_STORAGE_DIR
+                    <input type="text" name="VIDEO_STORAGE_DIR" value="{{ env_values.VIDEO_STORAGE_DIR }}">
+                    <small class="field-help">Папка видео для автоочистки: удаляются файлы, которых нет в таблице videos.</small>
+                </label>
+                <label class="filter-field">VIDEO_GC_INTERVAL_DAYS
+                    <input type="number" name="VIDEO_GC_INTERVAL_DAYS" min="1" step="1" value="{{ env_values.VIDEO_GC_INTERVAL_DAYS }}">
+                    <small class="field-help">Период очистки лишних видеофайлов (в днях, по умолчанию 10).</small>
                 </label>
             </div>
         </fieldset>
