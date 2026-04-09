@@ -115,18 +115,6 @@ def create_app() -> Flask:
     logger.info("Static dir: %s (exists=%s)", static_dir, static_dir.exists())
 
     db.init_app(app)
-    if app.config["SQLALCHEMY_DATABASE_URI"].startswith("sqlite"):
-
-        @event.listens_for(db.engine, "connect")
-        def _sqlite_pragmas(dbapi_connection, _connection_record):  # noqa: WPS430
-            cur = dbapi_connection.cursor()
-            try:
-                cur.execute("PRAGMA journal_mode=WAL")
-                cur.execute("PRAGMA synchronous=NORMAL")
-                cur.execute("PRAGMA busy_timeout=60000")
-            finally:
-                cur.close()
-
     Migrate(app, db, compare_type=True, render_as_batch=True)
     csrf.init_app(app)
     server_session.init_app(app)
@@ -180,6 +168,18 @@ def create_app() -> Flask:
         }
 
     with app.app_context():
+        if app.config["SQLALCHEMY_DATABASE_URI"].startswith("sqlite"):
+
+            @event.listens_for(db.engine, "connect")
+            def _sqlite_pragmas(dbapi_connection, _connection_record):  # noqa: WPS430
+                cur = dbapi_connection.cursor()
+                try:
+                    cur.execute("PRAGMA journal_mode=WAL")
+                    cur.execute("PRAGMA synchronous=NORMAL")
+                    cur.execute("PRAGMA busy_timeout=60000")
+                finally:
+                    cur.close()
+
         required_tables = ("samples",)
         missing_required: list[str] = []
         alarms_enabled = False
