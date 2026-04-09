@@ -34,44 +34,5 @@
 
     <p><a class="btn" href="{{ url_for('data_blueprint.page') }}">Открыть расширенные таблицы</a></p>
 </section>
-<script>
-(() => {
-    const form = document.getElementById("dashboard-live-form");
-    const analogOff = document.getElementById("dashboard-analog-off-b64");
-    const discreteOff = document.getElementById("dashboard-discrete-off-b64");
-    if (!form || !analogOff || !discreteOff) {
-        return;
-    }
-
-    const encodeUnchecked = (group) => {
-        const unchecked = [];
-        form.querySelectorAll('input[type="checkbox"][data-col-group="' + group + '"]').forEach((el) => {
-            if (!el.checked) {
-                unchecked.push(el.value);
-            }
-        });
-        if (!unchecked.length) {
-            return "";
-        }
-        // URL-safe base64 without padding.
-        return btoa(unescape(encodeURIComponent(JSON.stringify(unchecked))))
-            .replace(/\+/g, "-")
-            .replace(/\//g, "_")
-            .replace(/=+$/g, "");
-    };
-
-    const syncEncodedFilters = () => {
-        analogOff.value = encodeUnchecked("analog");
-        discreteOff.value = encodeUnchecked("discrete");
-    };
-
-    form.addEventListener("change", syncEncodedFilters);
-    document.body.addEventListener("htmx:configRequest", (evt) => {
-        if (evt.detail && evt.detail.elt && evt.detail.elt.id === "dashboard-live-root") {
-            syncEncodedFilters();
-        }
-    });
-    syncEncodedFilters();
-})();
-</script>
+<script src="{{ url_for('static', filename='js/dashboard-page.js') }}"></script>
 {% endblock %}
