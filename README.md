@@ -96,6 +96,34 @@ uv run uvicorn src.web_app:app --host 0.0.0.0 --port 5000 --interface wsgi --log
 http://10.109.114.106:5000/
 ```
 
+### Linux: запуск в фоне + автозапуск при старте
+
+Добавлены файлы:
+
+- `scripts/linux/start_blackbox.sh` — старт приложения через `uv` (подходит для systemd).
+- `deploy/systemd/blackbox.service` — unit-файл сервиса.
+- `scripts/linux/install_systemd_service.sh` — установка сервиса и включение автозапуска.
+
+Быстрый старт на Linux:
+
+```bash
+chmod +x scripts/linux/start_blackbox.sh scripts/linux/install_systemd_service.sh
+sudo sh scripts/linux/install_systemd_service.sh
+```
+
+Проверка:
+
+```bash
+systemctl status blackbox.service
+journalctl -u blackbox.service -f
+```
+
+Настройки окружения сервиса (порт, Modbus, timezone и т.д.) в:
+
+```text
+/etc/default/blackbox
+```
+
 ### Полезные команды Flask-Migrate
 
 Создать новую миграцию с автогенерацией:

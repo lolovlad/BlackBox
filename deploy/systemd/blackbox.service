@@ -1,0 +1,23 @@
+[Unit]
+Description=BlackBox Web Application
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=blackbox
+Group=blackbox
+WorkingDirectory=/opt/blackbox
+EnvironmentFile=-/etc/default/blackbox
+ExecStart=/opt/blackbox/scripts/linux/start_blackbox.sh
+Restart=always
+RestartSec=3
+TimeoutStartSec=120
+KillMode=mixed
+
+# Logs go to journalctl -u blackbox.service
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
