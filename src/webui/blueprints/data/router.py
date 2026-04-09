@@ -24,7 +24,12 @@ from src.webui.modbus_service import analog_discrete_for_csv, decode_to_processe
 from src.webui.paths import TEMPLATES_DIR
 from src.webui.repositories.data_repository import DataRepository
 from src.webui.services.data_service import TABLE_PAGE_SIZE, DataService, parse_data_filter
-from src.webui.timezone_utils import format_in_configured_timezone, now_in_configured_timezone_naive
+from src.webui.timezone_utils import (
+    configured_timezone_name,
+    format_in_configured_timezone,
+    now_in_configured_timezone_naive,
+    to_configured_timezone,
+)
 
 data_router = Blueprint("data", __name__, url_prefix="/data", template_folder=str(TEMPLATES_DIR))
 DATETIME_UI_FORMAT = "%d.%m.%Y %H:%M:%S"
@@ -305,6 +310,7 @@ def charts_page():
         "data/charts.html",
         analog_options=analog_opts,
         discrete_options=discrete_opts,
+        chart_app_timezone=configured_timezone_name(),
     )
 
 
@@ -358,9 +364,11 @@ def _collect_second_points(rows: list[Any], table: str, columns: list[str]) -> l
     for sec in sorted(by_second.keys()):
         date_label = format_in_configured_timezone(sec, "%d.%m.%Y")
         time_label = format_in_configured_timezone(sec, "%H:%M")
+        ts_ms = int(to_configured_timezone(sec).timestamp() * 1000)
         points.append(
             {
                 "ts": sec.strftime(DATETIME_API_FORMAT),
+                "ts_ms": ts_ms,
                 "date_label": date_label,
                 "time_label": time_label,
                 "label": f"{date_label}\n{time_label}",

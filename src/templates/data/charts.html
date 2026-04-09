@@ -80,6 +80,76 @@
 (function () {
     var INIT_URL = "{{ url_for('data_blueprint.charts_api_init') }}";
     var UPDATE_URL = "{{ url_for('data_blueprint.charts_api_update') }}";
+    var APP_TIMEZONE = {{ chart_app_timezone|tojson }};
+
+    function formatAxisTime(ms) {
+        try {
+            return new Intl.DateTimeFormat('ru-RU', {
+                timeZone: APP_TIMEZONE,
+                day: '2-digit',
+                month: '2-digit',
+                hour: '2-digit',
+                minute: '2-digit'
+            }).format(new Date(ms));
+        } catch (e) {
+            return new Date(ms).toLocaleString('ru-RU');
+        }
+    }
+
+    function formatTooltipTime(ms) {
+        try {
+            return new Intl.DateTimeFormat('ru-RU', {
+                timeZone: APP_TIMEZONE,
+                day: '2-digit',
+                month: '2-digit',
+                year: 'numeric',
+                hour: '2-digit',
+                minute: '2-digit',
+                second: '2-digit'
+            }).format(new Date(ms));
+        } catch (e) {
+            return new Date(ms).toLocaleString('ru-RU');
+        }
+    }
+
+    function coerceAnalog(v) {
+        if (v == null || v === '') return null;
+        var n = Number(v);
+        return isFinite(n) ? n : null;
+    }
+
+    function coerceDiscrete(v) {
+        if (v == null || v === '') return null;
+        return v ? 1 : 0;
+    }
+
+    function yAxisConfig(table, points, columns) {
+        if (table === 'discrete') {
+            return { type: 'value', min: -0.05, max: 1.05, interval: 1, scale: false };
+        }
+        var minV = Infinity;
+        var maxV = -Infinity;
+        points.forEach(function (p) {
+            columns.forEach(function (col) {
+                var v = coerceAnalog(p.values[col]);
+                if (v != null) {
+                    minV = Math.min(minV, v);
+                    maxV = Math.max(maxV, v);
+                }
+            });
+        });
+        if (!isFinite(minV) || !isFinite(maxV)) {
+            return { type: 'value', scale: true };
+        }
+        var span = maxV - minV;
+        var pad = span > 0 ? span * 0.08 : (Math.abs(maxV) > 1e-9 ? Math.abs(maxV) * 0.05 : 0.1);
+        return {
+            type: 'value',
+            scale: true,
+            min: minV - pad,
+            max: maxV + pad
+        };
+    }
 
     function syncColPanels() {
         var t = document.getElementById('chart-table').value;
@@ -104,6 +174,8 @@
     var chart = null;
     var lastTs = null;
     var pollTimer = null;
+    var lastTable = 'analog';
+    var lastColumns = [];
 
     function toggleFilters(open) {
         if (!open && panel.contains(document.activeElement)) {
@@ -166,26 +238,70 @@
         }
 
         chartEl.style.display = '';
-        chartMeta.textContent = 'Записей: ' + payload.row_count + '. Для online-режима показывается только текущий день.';
-        var x = payload.points.map(function (p) { return p.label; });
+        chartMeta.textContent = 'Точек: ' + payload.row_count + (payload.realtime ? '. Online: только текущие сутки (по часовому поясу приложения).' : '.');
+        lastTable = payload.table || 'analog';
+        lastColumns = payload.columns.slice();
         var labels = payload.column_labels || {};
+        var n = payload.points.length;
         var series = payload.columns.map(function (col) {
-            return {
+            var ser = {
                 name: labels[col] || col,
                 type: 'line',
-                showSymbol: false,
-                data: payload.points.map(function (p) { return p.values[col]; })
+                showSymbol: n <= 120,
+                symbolSize: 4,
+                large: n > 2000,
+                largeThreshold: 2000,
+                connectNulls: false,
+                data: payload.points.map(function (p) {
+                    var y = lastTable === 'discrete' ? coerceDiscrete(p.values[col]) : coerceAnalog(p.values[col]);
+                    return [p.ts_ms, y];
+                })
             };
+            if (n > 800) {
+                ser.sampling = 'lttb';
+            }
+            return ser;
         });
+        var yAxis = yAxisConfig(lastTable, payload.points, payload.columns);
         ensureChart().setOption({
-            tooltip: { trigger: 'axis' },
+            tooltip: {
+                trigger: 'axis',
+                axisPointer: { type: 'cross', label: { backgroundColor: '#6a7985' } },
+                formatter: function (params) {
+                    if (!params || !params.length) return '';
+                    var t = params[0].axisValue;
+                    var head = formatTooltipTime(t);
+                    var lines = [head];
+                    var tbl = lastTable;
+                    function fmtY(y) {
+                        if (y == null || y === '' || (typeof y === 'number' && !isFinite(y))) return '—';
+                        if (tbl === 'discrete') return String(Math.round(Number(y)));
+                        var s = Number(y).toFixed(4).replace(/\.?0+$/, '');
+                        if (s.endsWith('.')) s = s.slice(0, -1);
+                        return s;
+                    }
+                    params.forEach(function (p) {
+                        var y = Array.isArray(p.value) && p.value.length > 1 ? p.value[1] : p.value;
+                        lines.push(p.marker + ' ' + p.seriesName + ': ' + fmtY(y));
+                    });
+                    return lines.join('<br/>');
+                }
+            },
             legend: { type: 'scroll' },
-            grid: { left: 45, right: 25, top: 45, bottom: 90 },
-            xAxis: { type: 'category', data: x, boundaryGap: false },
-            yAxis: { type: 'value' },
+            grid: { left: 56, right: 28, top: 48, bottom: 96 },
+            xAxis: {
+                type: 'time',
+                boundaryGap: false,
+                axisLabel: {
+                    hideOverlap: true,
+                    formatter: function (v) { return formatAxisTime(v); }
+                },
+                splitLine: { show: false }
+            },
+            yAxis: yAxis,
             dataZoom: [
                 { type: 'inside', xAxisIndex: 0, filterMode: 'none' },
-                { type: 'slider', xAxisIndex: 0, height: 24, bottom: 18 }
+                { type: 'slider', xAxisIndex: 0, height: 28, bottom: 12, labelFormatter: function (v) { return formatAxisTime(v); } }
             ],
             series: series
         }, true);
@@ -196,19 +312,17 @@
         if (!payload.points || payload.points.length === 0 || !chart) return;
         var option = chart.getOption();
         if (!option || !option.series || option.series.length === 0) return;
+        var cols = payload.columns || lastColumns;
+        if (!cols.length) return;
         payload.points.forEach(function (p) {
-            option.xAxis[0].data.push(p.label);
-            var labels = payload.column_labels || {};
-            option.series.forEach(function (s) {
-                var key = null;
-                for (var k in labels) {
-                    if ((labels[k] || k) === s.name) { key = k; break; }
-                }
-                if (!key) key = s.name;
-                s.data.push(p.values[key]);
+            option.series.forEach(function (s, idx) {
+                var col = cols[idx];
+                if (!col || !s.data) return;
+                var y = (payload.table || lastTable) === 'discrete' ? coerceDiscrete(p.values[col]) : coerceAnalog(p.values[col]);
+                s.data.push([p.ts_ms, y]);
             });
         });
-        chart.setOption(option, false);
+        chart.setOption({ series: option.series }, false);
         lastTs = payload.last_ts || lastTs;
     }
 
