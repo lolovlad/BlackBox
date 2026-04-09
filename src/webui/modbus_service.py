@@ -661,6 +661,8 @@ class ModbusCollector:
                     if not ok:
                         logger.warning("Emergency rule %s evaluation error: %s", condition_id, err)
                         continue
+                    if err:
+                        logger.info("Emergency rule %s skipped: %s", condition_id, err)
                     if not fired:
                         continue
                     changed = self._upsert_emergency_event(

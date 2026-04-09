@@ -1,6 +1,10 @@
 import pytest
 
-from src.webui.emergency_rule_validation import build_rule_validation_sets, validate_emergency_rule_expression
+from src.webui.emergency_rule_validation import (
+    build_rule_validation_sets,
+    evaluate_emergency_rule_expression,
+    validate_emergency_rule_expression,
+)
 
 pytest.importorskip("simpleeval")
 
@@ -59,3 +63,10 @@ def test_validate_requires_bool_result():
     ok, err = validate_emergency_rule_expression("UbusL1L2 + 1", settings_config=_MIN_CFG)
     assert not ok
     assert err and "логическое значение" in err
+
+
+def test_evaluate_missing_runtime_field_is_not_error() -> None:
+    ok, fired, err = evaluate_emergency_rule_expression("Usupply > 20", processed={"active_alarms": []})
+    assert ok is True
+    assert fired is False
+    assert err and "Пропущено поле" in err

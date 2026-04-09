@@ -56,13 +56,29 @@ def video_add():
     payload = request.get_json(silent=True) or {}
     raw_path = (payload.get("path") or payload.get("video_path") or "").strip()
     if not raw_path:
+        raw_path = (request.form.get("path") or request.form.get("video_path") or "").strip()
+    if not raw_path:
+        raw_body = request.get_data(cache=False, as_text=True) or ""
+        raw_path = raw_body.strip().strip('"').strip("'")
+    if not raw_path:
         return jsonify({"ok": False, "error": "Поле path обязательно."}), 400
 
     path = Path(raw_path).expanduser()
     file_name = path.name
     captured_at = _extract_video_datetime(file_name)
     if captured_at is None:
-        return jsonify({"ok": False, "error": "В имени файла не найдены дата и время."}), 400
+        return jsonify(
+            {
+                "ok": False,
+                "error": "В имени файла не найдены дата и время.",
+                "file_name": file_name,
+                "expected_formats": [
+                    "YYYYMMDD_HHMMSS",
+                    "YYYY-MM-DD_HH-MM-SS",
+                    "YYYY-MM-DD_HH:MM:SS",
+                ],
+            }
+        ), 400
 
     session_factory = current_app.extensions["session_factory"]
     with session_factory() as session:

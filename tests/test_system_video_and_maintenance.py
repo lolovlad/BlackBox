@@ -166,6 +166,25 @@ def test_api_video_add_accepts_compact_filename_from_cam_folder(app_with_env) ->
         assert row.file_name == "20260409_145117.mkv"
 
 
+def test_api_video_add_accepts_plain_text_body(app_with_env) -> None:
+    app, _ = app_with_env
+    with app.app_context():
+        db.session.add(
+            Alarms(
+                created_at=datetime(2026, 4, 9, 14, 50, 0),
+                date=b"{}",
+                name="Cam2 motion",
+                state="active",
+                description="active",
+            )
+        )
+        db.session.commit()
+
+    client = app.test_client()
+    resp = client.post("/api/video/add", data="/mnt/nvme/motion/cam2/20260409_145117.mkv", content_type="text/plain")
+    assert resp.status_code == 200
+
+
 def test_maintenance_cleanup_db_and_video_files(app_with_env) -> None:
     app, tmp_path = app_with_env
     env_path = tmp_path / ".env"

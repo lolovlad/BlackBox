@@ -199,6 +199,10 @@ def evaluate_emergency_rule_expression(expr: str, *, processed: dict[str, Any]) 
     s = SimpleEval(names=names, functions=allowed_funcs)
     try:
         result = s.eval(text)
+    except NameNotDefined as exc:
+        # Runtime snapshot may temporarily miss a field that exists in the rule.
+        # Treat as "rule not fired" to avoid noisy per-cycle error logs.
+        return True, False, f"Пропущено поле в данных: {exc}"
     except Exception as exc:  # noqa: BLE001
         return False, False, f"Ошибка вычисления правила: {exc}"
     if not isinstance(result, bool):
