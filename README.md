@@ -164,12 +164,36 @@ http://10.109.114.106:5000/
 - **`scripts/linux/run_blackbox.sh`** — установка зависимостей, миграции, запуск **uvicorn в этом терминале** (остановка Ctrl+C). Не смешивается с «фоном»: для фона используется systemd.
 - **`deploy/systemd/blackbox.service`** — unit-файл; `ExecStart` вызывает `run_blackbox.sh`.
 - **`scripts/linux/install_systemd_service.sh`** — копия в `/opt/blackbox`, venv, unit; служба по умолчанию от **root** (см. комментарии в `blackbox.service`).
+- **`scripts/linux/update_from_usb.sh`** — интерактивное обновление проекта с USB-флешки через `rsync` (без GitHub).
 
 Первый ручной запуск на устройстве: пошагово в **[`DEPLOY_ON_DEVICE_RU.md`](DEPLOY_ON_DEVICE_RU.md)**.
 
 Автозапуск при загрузке: **[`LINUX_AUTOSTART.md`](LINUX_AUTOSTART.md)**.
 
 Настройки службы (порт, Modbus и т.д.) — в **`/etc/default/blackbox`** и в **`/opt/blackbox/.env`** (или в каталоге установки).
+
+#### Обновление с USB (локально, через rsync)
+
+Скрипт:
+
+- сам ищет смонтированные флешки;
+- просит подтвердить/выбрать источник;
+- спрашивает путь проекта на флешке и путь установленного проекта;
+- останавливает сервис, обновляет файлы через `rsync`, запускает сервис обратно.
+
+Запуск:
+
+```bash
+chmod +x scripts/linux/update_from_usb.sh
+sudo bash scripts/linux/update_from_usb.sh
+```
+
+По умолчанию скрипт **не перезаписывает** локальные runtime-данные:
+
+- `.env`
+- `.venv/`
+- `instance/`
+- `settings/app_runtime.json`
 
 ### Полезные команды Flask-Migrate
 

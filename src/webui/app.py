@@ -158,7 +158,7 @@ def create_app() -> Flask:
             "format_in_configured_timezone": format_in_configured_timezone,
         }
         if not current_user.is_authenticated:
-            return {**base, "nav_menu": [], "display_username": None, "is_admin": False}
+            return {**base, "nav_menu": [], "display_username": None, "is_admin": False, "is_authenticated": False}
         tu = getattr(current_user, "type_user", None)
         role = tu.system_name if tu is not None else "user"
         menu = [
@@ -178,6 +178,7 @@ def create_app() -> Flask:
             "nav_menu": menu,
             "display_username": current_user.username,
             "is_admin": role == "admin",
+            "is_authenticated": True,
             "app_timezone": configured_timezone_name(),
             "format_in_configured_timezone": format_in_configured_timezone,
         }
