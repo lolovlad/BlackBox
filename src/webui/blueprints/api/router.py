@@ -50,23 +50,48 @@ def _extract_video_datetime(file_name: str) -> datetime | None:
     return None
 
 
+def _video_add_request_debug_preview(raw_body_full: str, max_len: int = 800) -> str:
+    if len(raw_body_full) <= max_len:
+        return raw_body_full
+    return raw_body_full[:max_len] + f"... (+{len(raw_body_full) - max_len} симв.)"
+
+
 @api_router.route("/video/add", methods=["POST"])
 @csrf.exempt
 def video_add():
+    raw_body_full = request.get_data(cache=True, as_text=True) or ""
     payload = request.get_json(silent=True) or {}
     raw_path = (payload.get("path") or payload.get("video_path") or "").strip()
     if not raw_path:
         raw_path = (request.form.get("path") or request.form.get("video_path") or "").strip()
     if not raw_path:
-        raw_body = request.get_data(cache=False, as_text=True) or ""
-        raw_path = raw_body.strip().strip('"').strip("'")
+        raw_path = raw_body_full.strip().strip('"').strip("'")
     if not raw_path:
+        current_app.logger.warning(
+            "video/add 400: нет path. content_type=%r json=%r form=%r raw_len=%s raw_preview=%r",
+            request.content_type,
+            payload,
+            dict(request.form),
+            len(raw_body_full),
+            _video_add_request_debug_preview(raw_body_full),
+        )
         return jsonify({"ok": False, "error": "Поле path обязательно."}), 400
 
     path = Path(raw_path).expanduser()
     file_name = path.name
     captured_at = _extract_video_datetime(file_name)
     if captured_at is None:
+        current_app.logger.warning(
+            "video/add 400: нет даты/времени в имени. content_type=%r json=%r form=%r "
+            "raw_path=%r file_name=%r raw_len=%s raw_preview=%r",
+            request.content_type,
+            payload,
+            dict(request.form),
+            raw_path,
+            file_name,
+            len(raw_body_full),
+            _video_add_request_debug_preview(raw_body_full),
+        )
         return jsonify(
             {
                 "ok": False,
