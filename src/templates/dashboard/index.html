@@ -32,7 +32,10 @@
         <p class="tab-panel-placeholder">Загрузка данных...</p>
     </div>
 
-    <p><a class="btn" href="{{ url_for('data_blueprint.page') }}">Открыть расширенные таблицы</a></p>
+    <p class="row actions">
+        <a class="btn" href="{{ url_for('data_blueprint.page') }}">Открыть расширенные таблицы</a>
+        <a class="btn secondary" href="{{ url_for('auth_blueprint.logout') }}"><i class="bi bi-box-arrow-right"></i> Выход</a>
+    </p>
 </section>
 <script src="{{ url_for('static', filename='js/dashboard-page.js') }}"></script>
 {% endblock %}
