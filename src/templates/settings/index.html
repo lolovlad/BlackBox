@@ -3,13 +3,7 @@
 {% block content %}
 
 <section class="card settings-page data-page">
-    <h2>Файл <code>.env</code></h2>
-    <p class="hint">Корневые параметры (база данных, обслуживание, видео, веб-сервер, начальные пользователи seed) в этом интерфейсе <strong>не редактируются</strong>. Изменяйте файл <code>.env</code> в каталоге проекта на сервере вручную и выполняйте полный перезапуск приложения (в том числе после смены <code>BLACKBOX_DB_PATH</code>).</p>
-</section>
-
-<section class="card settings-page data-page">
-    <h2>Чтение Modbus и парсер (<code>settings/app_runtime.json</code> + JSON полей)</h2>
-    <p class="hint">Параметры порта, опроса, часовой пояс отображения, путь к файлу карты полей и тело JSON парсера. Сохранение перезапускает процесс чтения данных (без перезапуска всего веб-приложения).</p>
+    <h2>Чтение Modbus и парсер</h2>
 
     <form method="post" action="{{ url_for('main_blueprint.settings_save') }}" class="settings-form" lang="ru">
         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
