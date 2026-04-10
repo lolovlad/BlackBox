@@ -1,7 +1,8 @@
 #!/usr/bin/env sh
 set -eu
 
-# Installs and enables blackbox.service for systemd.
+# Устанавливает blackbox.service: копия в /opt/blackbox, venv, systemd.
+# Служба запускается от root (см. deploy/systemd/blackbox.service).
 
 PROJECT_ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)"
 SERVICE_SRC="$PROJECT_ROOT/deploy/systemd/blackbox.service"
@@ -20,46 +21,42 @@ fi
 
 chmod +x "$PROJECT_ROOT/scripts/linux/create_env.sh" "$PROJECT_ROOT/scripts/linux/run_blackbox.sh"
 
-if ! id -u blackbox >/dev/null 2>&1; then
-  useradd --system --create-home --home-dir /opt/blackbox --shell /usr/sbin/nologin blackbox
-fi
-
 mkdir -p /opt/blackbox
 cp -a "$PROJECT_ROOT/." /opt/blackbox/
-# Всё дерево — пользователь службы (иначе .venv от root / чужой UID → Permission denied у uv).
-chown -R blackbox:blackbox /opt/blackbox
+chown -R root:root /opt/blackbox
 chmod +x /opt/blackbox/scripts/linux/create_env.sh /opt/blackbox/scripts/linux/run_blackbox.sh
 
 if [ ! -f /opt/blackbox/.env ]; then
   echo "Creating default /opt/blackbox/.env (no TTY — defaults only)..."
-  sudo -u blackbox sh /opt/blackbox/scripts/linux/create_env.sh
+  (cd /opt/blackbox && sh scripts/linux/create_env.sh)
 fi
 
-if [ ! -x /opt/blackbox/.local/bin/uv ] && [ ! -x /usr/local/bin/uv ]; then
-  echo "uv not found in /opt/blackbox/.local/bin or /usr/local/bin — installing for user blackbox (official installer)..."
+if [ ! -x /usr/local/bin/uv ] && [ ! -x /root/.local/bin/uv ]; then
+  echo "uv not found — installing for root (official installer → usually ~/.local/bin)..."
   if ! command -v curl >/dev/null 2>&1; then
-    echo "ERROR: нужен curl для авто-установки uv, либо установите uv вручную в /usr/local/bin."
+    echo "ERROR: нужен curl или установите uv в /usr/local/bin вручную."
     echo "См. https://docs.astral.sh/uv/getting-started/installation/"
     exit 1
   fi
-  install -d -o blackbox -g blackbox /opt/blackbox/.local/share /opt/blackbox/.local/bin
-  curl -LsSf https://astral.sh/uv/install.sh | sudo -u blackbox env HOME=/opt/blackbox sh || {
-    echo "ERROR: не удалось скачать/установить uv. Установите вручную и повторите скрипт."
+  curl -LsSf https://astral.sh/uv/install.sh | sh || {
+    echo "ERROR: не удалось установить uv."
     exit 1
   }
 fi
 
-if [ ! -x /opt/blackbox/.local/bin/uv ] && [ ! -x /usr/local/bin/uv ]; then
-  echo "ERROR: после установки uv по-прежнему нет в ожидаемых путях."
+BB_UV=/usr/local/bin/uv
+[ -x "$BB_UV" ] || BB_UV=/root/.local/bin/uv
+if [ ! -x "$BB_UV" ]; then
+  echo "ERROR: uv не найден в /usr/local/bin и /root/.local/bin."
   exit 1
 fi
 
-BB_UV=/opt/blackbox/.local/bin/uv
-[ -x "$BB_UV" ] || BB_UV=/usr/local/bin/uv
-echo "Creating/updating venv as user blackbox (uv sync)..."
-chown -R blackbox:blackbox /opt/blackbox
-sudo -u blackbox env HOME=/opt/blackbox PATH="/opt/blackbox/.local/bin:/usr/local/bin:/usr/bin:/bin" \
-  sh -c "cd /opt/blackbox && \"$BB_UV\" sync --frozen --no-dev"
+echo "Removing old .venv if present (fixes Permission denied from mixed owners)..."
+rm -rf /opt/blackbox/.venv
+
+echo "Creating venv: uv sync in /opt/blackbox..."
+export PATH="/root/.local/bin:/usr/local/bin:/usr/bin:/bin"
+(cd /opt/blackbox && "$BB_UV" sync --frozen --no-dev)
 
 cp "$SERVICE_SRC" "$SERVICE_DST"
 
@@ -86,7 +83,7 @@ systemctl enable --now blackbox.service
 systemctl status --no-pager blackbox.service || true
 
 echo
-echo "Installed. Useful commands:"
+echo "Installed. Service runs as root. Useful commands:"
 echo "  systemctl status blackbox.service"
 echo "  journalctl -u blackbox.service -f"
 echo "  systemctl restart blackbox.service"

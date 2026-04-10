@@ -148,7 +148,7 @@ chmod +x scripts/linux/install_systemd_service.sh
 sudo sh scripts/linux/install_systemd_service.sh
 ```
 
-Скрипт копирует проект в `/opt/blackbox`, создаёт пользователя `blackbox`, при отсутствии `.env` создаёт его дефолтами, ставит и запускает службу `blackbox.service`.
+Скрипт копирует проект в `/opt/blackbox`, пересобирает `.venv` через `uv sync`, при отсутствии `.env` создаёт его дефолтами, ставит и запускает службу **`blackbox.service`** (по умолчанию от **root** — см. `LINUX_AUTOSTART.md`).
 
 ---
 
@@ -160,8 +160,8 @@ sudo sh scripts/linux/install_systemd_service.sh
 | «`uv` not found» | Шаг 1. |
 | Не открывается сайт с другого ПК | Проверьте `HOST=0.0.0.0` в `.env`, файрвол, что порт тот же, что в `PORT`. |
 | Ошибки миграций | Шаг 5 (`FLASK_APP`), затем снова шаг 6. |
-| В логах службы: «uv не найден» | У `systemd` узкий `PATH`. Установите `uv` для пользователя `blackbox` (см. **`LINUX_AUTOSTART.md`**, раздел про uv) или обновите `blackbox.service` из репозитория. |
-| `Permission denied` на `.venv/bin/python3` | `.venv` создан от `root`. От root: `sudo chown -R blackbox:blackbox /opt/blackbox/.venv` и перезапуск службы (подробнее в **`LINUX_AUTOSTART.md`**). |
+| В логах службы: «uv не найден» | Обновите `blackbox.service` из репозитория или установите `uv` от root (`curl … | sh` → `/root/.local/bin`). См. **`LINUX_AUTOSTART.md`**. |
+| `Permission denied` на `.venv/bin/python3` | Удалите `.venv` и пересоберите: `sudo rm -rf /opt/blackbox/.venv`, затем снова `install_systemd_service.sh` или `cd /opt/blackbox && uv sync`. См. **`LINUX_AUTOSTART.md`**. |
 
 ---
 

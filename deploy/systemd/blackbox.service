@@ -5,19 +5,19 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=blackbox
-Group=blackbox
+# Запуск от root: нет путаницы с правами на .venv/порт/serial на закрытых устройствах.
+# На общем сервере при необходимости замените на отдельного пользователя и chown каталога проекта.
+User=root
+Group=root
 WorkingDirectory=/opt/blackbox
 EnvironmentFile=-/etc/default/blackbox
-# У systemd урезанный PATH; uv обычно в ~/.local/bin (у blackbox это /opt/blackbox/.local/bin) или в /usr/local/bin
-Environment=PATH=/opt/blackbox/.local/bin:/opt/blackbox/.cargo/bin:/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=PATH=/root/.local/bin:/opt/blackbox/.local/bin:/opt/blackbox/.cargo/bin:/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
 ExecStart=/opt/blackbox/scripts/linux/run_blackbox.sh
 Restart=always
 RestartSec=3
 TimeoutStartSec=120
 KillMode=mixed
 
-# Logs go to journalctl -u blackbox.service
 StandardOutput=journal
 StandardError=journal
 

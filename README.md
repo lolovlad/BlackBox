@@ -163,7 +163,7 @@ http://10.109.114.106:5000/
 - **`scripts/linux/create_env.sh`** — только создание `.env` (мастер или дефолты без TTY).
 - **`scripts/linux/run_blackbox.sh`** — установка зависимостей, миграции, запуск **uvicorn в этом терминале** (остановка Ctrl+C). Не смешивается с «фоном»: для фона используется systemd.
 - **`deploy/systemd/blackbox.service`** — unit-файл; `ExecStart` вызывает `run_blackbox.sh`.
-- **`scripts/linux/install_systemd_service.sh`** — копия в `/opt/blackbox`, пользователь `blackbox`, включение службы.
+- **`scripts/linux/install_systemd_service.sh`** — копия в `/opt/blackbox`, venv, unit; служба по умолчанию от **root** (см. комментарии в `blackbox.service`).
 
 Первый ручной запуск на устройстве: пошагово в **[`DEPLOY_ON_DEVICE_RU.md`](DEPLOY_ON_DEVICE_RU.md)**.
 

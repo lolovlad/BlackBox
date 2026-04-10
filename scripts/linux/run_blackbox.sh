@@ -15,7 +15,7 @@ cd "$PROJECT_ROOT"
 
 # Под systemd PATH часто не содержит каталог, куда поставили uv (типично ~/.local/bin).
 HOME="${HOME:-$(getent passwd "$(id -un)" 2>/dev/null | cut -d: -f6)}"
-HOME="${HOME:-/opt/blackbox}"
+HOME="${HOME:-/root}"
 export PATH="${PROJECT_ROOT}/.local/bin:${HOME}/.local/bin:/usr/local/bin:/usr/local/sbin:${PATH:-/usr/bin:/bin}"
 
 ENV_FILE="$PROJECT_ROOT/.env"
@@ -46,7 +46,7 @@ fi
 
 if [ -z "$UV_BIN" ] || [ ! -x "$UV_BIN" ]; then
   echo "ERROR: uv не найден в PATH и в типичных каталогах."
-  echo "Установите uv для пользователя службы (часто: HOME=/opt/blackbox → ~/.local/bin) или в /usr/local/bin."
+  echo "Установите uv (часто: /root/.local/bin или /usr/local/bin) или задайте UV_BINARY."
   echo "Инструкция: https://docs.astral.sh/uv/getting-started/installation/"
   echo "Либо задайте полный путь: в /etc/default/blackbox добавьте строку UV_BINARY=/полный/путь/к/uv"
   exit 1
@@ -69,15 +69,14 @@ _venv="$PROJECT_ROOT/.venv"
 _venvp="$_venv/bin/python3"
 if [ -d "$_venv" ]; then
   if ! [ -x "$_venv" ]; then
-    echo "ERROR: нет прав на каталог .venv (часто владелец root). От root выполните:"
-    echo "  sudo chown -R blackbox:blackbox \"$_venv\""
-    echo "или удалите окружение и перезапустите службу:"
-    echo "  sudo rm -rf \"$_venv\""
+    echo "ERROR: нет прав на каталог .venv. От root:"
+    echo "  sudo chown -R \"$(id -un)\":\"$(id -gn)\" \"$_venv\""
+    echo "  или: sudo rm -rf \"$_venv\" && перезапуск службы"
     exit 1
   fi
   if [ -e "$_venvp" ] && ! [ -x "$_venvp" ]; then
-    echo "ERROR: $_venvp недоступен для пользователя $(id -un). От root:"
-    echo "  sudo chown -R blackbox:blackbox \"$_venv\""
+    echo "ERROR: $_venvp недоступен для $(id -un). От root:"
+    echo "  sudo chown -R \"$(id -un)\":\"$(id -gn)\" \"$_venv\""
     exit 1
   fi
 fi
