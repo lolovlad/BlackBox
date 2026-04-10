@@ -22,7 +22,7 @@
     </h1>
     <nav class="flex flex-wrap items-center gap-2">
         {% for item in nav_menu %}
-            <a class="rounded-full border border-gray-200 bg-white px-3 py-1 text-sm font-medium text-gray-700 transition hover:border-indigo-400 hover:text-indigo-700"
+            <a class="{% if item.is_logout %}rounded-full bg-orange-500 px-3 py-1 text-sm font-semibold text-white transition hover:bg-orange-600{% else %}rounded-full border border-gray-200 bg-white px-3 py-1 text-sm font-medium text-gray-700 transition hover:border-indigo-400 hover:text-indigo-700{% endif %}"
                href="{% if item.url is defined %}{{ item.url }}{% else %}{{ url_for(item.endpoint) }}{% endif %}"
                {% if item.new_tab %}target="_blank" rel="noopener"{% endif %}>
                 {% if item.endpoint == 'main_blueprint.dashboard' %}<i class="bi bi-speedometer2"></i>
@@ -31,14 +31,12 @@
                 {% elif item.endpoint == 'data_blueprint.charts_page' %}<i class="bi bi-graph-up"></i>
                 {% elif item.endpoint == 'main_blueprint.settings' %}<i class="bi bi-gear"></i>
                 {% elif item.endpoint == 'main_blueprint.event_logs_page' %}<i class="bi bi-journal-text"></i>
+                {% elif item.endpoint == 'auth_blueprint.logout' %}<i class="bi bi-box-arrow-right"></i>
                 {% elif item.url is defined %}<i class="bi bi-folder2-open"></i>
                 {% else %}<i class="bi bi-circle"></i>{% endif %}
                 {{ item.title }}
             </a>
         {% endfor %}
-        {% if current_user.is_authenticated %}
-            <a class="rounded-full bg-orange-500 px-3 py-1 text-sm font-semibold text-white transition hover:bg-orange-600" href="{{ url_for('auth_blueprint.logout') }}"><i class="bi bi-box-arrow-right"></i> Выход</a>
-        {% endif %}
     </nav>
     </div>
 </header>

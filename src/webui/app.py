@@ -173,6 +173,7 @@ def create_app() -> Flask:
             menu.append({"url": fm_url, "title": "Файлы", "new_tab": True})
         if role == "admin":
             menu.append({"endpoint": "main_blueprint.event_logs_page", "title": "Логи"})
+        menu.append({"endpoint": "auth_blueprint.logout", "title": "Выход", "is_logout": True})
         return {
             **base,
             "nav_menu": menu,
