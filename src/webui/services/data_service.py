@@ -29,7 +29,7 @@ DATETIME_UI_FORMAT = "%d.%m.%Y %H:%M:%S"
 
 @dataclass(frozen=True)
 class DataFilter:
-    active_tab: str  # analog | discrete | alarms
+    active_tab: str  # analog | discrete | alarms | videos
     date_from: datetime | None
     date_to: datetime | None
     sort_desc: bool
@@ -93,7 +93,7 @@ def _parse_page(raw: str | None) -> int:
 
 def parse_data_filter(source: ImmutableMultiDict | MultiDict) -> DataFilter:
     tab = (source.get("active_tab") or "analog").strip().lower()
-    if tab not in ("analog", "discrete", "alarms"):
+    if tab not in ("analog", "discrete", "alarms", "videos"):
         tab = "analog"
     date_from, date_to = _normalize_date_range(
         _parse_dt(source.get("date_from")),
@@ -197,6 +197,39 @@ class DataService:
             return {
                 "tab": "discrete",
                 "columns": col_labels,
+                "rows": out_rows,
+                "alarms_disabled": False,
+                "page": page_eff,
+                "total_pages": total_pages,
+                "total_rows": total,
+                "page_size": TABLE_PAGE_SIZE,
+            }
+
+        if tab == "videos":
+            total = self._repo.count_videos(created_from=flt.date_from, created_to=flt.date_to)
+            total_pages = max(1, (total + TABLE_PAGE_SIZE - 1) // TABLE_PAGE_SIZE) if total else 1
+            page_eff = min(max(1, flt.page), total_pages)
+            offset = (page_eff - 1) * TABLE_PAGE_SIZE
+            rows_db = self._repo.list_videos(
+                created_from=flt.date_from,
+                created_to=flt.date_to,
+                sort_desc=flt.sort_desc,
+                offset=offset,
+                limit=TABLE_PAGE_SIZE,
+            )
+            out_rows = [
+                {
+                    "saved_at": format_in_configured_timezone(item.created_at, DATETIME_UI_FORMAT),
+                    "captured_at": format_in_configured_timezone(item.captured_at, DATETIME_UI_FORMAT),
+                    "file_name": item.file_name,
+                    "file_path": item.file_path,
+                    "alarm_id": item.alarm_id,
+                }
+                for item in rows_db
+            ]
+            return {
+                "tab": "videos",
+                "columns": [],
                 "rows": out_rows,
                 "alarms_disabled": False,
                 "page": page_eff,

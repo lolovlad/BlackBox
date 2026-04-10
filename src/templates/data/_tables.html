@@ -2,6 +2,39 @@
 <section class="card" id="data-table-result" data-page="1" data-total-pages="1">
     <p class="flash error">Таблица аварий недоступна. Выполните миграции БД.</p>
 </section>
+{% elif tab == 'videos' %}
+<section class="card" id="data-table-result" data-page="{{ page }}" data-total-pages="{{ total_pages }}">
+    <h3>Видео (сохраненные записи)</h3>
+    <p class="hint data-table-meta">Всего записей: {{ total_rows }} · страница {{ page }} из {{ total_pages }} (по {{ page_size }})</p>
+    <div class="table-wrap">
+        <table>
+            <thead>
+            <tr>
+                <th>Сохранено в БД</th>
+                <th>Время файла</th>
+                <th>Имя файла</th>
+                <th>Путь к файлу</th>
+                <th>ID аварии</th>
+            </tr>
+            </thead>
+            <tbody>
+            {% for row in rows %}
+                <tr>
+                    <td>{{ row.saved_at }}</td>
+                    <td>{{ row.captured_at }}</td>
+                    <td>{{ row.file_name }}</td>
+                    <td>{{ row.file_path }}</td>
+                    <td>{% if row.alarm_id is not none %}{{ row.alarm_id }}{% else %}-{% endif %}</td>
+                </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% if not rows %}
+        <p class="hint">Нет записей за выбранные условия.</p>
+    {% endif %}
+    {% include "data/_pagination.html" %}
+</section>
 {% elif tab == 'alarms' %}
 <section class="card" id="data-table-result" data-page="{{ page }}" data-total-pages="{{ total_pages }}">
     <h3>Аварии</h3>

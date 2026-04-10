@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import threading
 import time
 from datetime import datetime, timedelta
@@ -94,6 +95,13 @@ class MaintenanceScheduler:
             logger.warning("Video cleanup skipped: invalid VIDEO_STORAGE_DIR=%s", root_dir)
             return
 
+        scan_roots: list[Path] = [root_dir]
+        # Частый кейс: путь задан как /.../motion/cam1, но камеры лежат в соседних camN.
+        # Тогда очищаем по родителю, чтобы не пропускать устаревшие файлы в cam2/cam3/...
+        if re.fullmatch(r"cam\d+", root_dir.name.lower()) and root_dir.parent.is_dir():
+            scan_roots.append(root_dir.parent)
+        scan_roots = list(dict.fromkeys(p.resolve() for p in scan_roots))
+
         session = self._session_factory()
         try:
             rows = session.execute(select(Video.file_path)).scalars().all()
@@ -102,16 +110,30 @@ class MaintenanceScheduler:
             session.close()
 
         deleted = 0
-        for file in root_dir.rglob("*"):
+        scanned_files = 0
+        seen: set[Path] = set()
+        for scan_root in scan_roots:
+            for file in scan_root.rglob("*"):
+                if self._stop_event.is_set():
+                    break
+                if not file.is_file():
+                    continue
+                try:
+                    resolved = file.resolve()
+                    if resolved in seen:
+                        continue
+                    seen.add(resolved)
+                    scanned_files += 1
+                    if resolved not in keep_paths:
+                        file.unlink(missing_ok=True)
+                        deleted += 1
+                except Exception:
+                    logger.exception("Failed to remove stale video file: %s", file)
             if self._stop_event.is_set():
                 break
-            if not file.is_file():
-                continue
-            try:
-                resolved = file.resolve()
-                if resolved not in keep_paths:
-                    file.unlink(missing_ok=True)
-                    deleted += 1
-            except Exception:
-                logger.exception("Failed to remove stale video file: %s", file)
-        logger.info("Video cleanup done: root=%s deleted=%d", root_dir, deleted)
+        logger.info(
+            "Video cleanup done: roots=%s scanned=%d deleted=%d",
+            ", ".join(str(p) for p in scan_roots),
+            scanned_files,
+            deleted,
+        )

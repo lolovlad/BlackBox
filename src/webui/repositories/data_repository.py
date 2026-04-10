@@ -5,7 +5,7 @@ from datetime import datetime
 from sqlalchemy import func, select
 from sqlalchemy.orm import sessionmaker
 
-from src.database import Alarms, EventLog, Samples
+from src.database import Alarms, EventLog, Samples, Video
 
 
 class DataRepository:
@@ -134,6 +134,32 @@ class DataRepository:
     ):
         return self._list_rows(
             EventLog,
+            sort_desc=sort_desc,
+            offset=offset,
+            limit=limit,
+        )
+
+    def count_videos(
+        self,
+        *,
+        created_from: datetime | None = None,
+        created_to: datetime | None = None,
+    ) -> int:
+        return self._count_rows(Video, created_from=created_from, created_to=created_to)
+
+    def list_videos(
+        self,
+        *,
+        created_from: datetime | None = None,
+        created_to: datetime | None = None,
+        sort_desc: bool = True,
+        offset: int = 0,
+        limit: int | None = None,
+    ):
+        return self._list_rows(
+            Video,
+            created_from=created_from,
+            created_to=created_to,
             sort_desc=sort_desc,
             offset=offset,
             limit=limit,
