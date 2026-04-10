@@ -13,6 +13,11 @@ set -eu
 PROJECT_ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)"
 cd "$PROJECT_ROOT"
 
+# Под systemd PATH часто не содержит каталог, куда поставили uv (типично ~/.local/bin).
+HOME="${HOME:-$(getent passwd "$(id -un)" 2>/dev/null | cut -d: -f6)}"
+HOME="${HOME:-/opt/blackbox}"
+export PATH="${PROJECT_ROOT}/.local/bin:${HOME}/.local/bin:/usr/local/bin:/usr/local/sbin:${PATH:-/usr/bin:/bin}"
+
 ENV_FILE="$PROJECT_ROOT/.env"
 
 if [ ! -f "$ENV_FILE" ]; then
@@ -26,8 +31,24 @@ set -a
 . "$ENV_FILE"
 set +a
 
-if ! command -v uv >/dev/null 2>&1; then
-  echo "ERROR: uv is not installed. https://docs.astral.sh/uv/"
+UV_BIN="${UV_BINARY:-}"
+if [ -z "$UV_BIN" ]; then
+  if command -v uv >/dev/null 2>&1; then
+    UV_BIN="$(command -v uv)"
+  elif [ -x /usr/local/bin/uv ]; then
+    UV_BIN=/usr/local/bin/uv
+  elif [ -x "${HOME}/.local/bin/uv" ]; then
+    UV_BIN="${HOME}/.local/bin/uv"
+  elif [ -x "${PROJECT_ROOT}/.local/bin/uv" ]; then
+    UV_BIN="${PROJECT_ROOT}/.local/bin/uv"
+  fi
+fi
+
+if [ -z "$UV_BIN" ] || [ ! -x "$UV_BIN" ]; then
+  echo "ERROR: uv не найден в PATH и в типичных каталогах."
+  echo "Установите uv для пользователя службы (часто: HOME=/opt/blackbox → ~/.local/bin) или в /usr/local/bin."
+  echo "Инструкция: https://docs.astral.sh/uv/getting-started/installation/"
+  echo "Либо задайте полный путь: в /etc/default/blackbox добавьте строку UV_BINARY=/полный/путь/к/uv"
   exit 1
 fi
 
@@ -44,7 +65,7 @@ if [ ! -f "$PROJECT_ROOT/settings/settings.json" ]; then
     > "$PROJECT_ROOT/settings/settings.json"
 fi
 
-uv sync --frozen --no-dev
-uv run flask db upgrade
+"$UV_BIN" sync --frozen --no-dev
+"$UV_BIN" run flask db upgrade
 
-exec uv run uvicorn src.web_app:app --host "$HOST" --port "$PORT" --interface wsgi --log-level info --access-log
+exec "$UV_BIN" run uvicorn src.web_app:app --host "$HOST" --port "$PORT" --interface wsgi --log-level info --access-log

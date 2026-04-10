@@ -34,11 +34,31 @@ if [ ! -f /opt/blackbox/.env ]; then
   sudo -u blackbox sh /opt/blackbox/scripts/linux/create_env.sh
 fi
 
+if [ ! -x /opt/blackbox/.local/bin/uv ] && [ ! -x /usr/local/bin/uv ]; then
+  echo "uv not found in /opt/blackbox/.local/bin or /usr/local/bin — installing for user blackbox (official installer)..."
+  if ! command -v curl >/dev/null 2>&1; then
+    echo "ERROR: нужен curl для авто-установки uv, либо установите uv вручную в /usr/local/bin."
+    echo "См. https://docs.astral.sh/uv/getting-started/installation/"
+    exit 1
+  fi
+  install -d -o blackbox -g blackbox /opt/blackbox/.local/share /opt/blackbox/.local/bin
+  curl -LsSf https://astral.sh/uv/install.sh | sudo -u blackbox env HOME=/opt/blackbox sh || {
+    echo "ERROR: не удалось скачать/установить uv. Установите вручную и повторите скрипт."
+    exit 1
+  }
+fi
+
+if [ ! -x /opt/blackbox/.local/bin/uv ] && [ ! -x /usr/local/bin/uv ]; then
+  echo "ERROR: после установки uv по-прежнему нет в ожидаемых путях."
+  exit 1
+fi
+
 cp "$SERVICE_SRC" "$SERVICE_DST"
 
 if [ ! -f "$ENV_FILE" ]; then
   cat > "$ENV_FILE" <<'EOF'
 # Optional overrides for BlackBox systemd service
+# Если uv в нестандартном месте: UV_BINARY=/полный/путь/к/uv
 HOST=0.0.0.0
 PORT=5000
 APP_TIMEZONE=Europe/Moscow

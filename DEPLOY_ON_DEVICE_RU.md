@@ -160,6 +160,7 @@ sudo sh scripts/linux/install_systemd_service.sh
 | «`uv` not found» | Шаг 1. |
 | Не открывается сайт с другого ПК | Проверьте `HOST=0.0.0.0` в `.env`, файрвол, что порт тот же, что в `PORT`. |
 | Ошибки миграций | Шаг 5 (`FLASK_APP`), затем снова шаг 6. |
+| В логах службы: «uv не найден» | У `systemd` узкий `PATH`. Установите `uv` для пользователя `blackbox` (см. **`LINUX_AUTOSTART.md`**, раздел про uv) или обновите `blackbox.service` из репозитория. |
 
 ---
 

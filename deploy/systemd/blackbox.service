@@ -9,6 +9,8 @@ User=blackbox
 Group=blackbox
 WorkingDirectory=/opt/blackbox
 EnvironmentFile=-/etc/default/blackbox
+# У systemd урезанный PATH; uv обычно в ~/.local/bin (у blackbox это /opt/blackbox/.local/bin) или в /usr/local/bin
+Environment=PATH=/opt/blackbox/.local/bin:/opt/blackbox/.cargo/bin:/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
 ExecStart=/opt/blackbox/scripts/linux/run_blackbox.sh
 Restart=always
 RestartSec=3

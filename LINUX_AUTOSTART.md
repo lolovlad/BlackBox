@@ -62,6 +62,31 @@ sudo systemctl restart blackbox.service
 
 ---
 
+## Ошибка «uv is not installed» в journalctl
+
+У службы **другой PATH**, чем у вашего SSH-пользователя: `uv` мог быть установлен только в `~/.local/bin` того пользователя, под которым вы заходили, а не для `blackbox`.
+
+**Что сделать (любой один вариант):**
+
+1. Обновите unit-файл из репозитория (в нём задан расширенный `Environment=PATH=...` с `/opt/blackbox/.local/bin` и `/usr/local/bin`), затем:
+   ```bash
+   sudo cp /путь/к/репозиторию/deploy/systemd/blackbox.service /etc/systemd/system/blackbox.service
+   sudo systemctl daemon-reload
+   sudo systemctl restart blackbox.service
+   ```
+2. Установите `uv` для пользователя службы (часто достаточно так):
+   ```bash
+   sudo -u blackbox mkdir -p /opt/blackbox/.local/bin
+   curl -LsSf https://astral.sh/uv/install.sh | sudo -u blackbox env HOME=/opt/blackbox sh
+   ```
+3. Либо положите исполняемый `uv` в `/usr/local/bin` на всех пользователей.
+4. Либо в **`/etc/default/blackbox`** добавьте строку с полным путём, например:  
+   `UV_BINARY=/полный/путь/к/uv`
+
+Повторный запуск установщика `install_systemd_service.sh` с актуальной версией репозитория при отсутствии `uv` попытается поставить его под `blackbox` сам (нужен `curl` и доступ в интернет).
+
+---
+
 ## Интерактивный мастер `.env` на установленной копии
 
 Если при установке службы создался `.env` с дефолтами и вы хотите пройти вопросы мастера:
