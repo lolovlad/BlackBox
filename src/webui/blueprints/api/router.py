@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -20,7 +21,7 @@ _DATETIME_PATTERNS: tuple[str, ...] = (
     "%Y-%m-%d %H:%M:%S",
     "%d-%m-%Y_%H-%M-%S",
 )
-_MAX_ACTIVE_MATCH_DELTA = timedelta(minutes=20)
+_DEFAULT_VIDEO_MATCH_WINDOW_MINUTES = 20
 
 
 def _extract_video_datetime(file_name: str) -> datetime | None:
@@ -64,6 +65,31 @@ def _normalize_video_source_path(raw_path: str) -> str:
     if value.lower().startswith("file://"):
         value = value[7:].strip()
     return value
+
+
+def _active_parser_settings_path() -> Path:
+    raw = current_app.config.get("PARSER_SETTINGS_PATH", "settings/settings.json")
+    p = Path(str(raw))
+    project_root = Path(current_app.config["PROJECT_ROOT"])
+    return p.resolve() if p.is_absolute() else (project_root / p).resolve()
+
+
+def _video_match_window_delta() -> timedelta:
+    path = _active_parser_settings_path()
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return timedelta(minutes=_DEFAULT_VIDEO_MATCH_WINDOW_MINUTES)
+    raw = payload.get("video_match_window_minutes", _DEFAULT_VIDEO_MATCH_WINDOW_MINUTES)
+    try:
+        minutes = int(raw)
+    except Exception:
+        minutes = _DEFAULT_VIDEO_MATCH_WINDOW_MINUTES
+    if minutes < 1:
+        minutes = 1
+    if minutes > 24 * 60:
+        minutes = 24 * 60
+    return timedelta(minutes=minutes)
 
 
 def _is_active_state(value: str | None) -> bool:
@@ -153,6 +179,7 @@ def video_add():
         ), 400
 
     session_factory = current_app.extensions["session_factory"]
+    active_window = _video_match_window_delta()
     with session_factory() as session:
         existing = session.execute(select(Video).where(Video.file_path == str(path))).scalar_one_or_none()
         if existing is not None:
@@ -170,9 +197,9 @@ def video_add():
         matched_alarm: Alarms | None = None
         reason = ""
         if _is_active_state(nearest.state):
-            if abs(captured_at - nearest.created_at) <= _MAX_ACTIVE_MATCH_DELTA:
+            if abs(captured_at - nearest.created_at) <= active_window:
                 matched_alarm = nearest
-                reason = "nearest_active_within_20m"
+                reason = "nearest_active_within_window"
             else:
                 nearest_inactive = _next_inactive_after(session, nearest)
                 if (

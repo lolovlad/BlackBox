@@ -187,6 +187,19 @@ def _settings_page_context(io_cfg_dict: dict[str, Any], parser_text: str) -> dic
     tz_select, tz_custom = _timezone_form_fields({"APP_TIMEZONE": io_cfg_dict.get("app_timezone", "")}, timezone_choices)
     io_display = dict(io_cfg_dict)
     io_display["_tz_select"] = tz_select
+    parser_meta: dict[str, Any] = {}
+    try:
+        parser_meta = json.loads(parser_text) if parser_text.strip() else {}
+        if not isinstance(parser_meta, dict):
+            parser_meta = {}
+    except Exception:
+        parser_meta = {}
+    fm_url = str(parser_meta.get("file_manager_url", "") or "").strip()
+    window_raw = parser_meta.get("video_match_window_minutes", 20)
+    try:
+        window_minutes = int(window_raw)
+    except Exception:
+        window_minutes = 20
     return {
         "io_values": io_display,
         "app_timezone_custom_value": tz_custom,
@@ -196,6 +209,8 @@ def _settings_page_context(io_cfg_dict: dict[str, Any], parser_text: str) -> dic
         "settings_files_warning": settings_files_warning,
         "emergency_conditions": er_repo.list_conditions(),
         "timezone_choices": timezone_choices,
+        "file_manager_url": fm_url,
+        "video_match_window_minutes": window_minutes,
     }
 
 

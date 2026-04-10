@@ -49,6 +49,16 @@
 
         <h3 class="settings-subtitle">Файл карты полей (parser JSON)</h3>
         <p class="hint">В списке только валидные JSON из <code>settings/</code> (кроме <code>app_runtime.json</code>).</p>
+        <p class="hint">
+            Доп. ключи в этом JSON: <code>video_match_window_minutes</code> (окно сопоставления видео к active, минуты)
+            и <code>file_manager_url</code> (ссылка на файловый менеджер устройства).
+            Сейчас: окно = <strong>{{ video_match_window_minutes }}</strong> мин.
+        </p>
+        {% if file_manager_url %}
+            <p class="hint">
+                <a class="btn secondary" href="{{ file_manager_url }}" target="_blank" rel="noopener">Открыть файловый менеджер</a>
+            </p>
+        {% endif %}
         {% if settings_files_warning %}
             <p class="hint settings-warn">{{ settings_files_warning }}</p>
         {% endif %}

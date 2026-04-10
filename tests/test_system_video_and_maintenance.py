@@ -232,6 +232,31 @@ def test_api_video_add_accepts_between_active_and_inactive_even_if_over_20m(app_
     assert miss_resp.status_code == 404
 
 
+def test_api_video_add_respects_video_match_window_from_settings_json(app_with_env) -> None:
+    app, tmp_path = app_with_env
+    settings_path = tmp_path / "settings" / "settings.json"
+    cfg = json.loads(settings_path.read_text(encoding="utf-8"))
+    cfg["video_match_window_minutes"] = 2
+    settings_path.write_text(json.dumps(cfg, ensure_ascii=False) + "\n", encoding="utf-8")
+
+    with app.app_context():
+        db.session.add(
+            Alarms(
+                created_at=datetime(2026, 4, 10, 10, 0, 0),
+                date=b"{}",
+                name="A3",
+                state="active",
+                description="active",
+            )
+        )
+        db.session.commit()
+
+    client = app.test_client()
+    # 3 минуты от active: при окне=2 должно отклоняться.
+    resp = client.post("/api/video/add", json={"path": "/mnt/nvme/motion/cam1/20260410_100300.mkv"})
+    assert resp.status_code == 404
+
+
 def test_maintenance_cleanup_db_and_video_files(app_with_env) -> None:
     app, tmp_path = app_with_env
     env_path = tmp_path / ".env"
