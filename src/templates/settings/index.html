@@ -52,12 +52,6 @@
                 <input type="url" name="file_manager_url" value="{{ io_values.file_manager_url }}" placeholder="http://127.0.0.1:8080" autocomplete="off">
             </label>
         </div>
-        {% if io_values.file_manager_url %}
-            <p class="hint">
-                <a class="btn secondary" href="{{ io_values.file_manager_url }}" target="_blank" rel="noopener">Открыть файловый менеджер</a>
-            </p>
-        {% endif %}
-
         <h3 class="settings-subtitle">Файл карты полей (parser JSON)</h3>
         {% if settings_files_warning %}
             <p class="hint settings-warn">{{ settings_files_warning }}</p>

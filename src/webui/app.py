@@ -167,6 +167,9 @@ def create_app() -> Flask:
             {"endpoint": "data_blueprint.page", "title": "Данные"},
             {"endpoint": "data_blueprint.charts_page", "title": "Графики"},
         ]
+        fm_url = str(getattr(app.extensions.get("app_runtime_config"), "file_manager_url", "") or "").strip()
+        if fm_url:
+            menu.append({"url": fm_url, "title": "Файлы", "new_tab": True})
         if role == "admin":
             menu.append({"endpoint": "main_blueprint.settings", "title": "Настройки"})
             menu.append({"endpoint": "main_blueprint.event_logs_page", "title": "Логи"})
