@@ -1,190 +1,206 @@
 {% extends "base.html" %}
-{% block title %}Настройки{% endblock %}
+{% block title %}Настройки системы · BlackBox{% endblock %}
 {% block content %}
-<section class="card settings-page" x-data="settingsPage()">
-    <h2>Настройки системы</h2>
 
-    <form method="post" class="settings-form" enctype="multipart/form-data">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-        <fieldset>
-            <legend>Файлы настроек</legend>
-            <div class="settings-grid">
-                <label class="filter-field">Активный файл настроек
-                    <select name="settings_file">
-                        {% for file_name in settings_files %}
-                        <option value="{{ file_name }}" {% if active_settings_file == file_name %}selected{% endif %}>{{ file_name }}</option>
-                        {% endfor %}
-                    </select>
-                </label>
-                <label class="filter-field">Загрузить JSON-файл
-                    <input type="file" name="settings_file_upload" accept=".json,application/json">
-                </label>
-            </div>
-            <div class="row actions">
-                <button type="submit" class="btn secondary" name="action" value="switch_file">Выбрать файл</button>
-                <button type="submit" class="btn secondary" name="action" value="upload">Загрузить файл настроек</button>
-            </div>
-        </fieldset>
+<section class="card settings-page data-page">
+    <h2>Корневые настройки (.env)</h2>
+    <p class="hint">База данных, обслуживание, видео, веб-сервер и параметры начальных пользователей (seed). Меняются здесь или при первом запуске; после смены <code>BLACKBOX_DB_PATH</code> нужен полный перезапуск приложения.</p>
 
-        <fieldset>
-            <legend>Параметры Modbus / чтения данных</legend>
-            <div class="settings-grid">
-                <label class="filter-field">BLACKBOX_DB_PATH
-                    <input type="text" name="BLACKBOX_DB_PATH" value="{{ env_values.BLACKBOX_DB_PATH }}">
-                    <small class="field-help">Полный или относительный путь к файлу SQLite БД (можно на другом диске).</small>
-                </label>
-                <label class="filter-field">MODBUS_PORT
-                    <input type="text" name="MODBUS_PORT" value="{{ env_values.MODBUS_PORT }}">
-                    <small class="field-help">Порт устройства, например `/dev/ttyAMA0` или `COM3`.</small>
-                </label>
-                <label class="filter-field">MODBUS_SLAVE
-                    <input type="number" name="MODBUS_SLAVE" min="1" max="247" step="1" value="{{ env_values.MODBUS_SLAVE }}">
-                    <small class="field-help">Допустимо: 1..247.</small>
-                </label>
-                <label class="filter-field">MODBUS_BAUDRATE
-                    <input type="number" name="MODBUS_BAUDRATE" min="1200" max="115200" step="1" value="{{ env_values.MODBUS_BAUDRATE }}">
-                    <small class="field-help">Допустимо: 1200..115200.</small>
-                </label>
-                <label class="filter-field">MODBUS_TIMEOUT
-                    <input type="number" name="MODBUS_TIMEOUT" min="0.01" max="10" step="0.01" value="{{ env_values.MODBUS_TIMEOUT }}">
-                    <small class="field-help">Таймаут, секунды. Диапазон: 0.01..10.</small>
-                </label>
-                <label class="filter-field">MODBUS_INTERVAL
-                    <input type="number" name="MODBUS_INTERVAL" min="0.05" max="60" step="0.01" value="{{ env_values.MODBUS_INTERVAL }}">
-                    <small class="field-help">Интервал опроса, секунды. Диапазон: 0.05..60.</small>
-                </label>
-                <label class="filter-field">MODBUS_ADDRESS_OFFSET
-                    <input type="number" name="MODBUS_ADDRESS_OFFSET" min="0" max="10000" step="1" value="{{ env_values.MODBUS_ADDRESS_OFFSET }}">
-                    <small class="field-help">Смещение адресов. Диапазон: 0..10000.</small>
-                </label>
-                <label class="filter-field">RAM_BATCH_SIZE
-                    <input type="number" name="RAM_BATCH_SIZE" min="1" max="10000" step="1" value="{{ env_values.RAM_BATCH_SIZE }}">
-                    <small class="field-help">Размер буфера записи в БД. Диапазон: 1..10000.</small>
-                </label>
-                <label class="filter-field">APP_TIMEZONE
-                    {% set tz_values = timezone_choices | map(attribute=0) | list %}
-                    {% set tz_current_raw = (env_values.APP_TIMEZONE or 'Europe/Moscow') %}
-                    {% set tz_current = tz_current_raw if tz_current_raw in tz_values else 'Europe/Moscow' %}
-                    <select name="APP_TIMEZONE" id="timezone-select">
-                        {% for tz_value, tz_label in timezone_choices %}
-                        <option value="{{ tz_value }}" {% if tz_current == tz_value %}selected{% endif %}>{{ tz_label }}</option>
-                        {% endfor %}
-                    </select>
-                    <small class="field-help">Часовые пояса РФ (UTC+2 ... UTC+12).</small>
-                </label>
-                <label class="filter-field">DB_CLEANUP_INTERVAL_MINUTES
-                    <input type="number" name="DB_CLEANUP_INTERVAL_MINUTES" min="1" step="1" value="{{ env_values.DB_CLEANUP_INTERVAL_MINUTES }}">
-                    <small class="field-help">Период запуска очистки старых записей БД (в минутах).</small>
-                </label>
-                <label class="filter-field">DB_RETENTION_DAYS
-                    <input type="number" name="DB_RETENTION_DAYS" min="1" step="1" value="{{ env_values.DB_RETENTION_DAYS }}">
-                    <small class="field-help">Сколько дней хранить данные в БД до удаления.</small>
-                </label>
-                <label class="filter-field">VIDEO_STORAGE_DIR
-                    <input type="text" name="VIDEO_STORAGE_DIR" value="{{ env_values.VIDEO_STORAGE_DIR }}">
-                    <small class="field-help">Папка видео для автоочистки: удаляются файлы, которых нет в таблице videos.</small>
-                </label>
-                <label class="filter-field">VIDEO_GC_INTERVAL_DAYS
-                    <input type="number" name="VIDEO_GC_INTERVAL_DAYS" min="1" step="1" value="{{ env_values.VIDEO_GC_INTERVAL_DAYS }}">
-                    <small class="field-help">Период очистки лишних видеофайлов (в днях, по умолчанию 10).</small>
-                </label>
-            </div>
-        </fieldset>
+    <form method="post" action="{{ url_for('main_blueprint.settings_save') }}" class="settings-form" lang="ru">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+        <input type="hidden" name="action" value="save_env"/>
 
-        <fieldset>
-            <legend>Редактирование активного файла ({{ active_settings_file }})</legend>
-            <textarea name="parser_json" class="parser-json" spellcheck="false">{{ parser_text }}</textarea>
-        </fieldset>
-
-        <div class="row actions">
-            <button type="submit" class="btn secondary" name="action" value="test">Проверить</button>
-            <button type="submit" class="btn" name="action" value="save">Сохранить и применить</button>
+        <div class="filter-grid settings-env-grid">
+            <label class="filter-field">BLACKBOX_DB_PATH
+                <input type="text" name="BLACKBOX_DB_PATH" value="{{ root_env_values.BLACKBOX_DB_PATH }}" autocomplete="off">
+            </label>
+            <label class="filter-field">DB_CLEANUP_INTERVAL_MINUTES
+                <input type="number" name="DB_CLEANUP_INTERVAL_MINUTES" value="{{ root_env_values.DB_CLEANUP_INTERVAL_MINUTES }}" min="1">
+            </label>
+            <label class="filter-field">DB_RETENTION_DAYS
+                <input type="number" name="DB_RETENTION_DAYS" value="{{ root_env_values.DB_RETENTION_DAYS }}" min="1">
+            </label>
+            <label class="filter-field">VIDEO_STORAGE_DIR
+                <input type="text" name="VIDEO_STORAGE_DIR" value="{{ root_env_values.VIDEO_STORAGE_DIR }}" autocomplete="off">
+            </label>
+            <label class="filter-field">VIDEO_GC_INTERVAL_DAYS
+                <input type="number" name="VIDEO_GC_INTERVAL_DAYS" value="{{ root_env_values.VIDEO_GC_INTERVAL_DAYS }}" min="1">
+            </label>
+            <label class="filter-field">SECRET_KEY
+                <input type="text" name="SECRET_KEY" value="{{ root_env_values.SECRET_KEY }}" autocomplete="off">
+            </label>
+            <label class="filter-field">HOST
+                <input type="text" name="HOST" value="{{ root_env_values.HOST }}" autocomplete="off">
+            </label>
+            <label class="filter-field">PORT
+                <input type="number" name="PORT" value="{{ root_env_values.PORT }}" min="1" max="65535">
+            </label>
+            <label class="filter-field">FLASK_APP
+                <input type="text" name="FLASK_APP" value="{{ root_env_values.FLASK_APP }}" autocomplete="off">
+            </label>
+            <label class="filter-field">SESSION_COOKIE_SECURE (0/1)
+                <input type="text" name="SESSION_COOKIE_SECURE" value="{{ root_env_values.SESSION_COOKIE_SECURE }}" maxlength="1" pattern="[01]" title="0 или 1">
+            </label>
+            <label class="filter-field">SEED_ADMIN_USERNAME
+                <input type="text" name="SEED_ADMIN_USERNAME" value="{{ root_env_values.SEED_ADMIN_USERNAME }}" autocomplete="off">
+            </label>
+            <label class="filter-field">SEED_ADMIN_PASSWORD
+                <input type="text" name="SEED_ADMIN_PASSWORD" value="{{ root_env_values.SEED_ADMIN_PASSWORD }}" autocomplete="off">
+            </label>
+            <label class="filter-field">SEED_USER_USERNAME
+                <input type="text" name="SEED_USER_USERNAME" value="{{ root_env_values.SEED_USER_USERNAME }}" autocomplete="off">
+            </label>
+            <label class="filter-field">SEED_USER_PASSWORD
+                <input type="text" name="SEED_USER_PASSWORD" value="{{ root_env_values.SEED_USER_PASSWORD }}" autocomplete="off">
+            </label>
+        </div>
+        <div class="row actions settings-actions">
+            <button type="submit" class="btn">Сохранить .env</button>
         </div>
     </form>
-
-    <fieldset>
-        <legend>Правила аварий по условиям</legend>
-
-        {% if emergency_conditions %}
-        <div class="table-wrap">
-            <table class="rules-table">
-                <thead>
-                <tr>
-                    <th>№</th>
-                    <th>Название</th>
-                    <th>Условие</th>
-                    <th></th>
-                </tr>
-                </thead>
-                <tbody>
-                {% for rule in emergency_conditions %}
-                <tr>
-                    <td>{{ rule.id }}</td>
-                    <td>{{ rule.name }}</td>
-                    <td class="rule-condition-cell">{{ rule.condition }}</td>
-                    <td>
-                        <form method="post" action="{{ url_for('main_blueprint.emergency_rule_delete', rule_id=rule.id) }}" class="row">
-                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-                            <button type="submit" class="btn secondary">Удалить</button>
-                        </form>
-                    </td>
-                </tr>
-                <tr>
-                    <td colspan="4">
-                        <form method="post" action="{{ url_for('main_blueprint.emergency_rule_edit', rule_id=rule.id) }}" class="settings-form rule-edit-form">
-                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-                            <div class="settings-grid">
-                                <label class="filter-field">Название
-                                    <input type="text" name="rule_name" maxlength="255" value="{{ rule.name }}" required>
-                                </label>
-                            </div>
-                            <label class="filter-field">Условие
-                                <textarea name="rule_condition" class="rule-expression" required spellcheck="false">{{ rule.condition }}</textarea>
-                            </label>
-                            <div class="row actions">
-                                <button type="submit" class="btn secondary">Сохранить изменения</button>
-                            </div>
-                        </form>
-                    </td>
-                </tr>
-                {% endfor %}
-                </tbody>
-            </table>
-        </div>
-        {% else %}
-        <p class="hint">Правил пока нет.</p>
-        {% endif %}
-
-        <form method="post" action="{{ url_for('main_blueprint.emergency_rule_add') }}" class="settings-form" style="margin-top: 12px;">
-            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-            <div class="settings-grid">
-                <label class="filter-field">Название
-                    <input type="text" name="rule_name" maxlength="255" required placeholder="Например: Низкое давление масла">
-                </label>
-            </div>
-            <label class="filter-field">Условие
-                <textarea name="rule_condition" class="rule-expression" required spellcheck="false" placeholder="UbusL1L2 &gt; 400 or Engine_running"></textarea>
-            </label>
-            <div class="row actions">
-                <button type="submit" class="btn">Добавить правило</button>
-                <button type="button" class="btn secondary" @click="openInstruction('emergency-rules', 'Инструкция по правилам')">Инструкция по правилам</button>
-                <button type="button" class="btn secondary" @click="openInstruction('settings-json', 'Инструкция по settings.json')">Инструкция по settings.json</button>
-            </div>
-        </form>
-    </fieldset>
 </section>
 
-<dialog id="rules-help-modal" class="rules-help-modal" x-ref="rulesHelpModal">
-    <form method="dialog" class="rules-help-modal__panel">
-        <h3 x-text="instructionTitle">Инструкция</h3>
-        <div id="instruction-content" class="hint"></div>
-        <div class="row actions">
-            <button type="submit" class="btn">Закрыть</button>
+<section class="card settings-page data-page">
+    <h2>Чтение Modbus и парсер (<code>settings/app_runtime.json</code> + JSON полей)</h2>
+    <p class="hint">Параметры порта, опроса, часовой пояс отображения, путь к файлу карты полей и тело JSON парсера. Сохранение перезапускает процесс чтения данных (без перезапуска всего веб-приложения).</p>
+
+    <form method="post" action="{{ url_for('main_blueprint.settings_save') }}" class="settings-form" lang="ru">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+
+        <h3 class="settings-subtitle">Параметры из app_runtime.json</h3>
+        <div class="filter-grid settings-env-grid">
+            <label class="filter-field">modbus_port
+                <input type="text" name="modbus_port" value="{{ io_values.modbus_port }}" autocomplete="off">
+            </label>
+            <label class="filter-field">modbus_slave
+                <input type="number" name="modbus_slave" value="{{ io_values.modbus_slave }}" min="1" max="247">
+            </label>
+            <label class="filter-field">modbus_baudrate
+                <input type="number" name="modbus_baudrate" value="{{ io_values.modbus_baudrate }}" step="1">
+            </label>
+            <label class="filter-field">modbus_timeout
+                <input type="text" name="modbus_timeout" value="{{ io_values.modbus_timeout }}" inputmode="decimal">
+            </label>
+            <label class="filter-field">modbus_interval
+                <input type="text" name="modbus_interval" value="{{ io_values.modbus_interval }}" inputmode="decimal">
+            </label>
+            <label class="filter-field">modbus_address_offset
+                <input type="number" name="modbus_address_offset" value="{{ io_values.modbus_address_offset }}" min="0">
+            </label>
+            <label class="filter-field">ram_batch_size
+                <input type="number" name="ram_batch_size" value="{{ io_values.ram_batch_size }}" min="1">
+            </label>
+            <label class="filter-field">Часовой пояс (список)
+                <select name="app_timezone_select">
+                    {% for tz, label in timezone_choices %}
+                        <option value="{{ tz }}" {% if tz == io_values._tz_select %}selected{% endif %}>{{ label }}</option>
+                    {% endfor %}
+                </select>
+            </label>
+            <label class="filter-field">Своя зона IANA (перекрывает список)
+                <input type="text" name="app_timezone_custom" value="{{ app_timezone_custom_value }}" placeholder="например America/New_York" autocomplete="off">
+            </label>
+            <label class="filter-field chk settings-disable-collector">
+                <input type="checkbox" name="disable_modbus_collector" value="1" {% if io_values.disable_modbus_collector %}checked{% endif %}>
+                Отключить фоновый сбор Modbus
+            </label>
+        </div>
+
+        <h3 class="settings-subtitle">Файл карты полей (parser JSON)</h3>
+        <p class="hint">В списке только валидные JSON из <code>settings/</code> (кроме <code>app_runtime.json</code>).</p>
+        {% if settings_files_warning %}
+            <p class="hint settings-warn">{{ settings_files_warning }}</p>
+        {% endif %}
+        <div class="settings-file-row">
+            <label class="filter-field">Активный файл
+                <select name="settings_file">
+                    {% for fn in settings_files %}
+                        <option value="{{ fn }}" {% if fn == active_settings_file %}selected{% endif %}>{{ fn }}</option>
+                    {% endfor %}
+                </select>
+            </label>
+            <button type="submit" name="action" value="switch_file" class="btn secondary">Открыть выбранный в редакторе</button>
+        </div>
+        <p class="hint">
+            <a class="text-indigo-700 underline" href="{{ url_for('main_blueprint.settings_instruction', slug='settings-json') }}" target="_blank" rel="noopener">Справка по формату JSON</a>
+        </p>
+        <label class="filter-field settings-json-label">Содержимое JSON парсера
+            <textarea name="parser_json" rows="18" class="settings-json-textarea" spellcheck="false">{{ parser_text }}</textarea>
+        </label>
+
+        <div class="row actions settings-actions">
+            <button type="submit" name="action" value="test" class="btn secondary">Проверить Modbus (без сохранения)</button>
+            <button type="submit" name="action" value="save" class="btn">Сохранить app_runtime.json и JSON парсера</button>
         </div>
     </form>
-</dialog>
+</section>
 
-<script src="{{ url_for('static', filename='vendor/marked.min.js') }}"></script>
-<script src="{{ url_for('static', filename='js/instructions-modal.js') }}"></script>
-<script src="{{ url_for('static', filename='js/settings-page.js') }}"></script>
+<section class="card settings-page data-page">
+    <h3>Импорт JSON карты полей в каталог settings</h3>
+    <form method="post" action="{{ url_for('main_blueprint.settings_save') }}" enctype="multipart/form-data" class="settings-upload-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+        <input type="hidden" name="action" value="upload"/>
+        <label class="filter-field">Файл .json
+            <input type="file" name="settings_file_upload" accept=".json,application/json">
+        </label>
+        <button type="submit" class="btn secondary">Загрузить и сделать активным</button>
+    </form>
+</section>
+
+<section class="card settings-page data-page">
+    <h3>Правила аварий</h3>
+    <p class="hint">
+        <a class="text-indigo-700 underline" href="{{ url_for('main_blueprint.settings_instruction', slug='emergency-rules') }}" target="_blank" rel="noopener">Справка по выражениям</a>
+    </p>
+    <form method="post" action="{{ url_for('main_blueprint.emergency_rule_add') }}" class="mb-4">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+        <div class="filter-grid">
+            <label class="filter-field">Название
+                <input type="text" name="rule_name" required autocomplete="off">
+            </label>
+            <label class="filter-field">Условие
+                <input type="text" name="rule_condition" required autocomplete="off" class="w-full">
+            </label>
+        </div>
+        <button type="submit" class="btn">Добавить правило</button>
+    </form>
+
+    {% if emergency_conditions %}
+    <div class="table-wrap">
+        <table>
+            <thead>
+            <tr><th>ID</th><th>Название и условие</th><th>Действия</th></tr>
+            </thead>
+            <tbody>
+            {% for rule in emergency_conditions %}
+            <tr>
+                <td>{{ rule.id }}</td>
+                <td>
+                    <form method="post" action="{{ url_for('main_blueprint.emergency_rule_edit', rule_id=rule.id) }}" class="settings-rule-form">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+                        <label class="filter-field">Название
+                            <input type="text" name="rule_name" value="{{ rule.name }}" required>
+                        </label>
+                        <label class="filter-field">Условие
+                            <textarea name="rule_condition" rows="2" class="w-full" required>{{ rule.condition }}</textarea>
+                        </label>
+                        <button type="submit" class="btn secondary text-sm">Сохранить</button>
+                    </form>
+                </td>
+                <td>
+                    <form method="post" action="{{ url_for('main_blueprint.emergency_rule_delete', rule_id=rule.id) }}" onsubmit="return confirm('Удалить правило?');">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+                        <button type="submit" class="btn secondary text-sm">Удалить</button>
+                    </form>
+                </td>
+            </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% else %}
+        <p class="hint">Правил пока нет.</p>
+    {% endif %}
+</section>
+
 {% endblock %}

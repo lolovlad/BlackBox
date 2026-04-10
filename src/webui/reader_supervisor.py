@@ -23,10 +23,11 @@ class ReaderStatus:
 class ReaderSupervisor:
     """Управляет отдельным subprocess для Modbus-ридера."""
 
-    def __init__(self, *, runtime: RuntimeConfig, alarms_enabled: bool, instance_dir: Path) -> None:
+    def __init__(self, *, runtime: RuntimeConfig, alarms_enabled: bool, instance_dir: Path, project_root: Path) -> None:
         self._config = runtime
         self._alarms_enabled = alarms_enabled
         self._instance_dir = instance_dir
+        self._project_root = project_root
         self._control_dir = instance_dir / "reader-control"
         self._control_dir.mkdir(parents=True, exist_ok=True)
         self._heartbeat_path = self._control_dir / "heartbeat.json"
@@ -51,7 +52,7 @@ class ReaderSupervisor:
             )
             self._proc = subprocess.Popen(
                 [sys.executable, "-m", "src.webui.reader_subprocess"],
-                cwd=str(Path.cwd()),
+                cwd=str(self._project_root),
                 env=env,
             )
 

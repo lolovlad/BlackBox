@@ -8,42 +8,8 @@ from typing import Any
 from modbus_acquire.instrument import build_instrument
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
+from src.webui.app_runtime_config import ROOT_ENV_DEFAULTS
 from src.webui.modbus_service import RuntimeConfig, parse_fields
-
-
-ENV_DEFAULTS: dict[str, str] = {
-    "BLACKBOX_DB_PATH": "instance/blackbox.db",
-    "MODBUS_PORT": "/dev/ttyAMA0",
-    "MODBUS_SLAVE": "1",
-    "MODBUS_BAUDRATE": "9600",
-    "MODBUS_TIMEOUT": "0.35",
-    "MODBUS_INTERVAL": "0.12",
-    "MODBUS_ADDRESS_OFFSET": "1",
-    "RAM_BATCH_SIZE": "60",
-    "APP_TIMEZONE": "UTC",
-    "DB_CLEANUP_INTERVAL_MINUTES": "60",
-    "DB_RETENTION_DAYS": "30",
-    "VIDEO_STORAGE_DIR": "",
-    "VIDEO_GC_INTERVAL_DAYS": "10",
-}
-
-
-class RuntimeEnvModel(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    BLACKBOX_DB_PATH: str = Field(min_length=1, max_length=2048)
-    MODBUS_PORT: str = Field(min_length=1, max_length=255)
-    MODBUS_SLAVE: int = Field(ge=1, le=247)
-    MODBUS_BAUDRATE: int = Field(ge=1200, le=115200)
-    MODBUS_TIMEOUT: float = Field(gt=0.01, le=10.0)
-    MODBUS_INTERVAL: float = Field(ge=0.05, le=60.0)
-    MODBUS_ADDRESS_OFFSET: int = Field(ge=0, le=10000)
-    RAM_BATCH_SIZE: int = Field(ge=1, le=10000)
-    APP_TIMEZONE: str = Field(min_length=1, max_length=128)
-    DB_CLEANUP_INTERVAL_MINUTES: int = Field(ge=1, le=100000)
-    DB_RETENTION_DAYS: int = Field(ge=1, le=36500)
-    VIDEO_STORAGE_DIR: str = Field(default="", max_length=2048)
-    VIDEO_GC_INTERVAL_DAYS: int = Field(ge=1, le=36500)
 
 
 class RequestModel(BaseModel):
@@ -103,7 +69,7 @@ def write_env_file(path: Path, updates: dict[str, str]) -> None:
 def ensure_env_file(path: Path, defaults: dict[str, str] | None = None) -> None:
     if path.exists():
         return
-    seed = dict(ENV_DEFAULTS)
+    seed = dict(ROOT_ENV_DEFAULTS)
     if defaults:
         seed.update(defaults)
     lines = [f"{k}={v}" for k, v in sorted(seed.items())]
@@ -114,23 +80,6 @@ def load_env_into_os(path: Path, *, override: bool = True) -> None:
     for key, value in read_env_file(path).items():
         if override or key not in os.environ:
             os.environ[key] = value
-
-
-def effective_runtime_from_env(static_csv_dir: Path, env_map: dict[str, str]) -> RuntimeConfig:
-    merged = dict(ENV_DEFAULTS)
-    merged.update(env_map)
-    validated = RuntimeEnvModel.model_validate(merged)
-    return RuntimeConfig(
-        db_path=validated.BLACKBOX_DB_PATH,
-        modbus_port=validated.MODBUS_PORT,
-        modbus_slave=validated.MODBUS_SLAVE,
-        modbus_baudrate=validated.MODBUS_BAUDRATE,
-        modbus_timeout=validated.MODBUS_TIMEOUT,
-        modbus_interval=validated.MODBUS_INTERVAL,
-        address_offset=validated.MODBUS_ADDRESS_OFFSET,
-        ram_batch_size=validated.RAM_BATCH_SIZE,
-        static_csv_dir=static_csv_dir,
-    )
 
 
 def validate_parser_json(text: str) -> tuple[dict[str, Any] | None, str | None]:
@@ -158,7 +107,6 @@ def test_modbus_settings(runtime: RuntimeConfig, parser_cfg: dict[str, Any]) -> 
             }
         )
         source_values: dict[str, list[Any]] = {str(r["name"]): [] for r in parser_cfg.get("requests", [])}
-        # One-shot link check: read only the first request to avoid long/unstable test cycles.
         first_req = parser_cfg.get("requests", [])[0]
         name = str(first_req["name"])
         fc = int(first_req["fc"])

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -9,17 +10,25 @@ from src.database import Alarms, EventLog, Samples, TypeUser, User, Video, db
 from src.webui.background_tasks import MaintenanceScheduler
 
 
+def _write_app_runtime(base_dir: Path) -> None:
+    cfg = {
+        "modbus_port": "COM1",
+        "modbus_slave": 1,
+        "modbus_baudrate": 9600,
+        "modbus_timeout": 0.35,
+        "modbus_interval": 0.12,
+        "modbus_address_offset": 1,
+        "ram_batch_size": 60,
+        "app_timezone": "UTC",
+        "parser_settings_path": "settings/settings.json",
+        "disable_modbus_collector": True,
+    }
+    (base_dir / "settings" / "app_runtime.json").write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
+
+
 def _write_env_file(base_dir: Path, db_path: Path, video_dir: Path | None = None) -> None:
     lines = [
         f"BLACKBOX_DB_PATH={db_path.as_posix()}",
-        "MODBUS_PORT=COM1",
-        "MODBUS_SLAVE=1",
-        "MODBUS_BAUDRATE=9600",
-        "MODBUS_TIMEOUT=0.35",
-        "MODBUS_INTERVAL=0.12",
-        "MODBUS_ADDRESS_OFFSET=1",
-        "RAM_BATCH_SIZE=60",
-        "APP_TIMEZONE=UTC",
         "DB_CLEANUP_INTERVAL_MINUTES=999999",
         "DB_RETENTION_DAYS=30",
         f"VIDEO_STORAGE_DIR={(video_dir.as_posix() if video_dir is not None else '')}",
@@ -27,9 +36,12 @@ def _write_env_file(base_dir: Path, db_path: Path, video_dir: Path | None = None
         "SECRET_KEY=test-secret",
         "HOST=127.0.0.1",
         "PORT=5001",
+        "FLASK_APP=src.web_app:app",
         "SESSION_COOKIE_SECURE=0",
-        "DISABLE_MODBUS_COLLECTOR=1",
-        "PARSER_SETTINGS_PATH=settings/settings.json",
+        "SEED_ADMIN_USERNAME=admin",
+        "SEED_ADMIN_PASSWORD=admin",
+        "SEED_USER_USERNAME=user",
+        "SEED_USER_PASSWORD=user",
         f"FLASK_INSTANCE_PATH={(base_dir / 'instance').as_posix()}",
     ]
     (base_dir / ".env").write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -40,6 +52,7 @@ def app_with_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     monkeypatch.chdir(tmp_path)
     (tmp_path / "settings").mkdir(parents=True, exist_ok=True)
     (tmp_path / "settings" / "settings.json").write_text('{"requests":[],"fields":[]}\n', encoding="utf-8")
+    _write_app_runtime(tmp_path)
     db_path = tmp_path / "app.db"
     video_dir = tmp_path / "videos"
     video_dir.mkdir(parents=True, exist_ok=True)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from datetime import datetime
 
@@ -91,8 +92,43 @@ def _minimal_blob() -> bytes:
 
 @pytest.fixture()
 def memory_app(monkeypatch, tmp_path):
-    monkeypatch.setenv("DISABLE_MODBUS_COLLECTOR", "1")
-    monkeypatch.setenv("BLACKBOX_DB_PATH", str(tmp_path / "webtest.db"))
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "settings").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "settings" / "settings.json").write_text(
+        '{"requests":[{"name":"hr","fc":3,"address":0,"count":90}],'
+        '"fields":[{"name":"r0","type":"uint16","source":"hr","address":0}]}\n',
+        encoding="utf-8",
+    )
+    runtime = {
+        "modbus_port": "COM1",
+        "modbus_slave": 1,
+        "modbus_baudrate": 9600,
+        "modbus_timeout": 0.35,
+        "modbus_interval": 0.12,
+        "modbus_address_offset": 1,
+        "ram_batch_size": 60,
+        "app_timezone": "UTC",
+        "parser_settings_path": "settings/settings.json",
+        "disable_modbus_collector": True,
+    }
+    (tmp_path / "settings" / "app_runtime.json").write_text(json.dumps(runtime, indent=2) + "\n", encoding="utf-8")
+    env_lines = [
+        f"BLACKBOX_DB_PATH={(tmp_path / 'webtest.db').as_posix()}",
+        "DB_CLEANUP_INTERVAL_MINUTES=60",
+        "DB_RETENTION_DAYS=30",
+        "VIDEO_STORAGE_DIR=",
+        "VIDEO_GC_INTERVAL_DAYS=10",
+        "SECRET_KEY=test",
+        "HOST=127.0.0.1",
+        "PORT=5000",
+        "FLASK_APP=src.web_app:app",
+        "SESSION_COOKIE_SECURE=0",
+        "SEED_ADMIN_USERNAME=admin",
+        "SEED_ADMIN_PASSWORD=admin",
+        "SEED_USER_USERNAME=user",
+        "SEED_USER_PASSWORD=user",
+    ]
+    (tmp_path / ".env").write_text("\n".join(env_lines) + "\n", encoding="utf-8")
     from src.webui.app import create_app
 
     app = create_app()

@@ -21,28 +21,21 @@ from src.webui.blueprints.api import api_router
 from src.webui.blueprints.data import data_router
 from src.webui.blueprints.main import main_router
 from src.webui.extensions import csrf, login_manager, server_session
-from src.webui.modbus_service import RuntimeConfig, configure_settings_path, reload_settings_cache
+from src.webui.app_runtime_config import (
+    ROOT_ENV_DEFAULTS,
+    apply_app_runtime_to_environ,
+    build_runtime_config,
+    ensure_app_runtime_file,
+    load_app_runtime,
+)
+from src.webui.modbus_service import configure_settings_path, reload_settings_cache
 from src.webui.paths import SRC_DIR, STATIC_DIR, TEMPLATES_DIR
 from src.webui.reader_supervisor import ReaderSupervisor
 from src.webui.background_tasks import MaintenanceScheduler
-from src.webui.system_settings import load_env_into_os
+from src.webui.system_settings import load_env_into_os, read_env_file
 from src.webui.timezone_utils import configured_timezone_name, format_in_configured_timezone
 
 logger = logging.getLogger(__name__)
-
-
-def _build_runtime_config(static_csv_dir: Path) -> RuntimeConfig:
-    return RuntimeConfig(
-        db_path=os.getenv("BLACKBOX_DB_PATH", "instance/blackbox.db"),
-        modbus_port=os.getenv("MODBUS_PORT", "/dev/ttyAMA0"),
-        modbus_slave=int(os.getenv("MODBUS_SLAVE", "1")),
-        modbus_baudrate=int(os.getenv("MODBUS_BAUDRATE", "9600")),
-        modbus_timeout=float(os.getenv("MODBUS_TIMEOUT", "0.35")),
-        modbus_interval=float(os.getenv("MODBUS_INTERVAL", "0.12")),
-        address_offset=int(os.getenv("MODBUS_ADDRESS_OFFSET", "1")),
-        ram_batch_size=int(os.getenv("RAM_BATCH_SIZE", "60")),
-        static_csv_dir=static_csv_dir,
-    )
 
 
 def create_app() -> Flask:
@@ -51,12 +44,27 @@ def create_app() -> Flask:
     project_template_dir = SRC_DIR.parent / "templates"
     static_dir = STATIC_DIR
     static_csv_dir = static_dir / "csv"
-    instance_dir = Path(os.getenv("FLASK_INSTANCE_PATH", str(Path.cwd() / "instance"))).resolve()
+    env_path = (Path.cwd() / ".env").resolve()
+    if not env_path.exists():
+        raise RuntimeError(
+            "Файл .env не найден. Создайте его вручную в корне проекта перед запуском приложения."
+        )
+    load_env_into_os(env_path, override=True)
+
+    project_root = env_path.parent.resolve()
+    env_map = read_env_file(env_path)
+    # .env перекрывает переменные процесса (например из systemd EnvironmentFile) при переносе в app_runtime.
+    merged_runtime_fallback = {k: str(v) if v is not None else "" for k, v in os.environ.items()}
+    merged_runtime_fallback.update(env_map)
+    ensure_app_runtime_file(project_root, merged_runtime_fallback)
+    app_rt = load_app_runtime(project_root, merged_runtime_fallback)
+    apply_app_runtime_to_environ(app_rt)
+    instance_dir = Path(os.getenv("FLASK_INSTANCE_PATH", str(project_root / "instance"))).resolve()
     session_dir = instance_dir / "sessions"
 
     static_csv_dir.mkdir(parents=True, exist_ok=True)
     session_dir.mkdir(parents=True, exist_ok=True)
-    settings_dir = Path.cwd() / "settings"
+    settings_dir = project_root / "settings"
     settings_dir.mkdir(parents=True, exist_ok=True)
     default_settings_file = settings_dir / "settings.json"
     if not default_settings_file.exists():
@@ -70,19 +78,23 @@ def create_app() -> Flask:
         instance_path=str(instance_dir),
     )
 
-    env_path = Path.cwd() / ".env"
-    if not env_path.exists():
-        raise RuntimeError(
-            "Файл .env не найден. Создайте его вручную в корне проекта перед запуском приложения."
-        )
-    load_env_into_os(env_path, override=True)
-    config = _build_runtime_config(static_csv_dir)
-    db_file = Path(config.db_path).resolve()
+    db_path_raw = env_map.get("BLACKBOX_DB_PATH", ROOT_ENV_DEFAULTS["BLACKBOX_DB_PATH"])
+    config = build_runtime_config(app_rt, db_path=db_path_raw, static_csv_dir=static_csv_dir)
+    _db_path = Path(config.db_path)
+    db_file = _db_path.resolve() if _db_path.is_absolute() else (project_root / _db_path).resolve()
     db_file.parent.mkdir(parents=True, exist_ok=True)
 
+    raw_parser_settings = app_rt.parser_settings_path
+    parser_settings_abs = (
+        Path(raw_parser_settings).resolve()
+        if Path(raw_parser_settings).is_absolute()
+        else (project_root / raw_parser_settings).resolve()
+    )
+
     app.config.update(
+        PROJECT_ROOT=str(project_root),
         SECRET_KEY=os.getenv("SECRET_KEY", "change-me"),
-        PARSER_SETTINGS_PATH=os.getenv("PARSER_SETTINGS_PATH", "settings/settings.json"),
+        PARSER_SETTINGS_PATH=raw_parser_settings,
         SQLALCHEMY_DATABASE_URI=f"sqlite:///{db_file.as_posix()}",
         SQLALCHEMY_ENGINE_OPTIONS={
             # Несколько потоков (Modbus + emergency) + веб: SQLite ждёт блокировку до timeout сек.
@@ -100,8 +112,8 @@ def create_app() -> Flask:
         SESSION_COOKIE_SAMESITE="Lax",
         SESSION_COOKIE_SECURE=os.getenv("SESSION_COOKIE_SECURE", "0") == "1",
     )
-    # Bind active parser settings file for this process and warm cache.
-    configure_settings_path(app.config["PARSER_SETTINGS_PATH"])
+    # Bind active parser settings file for this process and warm cache (абсолютный путь к каталогу проекта).
+    configure_settings_path(parser_settings_abs)
     reload_settings_cache()
 
     logging.basicConfig(level=logging.DEBUG, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
@@ -195,14 +207,16 @@ def create_app() -> Flask:
 
         session_factory = sessionmaker(bind=db.engine, autoflush=False, autocommit=False, expire_on_commit=False)
 
-    collector = ReaderSupervisor(runtime=config, alarms_enabled=alarms_enabled, instance_dir=instance_dir)
+    collector = ReaderSupervisor(
+        runtime=config, alarms_enabled=alarms_enabled, instance_dir=instance_dir, project_root=project_root
+    )
     maintenance = MaintenanceScheduler(
         session_factory=session_factory,
         env_path=env_path,
     )
     maintenance.start()
     atexit.register(maintenance.stop)
-    if os.getenv("DISABLE_MODBUS_COLLECTOR", "0") != "1" and not missing_required:
+    if not app_rt.disable_modbus_collector and not missing_required:
         collector.start()
         atexit.register(collector.stop)
 
@@ -211,6 +225,8 @@ def create_app() -> Flask:
     app.extensions["maintenance_scheduler"] = maintenance
     app.extensions["static_csv_dir"] = static_csv_dir
     app.extensions["env_path"] = env_path
+    app.extensions["project_root"] = project_root
+    app.extensions["app_runtime_config"] = app_rt
 
     app.register_blueprint(auth_router, name="auth_blueprint")
     app.register_blueprint(api_router, name="api_blueprint")

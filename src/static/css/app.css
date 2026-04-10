@@ -571,3 +571,9 @@ th { background: #c3cce0; color: #2d3540; font-weight: 600; }
     line-height: 1.35;
     box-sizing: border-box;
 }
+
+.settings-page .settings-subtitle { margin: 1rem 0 0.5rem; font-size: 1.05rem; }
+.settings-page .settings-file-row { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end; margin-bottom: 8px; }
+.settings-page .settings-json-textarea { width: 100%; min-height: 280px; border: 1px solid var(--md-outline); border-radius: 12px; padding: 10px 12px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13px; box-sizing: border-box; }
+.settings-page .settings-warn { color: #92400e; background: #fef3c7; padding: 8px 12px; border-radius: 10px; }
+.settings-page .settings-actions { flex-wrap: wrap; margin-top: 12px; }

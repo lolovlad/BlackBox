@@ -32,24 +32,47 @@ from src.webui.repositories.data_repository import DataRepository
 from src.webui.repositories.emergency_repository import EmergencyRepository
 from src.webui.modbus_service import analog_discrete_for_csv, configure_settings_path, decode_to_processed
 from src.webui.modbus_service import reload_settings_cache
-from src.webui.system_settings import (
-    ENV_DEFAULTS,
-    effective_runtime_from_env,
-    read_env_file,
-    test_modbus_settings,
-    validate_parser_json,
-    write_env_file,
+from pydantic import ValidationError
+
+from src.webui.app_runtime_config import (
+    APP_RUNTIME_FILENAME,
+    ROOT_ENV_DEFAULTS,
+    ROOT_ENV_KEYS_FORM,
+    apply_app_runtime_to_environ,
+    build_runtime_config,
+    io_form_to_runtime,
+    load_app_runtime,
+    root_env_from_form,
+    save_app_runtime,
 )
+from src.webui.system_settings import read_env_file, test_modbus_settings, validate_parser_json, write_env_file
 from src.webui.timezone_utils import format_in_configured_timezone
 
 main_router = Blueprint("main", __name__, template_folder=str(TEMPLATES_DIR))
 DATETIME_UI_FORMAT = "%d.%m.%Y %H:%M:%S"
 
 
+def _timezone_form_fields(
+    env_map: dict[str, str], timezone_choices: list[tuple[str, str]]
+) -> tuple[str, str]:
+    """Значение для select и для поля «своя зона» (ключ APP_TIMEZONE в env_map)."""
+    current = (env_map.get("APP_TIMEZONE") or "").strip() or "Europe/Moscow"
+    tz_keys = {t[0] for t in timezone_choices}
+    if current in tz_keys:
+        return current, ""
+    first = timezone_choices[0][0] if timezone_choices else current
+    return first, current
+
+
+def _project_root() -> Path:
+    return Path(current_app.config["PROJECT_ROOT"])
+
+
 def _effective_parser_settings_path() -> Path:
     raw = current_app.config.get("PARSER_SETTINGS_PATH", "settings/settings.json")
     p = Path(raw)
-    resolved = p if p.is_absolute() else Path.cwd() / p
+    root = _project_root()
+    resolved = p.resolve() if p.is_absolute() else (root / p).resolve()
     resolved.parent.mkdir(parents=True, exist_ok=True)
     if not resolved.exists():
         resolved.write_text("", encoding="utf-8")
@@ -57,27 +80,69 @@ def _effective_parser_settings_path() -> Path:
 
 
 def _settings_dir() -> Path:
-    return Path.cwd() / "settings"
+    return _project_root() / "settings"
 
 
-def _settings_file_choices() -> list[str]:
+def _rel_parser_settings_env_name(filename: str) -> str:
+    return (Path("settings") / Path(filename).name).as_posix()
+
+
+def _is_valid_settings_json_file(path: Path) -> bool:
+    if not path.is_file():
+        return False
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    if not raw.strip():
+        return False
+    _, err = validate_parser_json(raw)
+    return err is None
+
+
+def _settings_file_choices(active_basename: str) -> tuple[list[str], str | None]:
     settings_dir = _settings_dir()
     settings_dir.mkdir(parents=True, exist_ok=True)
-    files = sorted({p.name for p in settings_dir.glob("*.json")}, key=lambda v: v.lower())
-    if "settings.json" in files:
-        files.remove("settings.json")
-        files.insert(0, "settings.json")
-    return files
+    valid: list[str] = []
+    for p in sorted(settings_dir.glob("*.json"), key=lambda x: x.name.lower()):
+        if p.name == APP_RUNTIME_FILENAME:
+            continue
+        if _is_valid_settings_json_file(p):
+            valid.append(p.name)
+    warning: str | None = None
+    if active_basename and active_basename not in valid:
+        active_path = settings_dir / active_basename
+        if active_path.is_file():
+            valid.insert(0, active_basename)
+            warning = (
+                f"Текущий файл «{active_basename}» пуст или не проходит проверку схемы. "
+                "Исправьте JSON или выберите другой файл из списка."
+            )
+    if "settings.json" in valid and valid[0] != "settings.json":
+        valid.remove("settings.json")
+        valid.insert(0, "settings.json")
+    return valid, warning
 
 
 def _set_active_parser_settings(filename: str) -> Path:
     safe_name = Path(filename).name
-    target = _settings_dir() / safe_name
+    sd = _settings_dir().resolve()
+    target = (sd / safe_name).resolve()
     if not target.exists():
         raise FileNotFoundError(f"Файл настроек не найден: {safe_name}")
-    rel = Path("settings") / safe_name
-    current_app.config["PARSER_SETTINGS_PATH"] = str(rel).replace("\\", "/")
-    os.environ["PARSER_SETTINGS_PATH"] = current_app.config["PARSER_SETTINGS_PATH"]
+    try:
+        target.relative_to(sd)
+    except ValueError:
+        raise FileNotFoundError("Некорректное имя файла настроек.") from None
+    rel = _rel_parser_settings_env_name(safe_name)
+    project_root = _project_root()
+    env_path = current_app.extensions["env_path"]
+    io_cfg = load_app_runtime(project_root, read_env_file(env_path))
+    new_io = io_cfg.model_copy(update={"parser_settings_path": rel})
+    save_app_runtime(project_root, new_io)
+    apply_app_runtime_to_environ(new_io)
+    current_app.extensions["app_runtime_config"] = new_io
+    current_app.config["PARSER_SETTINGS_PATH"] = rel
     configure_settings_path(target)
     return target
 
@@ -97,13 +162,14 @@ def _build_non_overwriting_settings_path(filename: str) -> Path:
         idx += 1
 
 
-def _settings_page_context(env_values: dict, parser_text: str) -> dict:
+def _settings_page_context(
+    root_env_values: dict[str, str], io_cfg_dict: dict[str, Any], parser_text: str
+) -> dict:
     er_repo = EmergencyRepository(current_app.extensions["session_factory"])
     parser_path = _effective_parser_settings_path()
-    choices = _settings_file_choices()
-    if parser_path.name not in choices:
-        choices.insert(0, parser_path.name)
+    choices, settings_files_warning = _settings_file_choices(parser_path.name)
     timezone_choices = [
+        ("UTC", "UTC"),
         ("Europe/Kaliningrad", "UTC+2  Europe/Kaliningrad"),
         ("Europe/Moscow", "UTC+3  Europe/Moscow"),
         ("Europe/Samara", "UTC+4  Europe/Samara"),
@@ -116,18 +182,42 @@ def _settings_page_context(env_values: dict, parser_text: str) -> dict:
         ("Asia/Magadan", "UTC+11 Asia/Magadan"),
         ("Asia/Kamchatka", "UTC+12 Asia/Kamchatka"),
     ]
+    tz_select, tz_custom = _timezone_form_fields({"APP_TIMEZONE": io_cfg_dict.get("app_timezone", "")}, timezone_choices)
+    io_display = dict(io_cfg_dict)
+    io_display["_tz_select"] = tz_select
     return {
-        "env_values": env_values,
+        "root_env_values": root_env_values,
+        "io_values": io_display,
+        "app_timezone_custom_value": tz_custom,
         "parser_text": parser_text,
         "settings_files": choices,
         "active_settings_file": parser_path.name,
+        "settings_files_warning": settings_files_warning,
         "emergency_conditions": er_repo.list_conditions(),
         "timezone_choices": timezone_choices,
     }
 
 
+def _posted_io_dict_for_template() -> dict[str, Any]:
+    f = request.form
+    effective_tz = (f.get("app_timezone_custom") or "").strip() or (f.get("app_timezone_select") or "").strip()
+    sf = (f.get("settings_file") or "settings.json").strip()
+    return {
+        "modbus_port": f.get("modbus_port", ""),
+        "modbus_slave": f.get("modbus_slave", ""),
+        "modbus_baudrate": f.get("modbus_baudrate", ""),
+        "modbus_timeout": f.get("modbus_timeout", ""),
+        "modbus_interval": f.get("modbus_interval", ""),
+        "modbus_address_offset": f.get("modbus_address_offset", ""),
+        "ram_batch_size": f.get("ram_batch_size", ""),
+        "app_timezone": effective_tz,
+        "parser_settings_path": _rel_parser_settings_env_name(sf),
+        "disable_modbus_collector": f.get("disable_modbus_collector") == "1",
+    }
+
+
 def _instructions_dir() -> Path:
-    return Path.cwd() / "instructions"
+    return _project_root() / "instructions"
 
 
 _INSTRUCTION_FILES: dict[str, str] = {
@@ -160,11 +250,14 @@ def dashboard():
 def settings():
     env_path = current_app.extensions["env_path"]
     env_current = read_env_file(env_path)
-    values = {k: env_current.get(k, ENV_DEFAULTS[k]) for k in ENV_DEFAULTS}
+    root_values = {k: env_current.get(k, ROOT_ENV_DEFAULTS[k]) for k in ROOT_ENV_KEYS_FORM}
+    io_cfg = current_app.extensions["app_runtime_config"]
     parser_path = _effective_parser_settings_path()
     with parser_path.open("r", encoding="utf-8") as f:
         parser_text = f.read()
-    return render_template("settings/index.html", **_settings_page_context(values, parser_text))
+    return render_template(
+        "settings/index.html", **_settings_page_context(root_values, io_cfg.model_dump(), parser_text)
+    )
 
 
 @main_router.route("/admin/event-logs", methods=["GET"])
@@ -226,58 +319,74 @@ def settings_instruction(slug: str):
 @admin_required
 def settings_save():
     env_path = current_app.extensions["env_path"]
+    env_disk = read_env_file(env_path)
+    project_root = _project_root()
     parser_path = _effective_parser_settings_path()
     static_csv_dir = current_app.extensions["static_csv_dir"]
     collector = current_app.extensions["modbus_collector"]
 
-    posted_env = {
-        "BLACKBOX_DB_PATH": (request.form.get("BLACKBOX_DB_PATH") or "").strip(),
-        "MODBUS_PORT": (request.form.get("MODBUS_PORT") or "").strip(),
-        "MODBUS_SLAVE": (request.form.get("MODBUS_SLAVE") or "").strip(),
-        "MODBUS_BAUDRATE": (request.form.get("MODBUS_BAUDRATE") or "").strip(),
-        "MODBUS_TIMEOUT": (request.form.get("MODBUS_TIMEOUT") or "").strip(),
-        "MODBUS_INTERVAL": (request.form.get("MODBUS_INTERVAL") or "").strip(),
-        "MODBUS_ADDRESS_OFFSET": (request.form.get("MODBUS_ADDRESS_OFFSET") or "").strip(),
-        "RAM_BATCH_SIZE": (request.form.get("RAM_BATCH_SIZE") or "").strip(),
-        "APP_TIMEZONE": (
-            (request.form.get("APP_TIMEZONE_CUSTOM") or "").strip()
-            or (request.form.get("APP_TIMEZONE") or "").strip()
-        ),
-        "DB_CLEANUP_INTERVAL_MINUTES": (request.form.get("DB_CLEANUP_INTERVAL_MINUTES") or "").strip(),
-        "DB_RETENTION_DAYS": (request.form.get("DB_RETENTION_DAYS") or "").strip(),
-        "VIDEO_STORAGE_DIR": (request.form.get("VIDEO_STORAGE_DIR") or "").strip(),
-        "VIDEO_GC_INTERVAL_DAYS": (request.form.get("VIDEO_GC_INTERVAL_DAYS") or "").strip(),
-    }
     parser_text = request.form.get("parser_json") or ""
     action = (request.form.get("action") or "test").strip().lower()
     selected_settings_file = (request.form.get("settings_file") or parser_path.name).strip()
+
+    def _fail(parser_txt: str | None = None, *, status: int = 400):
+        text = parser_txt if parser_txt is not None else parser_text
+        root_ = {k: env_disk.get(k, ROOT_ENV_DEFAULTS[k]) for k in ROOT_ENV_KEYS_FORM}
+        for k in ROOT_ENV_KEYS_FORM:
+            if k in request.form:
+                v = str(request.form.get(k) or "").strip()
+                if v:
+                    root_[k] = v
+        io_d = _posted_io_dict_for_template()
+        return render_template("settings/index.html", **_settings_page_context(root_, io_d, text)), status
+
+    if action == "save_env":
+        try:
+            root = root_env_from_form(request.form)
+        except ValidationError as exc:
+            flash(f"Некорректные корневые настройки: {exc}", "error")
+            return _fail()
+        updates = root.as_env_strings()
+        write_env_file(env_path, updates)
+        for k, v in updates.items():
+            os.environ[k] = v
+        current_app.config["SECRET_KEY"] = updates["SECRET_KEY"]
+        current_app.config["SESSION_COOKIE_SECURE"] = updates["SESSION_COOKIE_SECURE"] == "1"
+        flash(
+            "Файл .env обновлён. После смены пути к БД (BLACKBOX_DB_PATH) полностью перезапустите приложение.",
+            "success",
+        )
+        return redirect(url_for("main_blueprint.settings"))
 
     if action == "upload":
         uploaded = request.files.get("settings_file_upload")
         if uploaded is None or not uploaded.filename:
             flash("Выберите JSON-файл настроек.", "error")
-            return render_template("settings/index.html", **_settings_page_context(posted_env, parser_text)), 400
+            return _fail()
         filename = Path(uploaded.filename).name
         if not filename.lower().endswith(".json"):
             flash("Допустимы только файлы .json", "error")
-            return render_template("settings/index.html", **_settings_page_context(posted_env, parser_text)), 400
+            return _fail()
         try:
             raw = uploaded.read().decode("utf-8")
             payload = json.loads(raw)
         except Exception as exc:
             flash(f"Ошибка чтения файла импорта: {exc}", "error")
-            return render_template("settings/index.html", **_settings_page_context(posted_env, parser_text)), 400
+            return _fail()
 
         if not isinstance(payload, dict):
             flash("Файл настроек должен быть JSON-объектом.", "error")
-            return render_template("settings/index.html", **_settings_page_context(posted_env, parser_text)), 400
+            return _fail()
 
         parser_cfg_import, err = validate_parser_json(raw)
         if err:
             flash(f"Файл не загружен: {err}", "error")
-            return render_template("settings/index.html", **_settings_page_context(posted_env, parser_text)), 400
+            return _fail()
         _ = parser_cfg_import
         target = _build_non_overwriting_settings_path(filename)
+        if target.name == APP_RUNTIME_FILENAME:
+            flash(f"Имя «{APP_RUNTIME_FILENAME}» зарезервировано под настройки Modbus.", "error")
+            return _fail()
         target.write_text(raw.strip() + "\n", encoding="utf-8")
         _set_active_parser_settings(target.name)
         reload_settings_cache()
@@ -296,64 +405,107 @@ def settings_save():
             target_path = _settings_dir() / Path(selected_settings_file).name
             if not target_path.exists():
                 raise FileNotFoundError(f"Файл настроек не найден: {Path(selected_settings_file).name}")
+            if target_path.name == APP_RUNTIME_FILENAME:
+                raise FileNotFoundError(f"Нельзя выбрать служебный файл {APP_RUNTIME_FILENAME}.")
         except Exception as exc:
             flash(str(exc), "error")
-            return render_template("settings/index.html", **_settings_page_context(posted_env, parser_text)), 400
+            return _fail()
         parser_text = target_path.read_text(encoding="utf-8")
         parser_cfg_selected, err = validate_parser_json(parser_text)
         if err:
             flash(f"Выбранный файл невалиден: {err}", "error")
-            return render_template("settings/index.html", **_settings_page_context(posted_env, parser_text)), 400
+            return _fail()
         _ = parser_cfg_selected
         _set_active_parser_settings(target_path.name)
         reload_settings_cache()
         collector.restart()
         flash("Активный файл настроек изменен. Чтение перезапущено.", "success")
-        return render_template("settings/index.html", **_settings_page_context(posted_env, parser_text))
+        return redirect(url_for("main_blueprint.settings"))
+
+    try:
+        effective_tz = (request.form.get("app_timezone_custom") or "").strip() or (
+            request.form.get("app_timezone_select") or ""
+        ).strip()
+        parser_rel = _rel_parser_settings_env_name(selected_settings_file)
+        io_cfg = io_form_to_runtime(
+            modbus_port=request.form.get("modbus_port") or "",
+            modbus_slave=(request.form.get("modbus_slave") or "1").strip(),
+            modbus_baudrate=(request.form.get("modbus_baudrate") or "9600").strip(),
+            modbus_timeout=(request.form.get("modbus_timeout") or "0.35").strip(),
+            modbus_interval=(request.form.get("modbus_interval") or "0.12").strip(),
+            modbus_address_offset=(request.form.get("modbus_address_offset") or "1").strip(),
+            ram_batch_size=(request.form.get("ram_batch_size") or "60").strip(),
+            app_timezone=effective_tz or "Europe/Moscow",
+            parser_settings_path=parser_rel,
+            disable_modbus_collector=request.form.get("disable_modbus_collector") == "1",
+        )
+    except Exception as exc:
+        flash(f"Некорректные настройки чтения данных: {exc}", "error")
+        return _fail()
 
     parser_cfg, err = validate_parser_json(parser_text)
     if err:
         flash(err, "error")
-        return render_template("settings/index.html", **_settings_page_context(posted_env, parser_text)), 400
+        return _fail()
 
+    db_path_raw = env_disk.get("BLACKBOX_DB_PATH", ROOT_ENV_DEFAULTS["BLACKBOX_DB_PATH"])
     try:
-        runtime = effective_runtime_from_env(static_csv_dir, posted_env)
+        runtime = build_runtime_config(io_cfg, db_path=db_path_raw, static_csv_dir=static_csv_dir)
     except Exception as exc:
-        flash(f"Некорректные значения runtime: {exc}", "error")
-        return render_template("settings/index.html", **_settings_page_context(posted_env, parser_text)), 400
+        flash(f"Ошибка сборки конфигурации: {exc}", "error")
+        return _fail()
 
-    # Avoid serial-port contention: stop background collector during active test.
     collector.stop()
     ok, msg = test_modbus_settings(runtime, parser_cfg)
     if not ok:
         collector.start()
         flash(msg, "error")
-        return render_template("settings/index.html", **_settings_page_context(posted_env, parser_text)), 400
+        return _fail()
 
     if action == "test":
         collector.start()
         flash(msg, "success")
-        return render_template("settings/index.html", **_settings_page_context(posted_env, parser_text))
+        root_ok = {k: env_disk.get(k, ROOT_ENV_DEFAULTS[k]) for k in ROOT_ENV_KEYS_FORM}
+        io_d = _posted_io_dict_for_template()
+        return render_template("settings/index.html", **_settings_page_context(root_ok, io_d, parser_text))
 
-    # action == save: test already passed.
+    if action != "save":
+        collector.start()
+        flash("Неизвестное действие.", "error")
+        return _fail()
+
+    sd = _settings_dir().resolve()
     try:
-        parser_path = _set_active_parser_settings(selected_settings_file)
+        target_write = (sd / Path(selected_settings_file).name).resolve()
+        target_write.relative_to(sd)
+        if target_write.name == APP_RUNTIME_FILENAME:
+            raise FileNotFoundError(f"Нельзя записывать парсер в {APP_RUNTIME_FILENAME}.")
     except Exception as exc:
+        collector.start()
         flash(str(exc), "error")
-        return render_template("settings/index.html", **_settings_page_context(posted_env, parser_text)), 400
+        return _fail()
 
-    write_env_file(env_path, posted_env)
-    with parser_path.open("w", encoding="utf-8") as f:
-        f.write(parser_text.strip() + "\n")
+    try:
+        with target_write.open("w", encoding="utf-8") as f:
+            f.write(parser_text.strip() + "\n")
+    except OSError as exc:
+        collector.start()
+        flash(f"Не удалось записать JSON парсера: {exc}", "error")
+        return _fail()
 
-    # Apply without full app restart.
-    for key, value in posted_env.items():
-        current_app.config[key] = value
-        os.environ[key] = value
+    save_app_runtime(project_root, io_cfg)
+    apply_app_runtime_to_environ(io_cfg)
+    current_app.extensions["app_runtime_config"] = io_cfg
+    current_app.config["PARSER_SETTINGS_PATH"] = io_cfg.parser_settings_path
+    configure_settings_path(target_write)
     reload_settings_cache()
-    collector.restart(new_config=runtime)
 
-    flash("Настройки сохранены и применены. Процесс чтения перезапущен.", "success")
+    if io_cfg.disable_modbus_collector:
+        collector.stop()
+    else:
+        collector.restart(new_config=runtime)
+
+    flash("Настройки чтения сохранены в app_runtime.json; процесс чтения перезапущен.", "success")
     return redirect(url_for("main_blueprint.settings"))
 
 
@@ -655,7 +807,7 @@ def _collect_system_monitor() -> dict[str, Any]:
         "disks": [],
     }
     try:
-        du = shutil.disk_usage(Path.cwd())
+        du = shutil.disk_usage(_project_root())
         stats["disk"] = {
             "used_gb": round((du.total - du.free) / (1024**3), 2),
             "total_gb": round(du.total / (1024**3), 2),

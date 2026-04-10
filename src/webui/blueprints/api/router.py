@@ -118,8 +118,22 @@ def video_add():
             .limit(1)
         ).scalar_one_or_none()
         if nearest is None:
+            current_app.logger.warning(
+                "video/add 404: нет alarm с created_at <= captured_at. captured_at=%s file_path=%r",
+                captured_at.isoformat(),
+                str(path),
+            )
             return jsonify({"ok": False, "error": "Видео не попадает в интервал alarm."}), 404
         if (nearest.state or "").strip().lower() != "active":
+            current_app.logger.warning(
+                "video/add 404: ближайшая авария не active. captured_at=%s nearest_alarm_id=%s "
+                "nearest_created_at=%s nearest_state=%r file_path=%r",
+                captured_at.isoformat(),
+                nearest.id,
+                nearest.created_at.isoformat() if nearest.created_at else None,
+                nearest.state,
+                str(path),
+            )
             return jsonify({"ok": False, "error": "Ближайшая авария имеет состояние inactive."}), 404
 
         row = Video(
