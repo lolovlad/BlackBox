@@ -187,15 +187,8 @@ def _settings_page_context(io_cfg_dict: dict[str, Any], parser_text: str) -> dic
     tz_select, tz_custom = _timezone_form_fields({"APP_TIMEZONE": io_cfg_dict.get("app_timezone", "")}, timezone_choices)
     io_display = dict(io_cfg_dict)
     io_display["_tz_select"] = tz_select
-    parser_meta: dict[str, Any] = {}
-    try:
-        parser_meta = json.loads(parser_text) if parser_text.strip() else {}
-        if not isinstance(parser_meta, dict):
-            parser_meta = {}
-    except Exception:
-        parser_meta = {}
-    fm_url = str(parser_meta.get("file_manager_url", "") or "").strip()
-    window_raw = parser_meta.get("video_match_window_minutes", 20)
+    fm_url = str(io_display.get("file_manager_url", "") or "").strip()
+    window_raw = io_display.get("video_match_window_minutes", 20)
     try:
         window_minutes = int(window_raw)
     except Exception:
@@ -229,6 +222,8 @@ def _posted_io_dict_for_template() -> dict[str, Any]:
         "app_timezone": effective_tz,
         "parser_settings_path": _rel_parser_settings_env_name(sf),
         "disable_modbus_collector": f.get("disable_modbus_collector") == "1",
+        "video_match_window_minutes": f.get("video_match_window_minutes", "20"),
+        "file_manager_url": f.get("file_manager_url", ""),
     }
 
 
@@ -425,6 +420,8 @@ def settings_save():
             app_timezone=effective_tz or "Europe/Moscow",
             parser_settings_path=parser_rel,
             disable_modbus_collector=request.form.get("disable_modbus_collector") == "1",
+            video_match_window_minutes=(request.form.get("video_match_window_minutes") or "20").strip(),
+            file_manager_url=(request.form.get("file_manager_url") or "").strip(),
         )
     except Exception as exc:
         flash(f"Некорректные настройки чтения данных: {exc}", "error")

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import re
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -67,20 +66,9 @@ def _normalize_video_source_path(raw_path: str) -> str:
     return value
 
 
-def _active_parser_settings_path() -> Path:
-    raw = current_app.config.get("PARSER_SETTINGS_PATH", "settings/settings.json")
-    p = Path(str(raw))
-    project_root = Path(current_app.config["PROJECT_ROOT"])
-    return p.resolve() if p.is_absolute() else (project_root / p).resolve()
-
-
 def _video_match_window_delta() -> timedelta:
-    path = _active_parser_settings_path()
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return timedelta(minutes=_DEFAULT_VIDEO_MATCH_WINDOW_MINUTES)
-    raw = payload.get("video_match_window_minutes", _DEFAULT_VIDEO_MATCH_WINDOW_MINUTES)
+    cfg = current_app.extensions.get("app_runtime_config")
+    raw = getattr(cfg, "video_match_window_minutes", _DEFAULT_VIDEO_MATCH_WINDOW_MINUTES)
     try:
         minutes = int(raw)
     except Exception:

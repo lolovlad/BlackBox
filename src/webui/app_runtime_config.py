@@ -45,6 +45,8 @@ class AppRuntimeConfigModel(BaseModel):
     app_timezone: str = Field(min_length=1, max_length=128)
     parser_settings_path: str = Field(min_length=1, max_length=2048)
     disable_modbus_collector: bool = False
+    video_match_window_minutes: int = Field(default=20, ge=1, le=1440)
+    file_manager_url: str = Field(default="", max_length=2048)
 
 
 def _runtime_defaults_dict() -> dict[str, Any]:
@@ -59,6 +61,8 @@ def _runtime_defaults_dict() -> dict[str, Any]:
         app_timezone="Europe/Moscow",
         parser_settings_path="settings/settings.json",
         disable_modbus_collector=False,
+        video_match_window_minutes=20,
+        file_manager_url="",
     ).model_dump()
 
 
@@ -181,6 +185,8 @@ def io_form_to_runtime(
     app_timezone: str,
     parser_settings_path: str,
     disable_modbus_collector: bool,
+    video_match_window_minutes: str,
+    file_manager_url: str,
 ) -> AppRuntimeConfigModel:
     return AppRuntimeConfigModel(
         modbus_port=modbus_port.strip(),
@@ -193,4 +199,6 @@ def io_form_to_runtime(
         app_timezone=app_timezone.strip(),
         parser_settings_path=parser_settings_path.strip().replace("\\", "/"),
         disable_modbus_collector=disable_modbus_collector,
+        video_match_window_minutes=int(video_match_window_minutes),
+        file_manager_url=file_manager_url.strip(),
     )

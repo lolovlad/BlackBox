@@ -232,12 +232,13 @@ def test_api_video_add_accepts_between_active_and_inactive_even_if_over_20m(app_
     assert miss_resp.status_code == 404
 
 
-def test_api_video_add_respects_video_match_window_from_settings_json(app_with_env) -> None:
+def test_api_video_add_respects_video_match_window_from_app_runtime(app_with_env) -> None:
     app, tmp_path = app_with_env
-    settings_path = tmp_path / "settings" / "settings.json"
-    cfg = json.loads(settings_path.read_text(encoding="utf-8"))
+    runtime_path = tmp_path / "settings" / "app_runtime.json"
+    cfg = json.loads(runtime_path.read_text(encoding="utf-8"))
     cfg["video_match_window_minutes"] = 2
-    settings_path.write_text(json.dumps(cfg, ensure_ascii=False) + "\n", encoding="utf-8")
+    runtime_path.write_text(json.dumps(cfg, ensure_ascii=False) + "\n", encoding="utf-8")
+    app.extensions["app_runtime_config"] = app.extensions["app_runtime_config"].model_copy(update={"video_match_window_minutes": 2})
 
     with app.app_context():
         db.session.add(

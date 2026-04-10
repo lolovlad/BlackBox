@@ -45,20 +45,20 @@
                 <input type="checkbox" name="disable_modbus_collector" value="1" {% if io_values.disable_modbus_collector %}checked{% endif %}>
                 Отключить фоновый сбор Modbus
             </label>
+            <label class="filter-field">Окно сопоставления видео (минуты)
+                <input type="number" name="video_match_window_minutes" value="{{ io_values.video_match_window_minutes }}" min="1" max="1440">
+            </label>
+            <label class="filter-field">URL файлового менеджера
+                <input type="url" name="file_manager_url" value="{{ io_values.file_manager_url }}" placeholder="http://127.0.0.1:8080" autocomplete="off">
+            </label>
         </div>
-
-        <h3 class="settings-subtitle">Файл карты полей (parser JSON)</h3>
-        <p class="hint">В списке только валидные JSON из <code>settings/</code> (кроме <code>app_runtime.json</code>).</p>
-        <p class="hint">
-            Доп. ключи в этом JSON: <code>video_match_window_minutes</code> (окно сопоставления видео к active, минуты)
-            и <code>file_manager_url</code> (ссылка на файловый менеджер устройства).
-            Сейчас: окно = <strong>{{ video_match_window_minutes }}</strong> мин.
-        </p>
-        {% if file_manager_url %}
+        {% if io_values.file_manager_url %}
             <p class="hint">
-                <a class="btn secondary" href="{{ file_manager_url }}" target="_blank" rel="noopener">Открыть файловый менеджер</a>
+                <a class="btn secondary" href="{{ io_values.file_manager_url }}" target="_blank" rel="noopener">Открыть файловый менеджер</a>
             </p>
         {% endif %}
+
+        <h3 class="settings-subtitle">Файл карты полей (parser JSON)</h3>
         {% if settings_files_warning %}
             <p class="hint settings-warn">{{ settings_files_warning }}</p>
         {% endif %}
