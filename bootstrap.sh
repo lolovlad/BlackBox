@@ -1,10 +1,11 @@
 #!/usr/bin/env sh
 set -eu
 
-# Bootstrap script for full BlackBox startup from zero:
-# 1) install dependencies
-# 2) initialize/apply DB migrations
-# 3) run app with Uvicorn
+# Опциональный «всё сразу» для разработки/демо (без отдельного .env-файла).
+# Для развёртывания на устройстве см. DEPLOY_ON_DEVICE_RU.md и скрипты
+# scripts/linux/create_env.sh + run_blackbox.sh.
+#
+# Шаги: зависимости → миграции → seed → uvicorn в текущем терминале.
 
 PROJECT_ROOT="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 cd "$PROJECT_ROOT"
@@ -35,7 +36,7 @@ export HOST="${HOST:-0.0.0.0}"
 export PORT="${PORT:-5000}"
 mkdir -p "$(dirname "$BLACKBOX_DB_PATH")"
 
-echo "[3/5] Preparing Flask-Migrate repository..."
+echo "[3/6] Preparing Flask-Migrate repository..."
 if [ ! -d "migrations" ] || [ ! -f "migrations/env.py" ]; then
   uv run flask db init
 fi

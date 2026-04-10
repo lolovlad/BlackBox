@@ -18,7 +18,7 @@ if [ ! -f "$SERVICE_SRC" ]; then
   exit 1
 fi
 
-chmod +x "$PROJECT_ROOT/scripts/linux/start_blackbox.sh"
+chmod +x "$PROJECT_ROOT/scripts/linux/create_env.sh" "$PROJECT_ROOT/scripts/linux/run_blackbox.sh"
 
 if ! id -u blackbox >/dev/null 2>&1; then
   useradd --system --create-home --home-dir /opt/blackbox --shell /usr/sbin/nologin blackbox
@@ -27,6 +27,12 @@ fi
 mkdir -p /opt/blackbox
 cp -a "$PROJECT_ROOT/." /opt/blackbox/
 chown -R blackbox:blackbox /opt/blackbox
+chmod +x /opt/blackbox/scripts/linux/create_env.sh /opt/blackbox/scripts/linux/run_blackbox.sh
+
+if [ ! -f /opt/blackbox/.env ]; then
+  echo "Creating default /opt/blackbox/.env (no TTY — defaults only)..."
+  sudo -u blackbox sh /opt/blackbox/scripts/linux/create_env.sh
+fi
 
 cp "$SERVICE_SRC" "$SERVICE_DST"
 

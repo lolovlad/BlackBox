@@ -1,108 +1,77 @@
-# BlackBox: запуск в фоне и автозапуск (Linux)
+# BlackBox: автозапуск при загрузке (Linux, systemd)
 
-Целевая директория проекта:
+Этот файл про **одно**: как сделать, чтобы приложение **само поднималось после перезагрузки** устройства.
+
+Полная пошаговая установка «с нуля» (создание `.env`, миграции, первый ручной запуск) — в **`DEPLOY_ON_DEVICE_RU.md`**. Там же объяснено, чем ручной запуск отличается от службы systemd.
+
+---
+
+## Что делает установщик службы
+
+Скрипт `scripts/linux/install_systemd_service.sh` (запускать от root):
+
+- создаёт системного пользователя `blackbox` (если его ещё нет);
+- копирует текущий каталог проекта в **`/opt/blackbox`**;
+- выставляет права на запуск `create_env.sh` и `run_blackbox.sh`;
+- если в `/opt/blackbox` **нет** `.env`, запускает **`create_env.sh`** от имени `blackbox` (без TTY — только значения по умолчанию);
+- ставит unit-файл **`blackbox.service`** и включает автозапуск;
+- опционально создаёт **`/etc/default/blackbox`** с подсказками по переменным.
+
+**Запуск приложения** внутри службы выполняет только **`run_blackbox.sh`** (зависимости, миграции, `uvicorn`). Это не «единый скрипт с фоном» — фон обеспечивает **systemd**, скрипт лишь стартует процесс, как при ручном запуске.
+
+---
+
+## Команды
+
+Из корня **исходного** репозитория (до копирования в `/opt`):
 
 ```bash
-agk@BlackBox:~/app/BlackBox $
-```
-
-## 1) Подготовка
-
-Выполнить из корня проекта:
-
-```bash
-cd ~/app/BlackBox
-chmod +x scripts/linux/start_blackbox.sh scripts/linux/install_systemd_service.sh
-```
-
-## 2) Установка systemd-сервиса
-
-```bash
+chmod +x scripts/linux/install_systemd_service.sh scripts/linux/create_env.sh scripts/linux/run_blackbox.sh
 sudo sh scripts/linux/install_systemd_service.sh
 ```
 
-Скрипт:
-
-- создаст пользователя `blackbox` (если нет);
-- скопирует проект в `/opt/blackbox`;
-- установит unit-файл `blackbox.service`;
-- включит автозапуск и стартует сервис.
-
-При **первом** запуске `start_blackbox.sh` сам создаёт `/opt/blackbox/.env`, если файла ещё нет (мастер встроен в скрипт). Под **systemd** (без TTY) подставляются значения по умолчанию. Чтобы пройти интерактивный мастер, удалите `.env` и запустите `./scripts/linux/start_blackbox.sh` из SSH-сессии с терминалом от имени пользователя сервиса, например:
-
-```bash
-sudo -u blackbox sh /opt/blackbox/scripts/linux/start_blackbox.sh
-```
-
-## 3) Проверка
+Проверка:
 
 ```bash
 systemctl status blackbox.service
 journalctl -u blackbox.service -f
 ```
 
-## 4) Настройки окружения
-
-Основной файл конфигурации приложения в каталоге установки:
-
-```text
-/opt/blackbox/.env
-```
-
-Он создаётся автоматически при первом старте (см. выше). Переменные из `.env` подхватываются скриптом запуска и переопределяют значения из unit-файла для совпадающих имён.
-
-Дополнительно unit подключает (если файл есть):
-
-```text
-/etc/default/blackbox
-```
-
-Пример параметров (частично дублируют `.env`; приоритет у переменных, заданных в `.env` после его загрузки в `start_blackbox.sh`):
-
-```bash
-HOST=0.0.0.0
-PORT=5000
-APP_TIMEZONE=Europe/Moscow
-MODBUS_PORT=/dev/ttyAMA0
-MODBUS_SLAVE=1
-MODBUS_BAUDRATE=9600
-MODBUS_TIMEOUT=0.35
-MODBUS_INTERVAL=0.12
-MODBUS_ADDRESS_OFFSET=1
-RAM_BATCH_SIZE=60
-SECRET_KEY=change-me
-```
-
-После изменения:
+Дополнительные переменные (порт, Modbus и т.д.) можно задать в **`/etc/default/blackbox`** и/или в **`/opt/blackbox/.env`**. После правок:
 
 ```bash
 sudo systemctl restart blackbox.service
 ```
 
-## 5) Частые команды
+---
 
-```bash
-sudo systemctl restart blackbox.service
-sudo systemctl stop blackbox.service
-sudo systemctl start blackbox.service
-sudo systemctl disable blackbox.service
-sudo systemctl enable blackbox.service
-journalctl -u blackbox.service -n 200 --no-pager
-```
+## Запуск из своей папки без копирования в `/opt`
 
-## Важно
+Если нужно, чтобы служба работала из `~/app/BlackBox`, отредактируйте unit-файл **`deploy/systemd/blackbox.service`** (или уже установленный `/etc/systemd/system/blackbox.service`):
 
-Текущий установщик копирует проект в `/opt/blackbox`.
-Если хотите запускать строго из `~/app/BlackBox` без копирования, можно изменить unit-файл:
+- `WorkingDirectory=/home/ВАШ_ПОЛЬЗОВАТЕЛЬ/app/BlackBox`
+- `ExecStart=/home/ВАШ_ПОЛЬЗОВАТЕЛЬ/app/BlackBox/scripts/linux/run_blackbox.sh`
+- `User=` и `Group=` — ваш пользователь
 
-- `WorkingDirectory=/home/agk/app/BlackBox`
-- `ExecStart=/home/agk/app/BlackBox/scripts/linux/start_blackbox.sh`
-- `User=agk`
-- `Group=agk`
-
-и затем выполнить:
+Затем:
 
 ```bash
 sudo systemctl daemon-reload
 sudo systemctl restart blackbox.service
 ```
+
+---
+
+## Интерактивный мастер `.env` на установленной копии
+
+Если при установке службы создался `.env` с дефолтами и вы хотите пройти вопросы мастера:
+
+1. Сохраните копию `.env` при необходимости.
+2. Удалите `/opt/blackbox/.env`.
+3. Зайдите по SSH и выполните от имени пользователя службы:
+
+```bash
+sudo -u blackbox sh /opt/blackbox/scripts/linux/create_env.sh
+```
+
+4. Перезапустите службу: `sudo systemctl restart blackbox.service`.

@@ -2,6 +2,8 @@
 
 Регистрация данных с дискретных/аналоговых входов, запись в CSV/JSON, аварийные срезы. Отдельно — **получение данных по Modbus** в пакете `modbus_acquire` (удобно подключать к Flask без всей логики записи).
 
+**Развёртывание на Linux-устройстве по шагам (для оператора):** см. **[`DEPLOY_ON_DEVICE_RU.md`](DEPLOY_ON_DEVICE_RU.md)**. Автозапуск при загрузке отдельно: **[`LINUX_AUTOSTART.md`](LINUX_AUTOSTART.md)**.
+
 ## Flask веб-интерфейс (Blueprints + FlaskForm + htmx)
 
 Веб-приложение находится в `src/web_app.py` (entrypoint) и `src/webui/` (основная структура).
@@ -26,10 +28,9 @@ uv sync
 uv lock
 ```
 
-3) Создайте файл `.env` вручную в корне проекта.
+3) Создайте файл `.env` в корне проекта: вручную (пример ниже) **или** на Linux — `sh scripts/linux/create_env.sh`.
 
 > Важно: приложение **не запустится**, если файла `.env` нет.
-> Файл создается только вручную (автогенерации больше нет).
 
 Пример содержимого `.env`:
 
@@ -157,33 +158,18 @@ http://10.109.114.106:5000/
    - запускается каждые `VIDEO_GC_INTERVAL_DAYS` (по умолчанию 10 дней);
    - в `VIDEO_STORAGE_DIR` удаляет файлы, которых нет в таблице `videos`.
 
-### Linux: запуск в фоне + автозапуск при старте
+### Linux: скрипты и автозапуск
 
-Добавлены файлы:
+- **`scripts/linux/create_env.sh`** — только создание `.env` (мастер или дефолты без TTY).
+- **`scripts/linux/run_blackbox.sh`** — установка зависимостей, миграции, запуск **uvicorn в этом терминале** (остановка Ctrl+C). Не смешивается с «фоном»: для фона используется systemd.
+- **`deploy/systemd/blackbox.service`** — unit-файл; `ExecStart` вызывает `run_blackbox.sh`.
+- **`scripts/linux/install_systemd_service.sh`** — копия в `/opt/blackbox`, пользователь `blackbox`, включение службы.
 
-- `scripts/linux/start_blackbox.sh` — старт приложения через `uv` (подходит для systemd).
-- `deploy/systemd/blackbox.service` — unit-файл сервиса.
-- `scripts/linux/install_systemd_service.sh` — установка сервиса и включение автозапуска.
+Первый ручной запуск на устройстве: пошагово в **[`DEPLOY_ON_DEVICE_RU.md`](DEPLOY_ON_DEVICE_RU.md)**.
 
-Быстрый старт на Linux:
+Автозапуск при загрузке: **[`LINUX_AUTOSTART.md`](LINUX_AUTOSTART.md)**.
 
-```bash
-chmod +x scripts/linux/start_blackbox.sh scripts/linux/install_systemd_service.sh
-sudo sh scripts/linux/install_systemd_service.sh
-```
-
-Проверка:
-
-```bash
-systemctl status blackbox.service
-journalctl -u blackbox.service -f
-```
-
-Настройки окружения сервиса (порт, Modbus, timezone и т.д.) в:
-
-```text
-/etc/default/blackbox
-```
+Настройки службы (порт, Modbus и т.д.) — в **`/etc/default/blackbox`** и в **`/opt/blackbox/.env`** (или в каталоге установки).
 
 ### Полезные команды Flask-Migrate
 
