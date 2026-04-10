@@ -32,20 +32,17 @@ from src.webui.repositories.data_repository import DataRepository
 from src.webui.repositories.emergency_repository import EmergencyRepository
 from src.webui.modbus_service import analog_discrete_for_csv, configure_settings_path, decode_to_processed
 from src.webui.modbus_service import reload_settings_cache
-from pydantic import ValidationError
 
 from src.webui.app_runtime_config import (
     APP_RUNTIME_FILENAME,
     ROOT_ENV_DEFAULTS,
-    ROOT_ENV_KEYS_FORM,
     apply_app_runtime_to_environ,
     build_runtime_config,
     io_form_to_runtime,
     load_app_runtime,
-    root_env_from_form,
     save_app_runtime,
 )
-from src.webui.system_settings import read_env_file, test_modbus_settings, validate_parser_json, write_env_file
+from src.webui.system_settings import read_env_file, test_modbus_settings, validate_parser_json
 from src.webui.timezone_utils import format_in_configured_timezone
 
 main_router = Blueprint("main", __name__, template_folder=str(TEMPLATES_DIR))
@@ -162,9 +159,7 @@ def _build_non_overwriting_settings_path(filename: str) -> Path:
         idx += 1
 
 
-def _settings_page_context(
-    root_env_values: dict[str, str], io_cfg_dict: dict[str, Any], parser_text: str
-) -> dict:
+def _settings_page_context(io_cfg_dict: dict[str, Any], parser_text: str) -> dict:
     er_repo = EmergencyRepository(current_app.extensions["session_factory"])
     parser_path = _effective_parser_settings_path()
     choices, settings_files_warning = _settings_file_choices(parser_path.name)
@@ -186,7 +181,6 @@ def _settings_page_context(
     io_display = dict(io_cfg_dict)
     io_display["_tz_select"] = tz_select
     return {
-        "root_env_values": root_env_values,
         "io_values": io_display,
         "app_timezone_custom_value": tz_custom,
         "parser_text": parser_text,
@@ -248,16 +242,11 @@ def dashboard():
 @main_router.route("/settings", methods=["GET"])
 @admin_required
 def settings():
-    env_path = current_app.extensions["env_path"]
-    env_current = read_env_file(env_path)
-    root_values = {k: env_current.get(k, ROOT_ENV_DEFAULTS[k]) for k in ROOT_ENV_KEYS_FORM}
     io_cfg = current_app.extensions["app_runtime_config"]
     parser_path = _effective_parser_settings_path()
     with parser_path.open("r", encoding="utf-8") as f:
         parser_text = f.read()
-    return render_template(
-        "settings/index.html", **_settings_page_context(root_values, io_cfg.model_dump(), parser_text)
-    )
+    return render_template("settings/index.html", **_settings_page_context(io_cfg.model_dump(), parser_text))
 
 
 @main_router.route("/admin/event-logs", methods=["GET"])
@@ -331,32 +320,8 @@ def settings_save():
 
     def _fail(parser_txt: str | None = None, *, status: int = 400):
         text = parser_txt if parser_txt is not None else parser_text
-        root_ = {k: env_disk.get(k, ROOT_ENV_DEFAULTS[k]) for k in ROOT_ENV_KEYS_FORM}
-        for k in ROOT_ENV_KEYS_FORM:
-            if k in request.form:
-                v = str(request.form.get(k) or "").strip()
-                if v:
-                    root_[k] = v
         io_d = _posted_io_dict_for_template()
-        return render_template("settings/index.html", **_settings_page_context(root_, io_d, text)), status
-
-    if action == "save_env":
-        try:
-            root = root_env_from_form(request.form)
-        except ValidationError as exc:
-            flash(f"Некорректные корневые настройки: {exc}", "error")
-            return _fail()
-        updates = root.as_env_strings()
-        write_env_file(env_path, updates)
-        for k, v in updates.items():
-            os.environ[k] = v
-        current_app.config["SECRET_KEY"] = updates["SECRET_KEY"]
-        current_app.config["SESSION_COOKIE_SECURE"] = updates["SESSION_COOKIE_SECURE"] == "1"
-        flash(
-            "Файл .env обновлён. После смены пути к БД (BLACKBOX_DB_PATH) полностью перезапустите приложение.",
-            "success",
-        )
-        return redirect(url_for("main_blueprint.settings"))
+        return render_template("settings/index.html", **_settings_page_context(io_d, text)), status
 
     if action == "upload":
         uploaded = request.files.get("settings_file_upload")
@@ -465,9 +430,8 @@ def settings_save():
     if action == "test":
         collector.start()
         flash(msg, "success")
-        root_ok = {k: env_disk.get(k, ROOT_ENV_DEFAULTS[k]) for k in ROOT_ENV_KEYS_FORM}
         io_d = _posted_io_dict_for_template()
-        return render_template("settings/index.html", **_settings_page_context(root_ok, io_d, parser_text))
+        return render_template("settings/index.html", **_settings_page_context(io_d, parser_text))
 
     if action != "save":
         collector.start()

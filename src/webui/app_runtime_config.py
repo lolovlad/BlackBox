@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field
 
 from src.webui.modbus_service import RuntimeConfig
 
@@ -30,49 +30,6 @@ ROOT_ENV_DEFAULTS: dict[str, str] = {
     "SEED_USER_USERNAME": "user",
     "SEED_USER_PASSWORD": "user",
 }
-
-ROOT_ENV_KEYS_FORM: tuple[str, ...] = tuple(ROOT_ENV_DEFAULTS.keys())
-
-
-class RootEnvModel(BaseModel):
-    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
-
-    BLACKBOX_DB_PATH: str = Field(min_length=1, max_length=2048)
-    DB_CLEANUP_INTERVAL_MINUTES: int = Field(ge=1, le=100000)
-    DB_RETENTION_DAYS: int = Field(ge=1, le=36500)
-    VIDEO_STORAGE_DIR: str = Field(default="", max_length=2048)
-    VIDEO_GC_INTERVAL_DAYS: int = Field(ge=1, le=36500)
-    SECRET_KEY: str = Field(min_length=1, max_length=512)
-    HOST: str = Field(min_length=1, max_length=255)
-    PORT: int = Field(ge=1, le=65535)
-    FLASK_APP: str = Field(min_length=1, max_length=255)
-    SESSION_COOKIE_SECURE: str = Field(min_length=1, max_length=1)
-
-    @field_validator("SESSION_COOKIE_SECURE")
-    @classmethod
-    def _session_secure(cls, v: str) -> str:
-        s = str(v).strip()
-        if s not in ("0", "1"):
-            raise ValueError("SESSION_COOKIE_SECURE must be 0 or 1")
-        return s
-
-    def as_env_strings(self) -> dict[str, str]:
-        return {
-            "BLACKBOX_DB_PATH": self.BLACKBOX_DB_PATH,
-            "DB_CLEANUP_INTERVAL_MINUTES": str(self.DB_CLEANUP_INTERVAL_MINUTES),
-            "DB_RETENTION_DAYS": str(self.DB_RETENTION_DAYS),
-            "VIDEO_STORAGE_DIR": self.VIDEO_STORAGE_DIR,
-            "VIDEO_GC_INTERVAL_DAYS": str(self.VIDEO_GC_INTERVAL_DAYS),
-            "SECRET_KEY": self.SECRET_KEY,
-            "HOST": self.HOST,
-            "PORT": str(self.PORT),
-            "FLASK_APP": self.FLASK_APP,
-            "SESSION_COOKIE_SECURE": self.SESSION_COOKIE_SECURE,
-            "SEED_ADMIN_USERNAME": self.SEED_ADMIN_USERNAME,
-            "SEED_ADMIN_PASSWORD": self.SEED_ADMIN_PASSWORD,
-            "SEED_USER_USERNAME": self.SEED_USER_USERNAME,
-            "SEED_USER_PASSWORD": self.SEED_USER_PASSWORD,
-        }
 
 
 class AppRuntimeConfigModel(BaseModel):
@@ -236,23 +193,4 @@ def io_form_to_runtime(
         app_timezone=app_timezone.strip(),
         parser_settings_path=parser_settings_path.strip().replace("\\", "/"),
         disable_modbus_collector=disable_modbus_collector,
-    )
-
-
-def root_env_from_form(form: dict[str, Any]) -> RootEnvModel:
-    return RootEnvModel(
-        BLACKBOX_DB_PATH=str(form.get("BLACKBOX_DB_PATH") or "").strip(),
-        DB_CLEANUP_INTERVAL_MINUTES=int(form.get("DB_CLEANUP_INTERVAL_MINUTES") or 0),
-        DB_RETENTION_DAYS=int(form.get("DB_RETENTION_DAYS") or 0),
-        VIDEO_STORAGE_DIR=str(form.get("VIDEO_STORAGE_DIR") or "").strip(),
-        VIDEO_GC_INTERVAL_DAYS=int(form.get("VIDEO_GC_INTERVAL_DAYS") or 0),
-        SECRET_KEY=str(form.get("SECRET_KEY") or "").strip(),
-        HOST=str(form.get("HOST") or "").strip(),
-        PORT=int(str(form.get("PORT") or "0").strip() or 0),
-        FLASK_APP=str(form.get("FLASK_APP") or "").strip(),
-        SESSION_COOKIE_SECURE=str(form.get("SESSION_COOKIE_SECURE") or "0").strip()[:1] or "0",
-        SEED_ADMIN_USERNAME=str(form.get("SEED_ADMIN_USERNAME") or "admin").strip(),
-        SEED_ADMIN_PASSWORD=str(form.get("SEED_ADMIN_PASSWORD") or "admin").strip(),
-        SEED_USER_USERNAME=str(form.get("SEED_USER_USERNAME") or "user").strip(),
-        SEED_USER_PASSWORD=str(form.get("SEED_USER_PASSWORD") or "user").strip(),
     )
