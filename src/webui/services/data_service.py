@@ -219,6 +219,7 @@ class DataService:
             )
             out_rows = [
                 {
+                    "id": item.id,
                     "saved_at": format_in_configured_timezone(item.created_at, DATETIME_UI_FORMAT),
                     "captured_at": format_in_configured_timezone(item.captured_at, DATETIME_UI_FORMAT),
                     "file_name": item.file_name,

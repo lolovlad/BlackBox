@@ -4,16 +4,17 @@ import base64
 import binascii
 import csv
 import json
+import re
 import tempfile
 import zipfile
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from flask import Blueprint, current_app, jsonify, render_template, request, url_for
+from flask import Blueprint, abort, current_app, jsonify, render_template, request, send_file, url_for
 from flask_login import login_required
 
-from src.database import Alarms, Samples
+from src.database import Alarms, Samples, Video
 from src.webui.data_labels import (
     all_analog_keys,
     all_discrete_keys,
@@ -24,6 +25,7 @@ from src.webui.modbus_service import analog_discrete_for_csv, decode_to_processe
 from src.webui.paths import TEMPLATES_DIR
 from src.webui.repositories.data_repository import DataRepository
 from src.webui.services.data_service import TABLE_PAGE_SIZE, DataService, parse_data_filter
+from src.webui.system_settings import read_env_file
 from src.webui.timezone_utils import (
     configured_timezone_name,
     format_in_configured_timezone,
@@ -62,6 +64,56 @@ def tables():
     flt = parse_data_filter(request.args)
     ctx = _service().collect_tab(flt)
     return render_template("data/_tables.html", **ctx)
+
+
+def _video_allowed_roots() -> list[Path]:
+    env = read_env_file(current_app.extensions["env_path"])
+    raw = (env.get("VIDEO_STORAGE_DIR") or "").strip()
+    if not raw:
+        return []
+    root = Path(raw).expanduser().resolve()
+    roots = [root]
+    if re.fullmatch(r"cam\d+", root.name.lower()) and root.parent.is_dir():
+        roots.append(root.parent.resolve())
+    uniq: list[Path] = []
+    for p in roots:
+        if p not in uniq:
+            uniq.append(p)
+    return uniq
+
+
+def _is_under_any_root(path: Path, roots: list[Path]) -> bool:
+    if not roots:
+        return True
+    for root in roots:
+        try:
+            path.relative_to(root)
+            return True
+        except ValueError:
+            continue
+    return False
+
+
+@data_router.route("/videos/<int:video_id>/download", methods=["GET"])
+@login_required
+def download_video(video_id: int):
+    session_factory = current_app.extensions["session_factory"]
+    with session_factory() as session:
+        item = session.get(Video, video_id)
+    if item is None:
+        abort(404)
+
+    file_path = Path(item.file_path).expanduser()
+    try:
+        resolved = file_path.resolve()
+    except OSError:
+        abort(404)
+    if not resolved.exists() or not resolved.is_file():
+        abort(404)
+    if not _is_under_any_root(resolved, _video_allowed_roots()):
+        abort(403)
+
+    return send_file(resolved, as_attachment=True, download_name=(item.file_name or resolved.name))
 
 
 @data_router.route("/export", methods=["POST"])
