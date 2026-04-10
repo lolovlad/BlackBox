@@ -135,7 +135,8 @@ export PORT="${PORT:-5000}"
 export FLASK_APP="${FLASK_APP:-src.web_app:app}"
 
 if [ ! -f "$PROJECT_ROOT/settings/settings.json" ]; then
-  : > "$PROJECT_ROOT/settings/settings.json"
+  printf '%s\n' '{"requests":[{"name":"hr","fc":3,"address":0,"count":1}],"fields":[{"name":"r0","type":"uint16","source":"hr","address":0}]}' \
+    > "$PROJECT_ROOT/settings/settings.json"
 fi
 
 uv sync --frozen --no-dev

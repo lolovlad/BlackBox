@@ -42,7 +42,15 @@ from src.webui.app_runtime_config import (
     load_app_runtime,
     save_app_runtime,
 )
-from src.webui.system_settings import read_env_file, test_modbus_settings, validate_parser_json
+from src.webui.system_settings import (
+    MINIMAL_PARSER_SETTINGS_JSON,
+    is_valid_parser_settings_file,
+    prune_parser_settings_json_files,
+    read_env_file,
+    repair_parser_settings_path,
+    test_modbus_settings,
+    validate_parser_json,
+)
 from src.webui.timezone_utils import format_in_configured_timezone
 
 main_router = Blueprint("main", __name__, template_folder=str(TEMPLATES_DIR))
@@ -65,14 +73,34 @@ def _project_root() -> Path:
     return Path(current_app.config["PROJECT_ROOT"])
 
 
+def _ensure_parser_settings_coherent() -> None:
+    root = _project_root()
+    sd = _settings_dir()
+    sd.mkdir(parents=True, exist_ok=True)
+    prune_parser_settings_json_files(sd)
+    cfg = current_app.extensions.get("app_runtime_config")
+    if cfg is None:
+        return
+    new_cfg, changed = repair_parser_settings_path(root, cfg, sd)
+    if not changed:
+        return
+    apply_app_runtime_to_environ(new_cfg)
+    current_app.extensions["app_runtime_config"] = new_cfg
+    current_app.config["PARSER_SETTINGS_PATH"] = new_cfg.parser_settings_path
+    abs_p = (root / Path(new_cfg.parser_settings_path)).resolve()
+    configure_settings_path(abs_p)
+    reload_settings_cache()
+
+
 def _effective_parser_settings_path() -> Path:
+    _ensure_parser_settings_coherent()
     raw = current_app.config.get("PARSER_SETTINGS_PATH", "settings/settings.json")
     p = Path(raw)
     root = _project_root()
     resolved = p.resolve() if p.is_absolute() else (root / p).resolve()
     resolved.parent.mkdir(parents=True, exist_ok=True)
     if not resolved.exists():
-        resolved.write_text("", encoding="utf-8")
+        resolved.write_text(MINIMAL_PARSER_SETTINGS_JSON + "\n", encoding="utf-8")
     return resolved
 
 
@@ -84,19 +112,6 @@ def _rel_parser_settings_env_name(filename: str) -> str:
     return (Path("settings") / Path(filename).name).as_posix()
 
 
-def _is_valid_settings_json_file(path: Path) -> bool:
-    if not path.is_file():
-        return False
-    try:
-        raw = path.read_text(encoding="utf-8")
-    except OSError:
-        return False
-    if not raw.strip():
-        return False
-    _, err = validate_parser_json(raw)
-    return err is None
-
-
 def _settings_file_choices(active_basename: str) -> tuple[list[str], str | None]:
     settings_dir = _settings_dir()
     settings_dir.mkdir(parents=True, exist_ok=True)
@@ -104,17 +119,9 @@ def _settings_file_choices(active_basename: str) -> tuple[list[str], str | None]
     for p in sorted(settings_dir.glob("*.json"), key=lambda x: x.name.lower()):
         if p.name == APP_RUNTIME_FILENAME:
             continue
-        if _is_valid_settings_json_file(p):
+        if is_valid_parser_settings_file(p):
             valid.append(p.name)
     warning: str | None = None
-    if active_basename and active_basename not in valid:
-        active_path = settings_dir / active_basename
-        if active_path.is_file():
-            valid.insert(0, active_basename)
-            warning = (
-                f"Текущий файл «{active_basename}» пуст или не проходит проверку схемы. "
-                "Исправьте JSON или выберите другой файл из списка."
-            )
     if "settings.json" in valid and valid[0] != "settings.json":
         valid.remove("settings.json")
         valid.insert(0, "settings.json")

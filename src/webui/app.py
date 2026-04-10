@@ -32,7 +32,12 @@ from src.webui.modbus_service import configure_settings_path, reload_settings_ca
 from src.webui.paths import SRC_DIR, STATIC_DIR, TEMPLATES_DIR
 from src.webui.reader_supervisor import ReaderSupervisor
 from src.webui.background_tasks import MaintenanceScheduler
-from src.webui.system_settings import load_env_into_os, read_env_file
+from src.webui.system_settings import (
+    load_env_into_os,
+    prune_parser_settings_json_files,
+    read_env_file,
+    repair_parser_settings_path,
+)
 from src.webui.timezone_utils import configured_timezone_name, format_in_configured_timezone
 
 logger = logging.getLogger(__name__)
@@ -58,18 +63,16 @@ def create_app() -> Flask:
     merged_runtime_fallback.update(env_map)
     ensure_app_runtime_file(project_root, merged_runtime_fallback)
     app_rt = load_app_runtime(project_root, merged_runtime_fallback)
+    settings_dir = project_root / "settings"
+    settings_dir.mkdir(parents=True, exist_ok=True)
+    prune_parser_settings_json_files(settings_dir)
+    app_rt, _ = repair_parser_settings_path(project_root, app_rt, settings_dir)
     apply_app_runtime_to_environ(app_rt)
     instance_dir = Path(os.getenv("FLASK_INSTANCE_PATH", str(project_root / "instance"))).resolve()
     session_dir = instance_dir / "sessions"
 
     static_csv_dir.mkdir(parents=True, exist_ok=True)
     session_dir.mkdir(parents=True, exist_ok=True)
-    settings_dir = project_root / "settings"
-    settings_dir.mkdir(parents=True, exist_ok=True)
-    default_settings_file = settings_dir / "settings.json"
-    if not default_settings_file.exists():
-        default_settings_file.write_text("", encoding="utf-8")
-
     app = Flask(
         __name__,
         template_folder=str(template_dir),

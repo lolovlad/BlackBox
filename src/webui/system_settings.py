@@ -8,8 +8,19 @@ from typing import Any
 from modbus_acquire.instrument import build_instrument
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
-from src.webui.app_runtime_config import ROOT_ENV_DEFAULTS
+from src.webui.app_runtime_config import (
+    APP_RUNTIME_FILENAME,
+    ROOT_ENV_DEFAULTS,
+    AppRuntimeConfigModel,
+    save_app_runtime,
+)
 from src.webui.modbus_service import RuntimeConfig, parse_fields
+
+# Минимальный валидный конфиг парсера (не пустой файл-заглушка).
+MINIMAL_PARSER_SETTINGS_JSON = (
+    '{"requests":[{"name":"hr","fc":3,"address":0,"count":1}],'
+    '"fields":[{"name":"r0","type":"uint16","source":"hr","address":0}]}'
+)
 
 
 class RequestModel(BaseModel):
@@ -80,6 +91,99 @@ def load_env_into_os(path: Path, *, override: bool = True) -> None:
     for key, value in read_env_file(path).items():
         if override or key not in os.environ:
             os.environ[key] = value
+
+
+def is_valid_parser_settings_file(path: Path) -> bool:
+    if not path.is_file():
+        return False
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    if not raw.strip():
+        return False
+    _, err = validate_parser_json(raw)
+    return err is None
+
+
+def prune_parser_settings_json_files(settings_dir: Path) -> list[str]:
+    """Удаляет пустые и не-JSON *.json (кроме app_runtime.json). Возвращает имена удалённых файлов."""
+    settings_dir.mkdir(parents=True, exist_ok=True)
+    deleted: list[str] = []
+    for path in sorted(settings_dir.glob("*.json"), key=lambda p: p.name.lower()):
+        if path.name == APP_RUNTIME_FILENAME:
+            continue
+        try:
+            raw = path.read_text(encoding="utf-8")
+        except OSError:
+            try:
+                path.unlink(missing_ok=True)
+                deleted.append(path.name)
+            except OSError:
+                pass
+            continue
+        if not raw.strip():
+            try:
+                path.unlink(missing_ok=True)
+                deleted.append(path.name)
+            except OSError:
+                pass
+            continue
+        try:
+            json.loads(raw)
+        except json.JSONDecodeError:
+            try:
+                path.unlink(missing_ok=True)
+                deleted.append(path.name)
+            except OSError:
+                pass
+    return deleted
+
+
+def _parser_settings_abs(project_root: Path, raw: str) -> Path:
+    p = Path(raw)
+    return p.resolve() if p.is_absolute() else (project_root / p).resolve()
+
+
+def repair_parser_settings_path(
+    project_root: Path,
+    cfg: AppRuntimeConfigModel,
+    settings_dir: Path,
+) -> tuple[AppRuntimeConfigModel, bool]:
+    """Если активный JSON парсера отсутствует или невалиден — переключает на первый валидный или создаёт минимальный settings.json.
+
+    Второй элемент — True, если изменился app_runtime.json или содержимое активного JSON на диске;
+    вызывающий код должен перепривязать путь парсера и обновить кэш.
+    """
+    path = _parser_settings_abs(project_root, cfg.parser_settings_path)
+    if path.is_file() and is_valid_parser_settings_file(path):
+        return cfg, False
+
+    valid_names: list[str] = []
+    for f in sorted(settings_dir.glob("*.json"), key=lambda x: x.name.lower()):
+        if f.name == APP_RUNTIME_FILENAME:
+            continue
+        if is_valid_parser_settings_file(f):
+            valid_names.append(f.name)
+
+    wrote_seed = False
+    if valid_names:
+        pick = "settings.json" if "settings.json" in valid_names else valid_names[0]
+        new_rel = f"settings/{pick}"
+    else:
+        seed = settings_dir / "settings.json"
+        seed.parent.mkdir(parents=True, exist_ok=True)
+        seed.write_text(MINIMAL_PARSER_SETTINGS_JSON + "\n", encoding="utf-8")
+        wrote_seed = True
+        new_rel = "settings/settings.json"
+
+    if new_rel != cfg.parser_settings_path:
+        new_cfg = cfg.model_copy(update={"parser_settings_path": new_rel})
+        save_app_runtime(project_root, new_cfg)
+        return new_cfg, True
+    if wrote_seed:
+        return cfg, True
+    return cfg, False
 
 
 def validate_parser_json(text: str) -> tuple[dict[str, Any] | None, str | None]:
