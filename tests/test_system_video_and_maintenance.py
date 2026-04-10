@@ -198,6 +198,40 @@ def test_api_video_add_accepts_plain_text_body(app_with_env) -> None:
     assert resp.status_code == 200
 
 
+def test_api_video_add_accepts_between_active_and_inactive_even_if_over_20m(app_with_env) -> None:
+    app, _ = app_with_env
+    with app.app_context():
+        db.session.add(
+            Alarms(
+                created_at=datetime(2026, 4, 10, 10, 10, 0),
+                date=b"{}",
+                name="A2",
+                state="active",
+                description="active",
+            )
+        )
+        db.session.add(
+            Alarms(
+                created_at=datetime(2026, 4, 10, 10, 50, 0),
+                date=b"{}",
+                name="A2",
+                state="inactive",
+                description="inactive",
+            )
+        )
+        db.session.commit()
+
+    client = app.test_client()
+    ok_resp = client.post("/api/video/add", json={"path": "/mnt/nvme/motion/cam1/20260410_104000.mkv"})
+    assert ok_resp.status_code == 200
+    ok_data = ok_resp.get_json()
+    assert ok_data["ok"] is True
+    assert ok_data["alarm_name"] == "A2"
+
+    miss_resp = client.post("/api/video/add", json={"path": "/mnt/nvme/motion/cam1/20260410_110000.mkv"})
+    assert miss_resp.status_code == 404
+
+
 def test_maintenance_cleanup_db_and_video_files(app_with_env) -> None:
     app, tmp_path = app_with_env
     env_path = tmp_path / ".env"

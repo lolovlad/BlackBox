@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from flask import Blueprint, current_app, jsonify, request
@@ -20,6 +20,7 @@ _DATETIME_PATTERNS: tuple[str, ...] = (
     "%Y-%m-%d %H:%M:%S",
     "%d-%m-%Y_%H-%M-%S",
 )
+_MAX_ACTIVE_MATCH_DELTA = timedelta(minutes=20)
 
 
 def _extract_video_datetime(file_name: str) -> datetime | None:
@@ -54,6 +55,42 @@ def _video_add_request_debug_preview(raw_body_full: str, max_len: int = 800) -> 
     if len(raw_body_full) <= max_len:
         return raw_body_full
     return raw_body_full[:max_len] + f"... (+{len(raw_body_full) - max_len} симв.)"
+
+
+def _is_active_state(value: str | None) -> bool:
+    return (value or "").strip().lower() == "active"
+
+
+def _is_inactive_state(value: str | None) -> bool:
+    return (value or "").strip().lower() == "inactive"
+
+
+def _nearest_alarm_for_video(session, captured_at: datetime) -> Alarms | None:
+    before = session.execute(
+        select(Alarms).where(Alarms.created_at <= captured_at).order_by(Alarms.created_at.desc(), Alarms.id.desc()).limit(1)
+    ).scalar_one_or_none()
+    after = session.execute(
+        select(Alarms).where(Alarms.created_at >= captured_at).order_by(Alarms.created_at.asc(), Alarms.id.asc()).limit(1)
+    ).scalar_one_or_none()
+    if before is None:
+        return after
+    if after is None:
+        return before
+    return before if (captured_at - before.created_at) <= (after.created_at - captured_at) else after
+
+
+def _next_inactive_after(session, alarm: Alarms) -> Alarms | None:
+    stmt = select(Alarms).where(Alarms.created_at > alarm.created_at, Alarms.state == "inactive")
+    if getattr(alarm, "name", None):
+        stmt = stmt.where(Alarms.name == alarm.name)
+    return session.execute(stmt.order_by(Alarms.created_at.asc(), Alarms.id.asc()).limit(1)).scalar_one_or_none()
+
+
+def _prev_active_before(session, alarm: Alarms) -> Alarms | None:
+    stmt = select(Alarms).where(Alarms.created_at < alarm.created_at, Alarms.state == "active")
+    if getattr(alarm, "name", None):
+        stmt = stmt.where(Alarms.name == alarm.name)
+    return session.execute(stmt.order_by(Alarms.created_at.desc(), Alarms.id.desc()).limit(1)).scalar_one_or_none()
 
 
 @api_router.route("/video/add", methods=["POST"])
@@ -111,22 +148,37 @@ def video_add():
         if existing is not None:
             return jsonify({"ok": True, "video_id": existing.id, "status": "already_exists"})
 
-        nearest = session.execute(
-            select(Alarms)
-            .where(Alarms.created_at <= captured_at)
-            .order_by(Alarms.created_at.desc(), Alarms.id.desc())
-            .limit(1)
-        ).scalar_one_or_none()
+        nearest = _nearest_alarm_for_video(session, captured_at)
         if nearest is None:
             current_app.logger.warning(
-                "video/add 404: нет alarm с created_at <= captured_at. captured_at=%s file_path=%r",
+                "video/add 404: в БД нет событий alarm для сопоставления. captured_at=%s file_path=%r",
                 captured_at.isoformat(),
                 str(path),
             )
             return jsonify({"ok": False, "error": "Видео не попадает в интервал alarm."}), 404
-        if (nearest.state or "").strip().lower() != "active":
+
+        matched_alarm: Alarms | None = None
+        reason = ""
+        if _is_active_state(nearest.state):
+            if abs(captured_at - nearest.created_at) <= _MAX_ACTIVE_MATCH_DELTA:
+                matched_alarm = nearest
+                reason = "nearest_active_within_20m"
+            else:
+                nearest_inactive = _next_inactive_after(session, nearest)
+                if (
+                    nearest_inactive is not None
+                    and nearest.created_at <= captured_at <= nearest_inactive.created_at
+                ):
+                    matched_alarm = nearest
+                    reason = "between_active_and_next_inactive"
+        elif _is_inactive_state(nearest.state):
+            prev_active = _prev_active_before(session, nearest)
+            if prev_active is not None and prev_active.created_at <= captured_at <= nearest.created_at:
+                matched_alarm = prev_active
+                reason = "between_prev_active_and_nearest_inactive"
+        if matched_alarm is None:
             current_app.logger.warning(
-                "video/add 404: ближайшая авария не active. captured_at=%s nearest_alarm_id=%s "
+                "video/add 404: нет подходящего alarm по новой логике. captured_at=%s nearest_alarm_id=%s "
                 "nearest_created_at=%s nearest_state=%r file_path=%r",
                 captured_at.isoformat(),
                 nearest.id,
@@ -134,13 +186,13 @@ def video_add():
                 nearest.state,
                 str(path),
             )
-            return jsonify({"ok": False, "error": "Ближайшая авария имеет состояние inactive."}), 404
+            return jsonify({"ok": False, "error": "Видео не попадает в допустимое окно active/inactive."}), 404
 
         row = Video(
             captured_at=captured_at,
             file_name=file_name,
             file_path=str(path),
-            alarm_id=nearest.id,
+            alarm_id=matched_alarm.id,
         )
         session.add(row)
         session.commit()
@@ -149,8 +201,9 @@ def video_add():
             {
                 "ok": True,
                 "video_id": row.id,
-                "alarm_id": nearest.id,
-                "alarm_name": nearest.name,
+                "alarm_id": matched_alarm.id,
+                "alarm_name": matched_alarm.name,
+                "match_reason": reason,
                 "captured_at": captured_at.isoformat(),
                 "file_name": file_name,
             }
