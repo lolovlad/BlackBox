@@ -57,6 +57,11 @@ main_router = Blueprint("main", __name__, template_folder=str(TEMPLATES_DIR))
 DATETIME_UI_FORMAT = "%d.%m.%Y %H:%M:%S"
 
 
+def _is_admin() -> bool:
+    tu = getattr(current_user, "type_user", None)
+    return bool(tu is not None and getattr(tu, "system_name", "") == "admin")
+
+
 def _timezone_form_fields(
     env_map: dict[str, str], timezone_choices: list[tuple[str, str]]
 ) -> tuple[str, str]:
@@ -257,7 +262,7 @@ def dashboard():
 
 
 @main_router.route("/settings", methods=["GET"])
-@admin_required
+@login_required
 def settings():
     io_cfg = current_app.extensions["app_runtime_config"]
     parser_path = _effective_parser_settings_path()
@@ -322,7 +327,7 @@ def settings_instruction(slug: str):
 
 
 @main_router.route("/settings", methods=["POST"])
-@admin_required
+@login_required
 def settings_save():
     env_path = current_app.extensions["env_path"]
     env_disk = read_env_file(env_path)
@@ -334,6 +339,7 @@ def settings_save():
     parser_text = request.form.get("parser_json") or ""
     action = (request.form.get("action") or "test").strip().lower()
     selected_settings_file = (request.form.get("settings_file") or parser_path.name).strip()
+    is_admin = _is_admin()
 
     def _fail(parser_txt: str | None = None, *, status: int = 400):
         text = parser_txt if parser_txt is not None else parser_text
@@ -341,6 +347,9 @@ def settings_save():
         return render_template("settings/index.html", **_settings_page_context(io_d, text)), status
 
     if action == "upload":
+        if not is_admin:
+            flash("Недостаточно прав для этого действия.", "error")
+            return _fail(status=403)
         uploaded = request.files.get("settings_file_upload")
         if uploaded is None or not uploaded.filename:
             flash("Выберите JSON-файл настроек.", "error")
@@ -402,6 +411,41 @@ def settings_save():
         reload_settings_cache()
         collector.restart()
         flash("Активный файл настроек изменен. Чтение перезапущено.", "success")
+        return redirect(url_for("main_blueprint.settings"))
+
+    if not is_admin:
+        if action != "save":
+            flash("Недостаточно прав для этого действия.", "error")
+            return _fail(status=403)
+        effective_tz = (request.form.get("app_timezone_custom") or "").strip() or (
+            request.form.get("app_timezone_select") or ""
+        ).strip()
+        target_path = _settings_dir() / Path(selected_settings_file).name
+        if not target_path.exists() or target_path.name == APP_RUNTIME_FILENAME:
+            flash("Некорректный файл настроек парсера.", "error")
+            return _fail()
+        parser_cfg_selected, err = validate_parser_json(target_path.read_text(encoding="utf-8"))
+        _ = parser_cfg_selected
+        if err:
+            flash(f"Выбранный файл невалиден: {err}", "error")
+            return _fail()
+
+        project_root = _project_root()
+        current_cfg = current_app.extensions["app_runtime_config"]
+        new_cfg = current_cfg.model_copy(
+            update={
+                "app_timezone": effective_tz or current_cfg.app_timezone,
+                "parser_settings_path": _rel_parser_settings_env_name(Path(selected_settings_file).name),
+            }
+        )
+        save_app_runtime(project_root, new_cfg)
+        apply_app_runtime_to_environ(new_cfg)
+        current_app.extensions["app_runtime_config"] = new_cfg
+        current_app.config["PARSER_SETTINGS_PATH"] = new_cfg.parser_settings_path
+        configure_settings_path(target_path.resolve())
+        reload_settings_cache()
+        collector.restart()
+        flash("Изменены часовой пояс и активный файл парсера.", "success")
         return redirect(url_for("main_blueprint.settings"))
 
     try:

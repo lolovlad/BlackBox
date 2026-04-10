@@ -10,6 +10,7 @@
 
         <h3 class="settings-subtitle">Параметры из app_runtime.json</h3>
         <div class="filter-grid settings-env-grid">
+            {% if is_admin %}
             <label class="filter-field">modbus_port
                 <input type="text" name="modbus_port" value="{{ io_values.modbus_port }}" autocomplete="off">
             </label>
@@ -31,6 +32,7 @@
             <label class="filter-field">ram_batch_size
                 <input type="number" name="ram_batch_size" value="{{ io_values.ram_batch_size }}" min="1">
             </label>
+            {% endif %}
             <label class="filter-field">Часовой пояс (список)
                 <select name="app_timezone_select">
                     {% for tz, label in timezone_choices %}
@@ -41,6 +43,7 @@
             <label class="filter-field">Своя зона IANA (перекрывает список)
                 <input type="text" name="app_timezone_custom" value="{{ app_timezone_custom_value }}" placeholder="например America/New_York" autocomplete="off">
             </label>
+            {% if is_admin %}
             <label class="filter-field chk settings-disable-collector">
                 <input type="checkbox" name="disable_modbus_collector" value="1" {% if io_values.disable_modbus_collector %}checked{% endif %}>
                 Отключить фоновый сбор Modbus
@@ -51,6 +54,7 @@
             <label class="filter-field">URL файлового менеджера
                 <input type="url" name="file_manager_url" value="{{ io_values.file_manager_url }}" placeholder="http://127.0.0.1:8080" autocomplete="off">
             </label>
+            {% endif %}
         </div>
         <h3 class="settings-subtitle">Файл карты полей (parser JSON)</h3>
         {% if settings_files_warning %}
@@ -66,20 +70,27 @@
             </label>
             <button type="submit" name="action" value="switch_file" class="btn secondary">Открыть выбранный в редакторе</button>
         </div>
-        <p class="hint">
-            <a class="text-indigo-700 underline" href="{{ url_for('main_blueprint.settings_instruction', slug='settings-json') }}" target="_blank" rel="noopener">Справка по формату JSON</a>
-        </p>
-        <label class="filter-field settings-json-label">Содержимое JSON парсера
-            <textarea name="parser_json" rows="18" class="settings-json-textarea" spellcheck="false">{{ parser_text }}</textarea>
-        </label>
+        {% if is_admin %}
+            <p class="hint">
+                <a class="text-indigo-700 underline" href="{{ url_for('main_blueprint.settings_instruction', slug='settings-json') }}" target="_blank" rel="noopener">Справка по формату JSON</a>
+            </p>
+            <label class="filter-field settings-json-label">Содержимое JSON парсера
+                <textarea name="parser_json" rows="18" class="settings-json-textarea" spellcheck="false">{{ parser_text }}</textarea>
+            </label>
+        {% endif %}
 
         <div class="row actions settings-actions">
-            <button type="submit" name="action" value="test" class="btn secondary">Проверить Modbus (без сохранения)</button>
-            <button type="submit" name="action" value="save" class="btn">Сохранить app_runtime.json и JSON парсера</button>
+            {% if is_admin %}
+                <button type="submit" name="action" value="test" class="btn secondary">Проверить Modbus (без сохранения)</button>
+                <button type="submit" name="action" value="save" class="btn">Сохранить app_runtime.json и JSON парсера</button>
+            {% else %}
+                <button type="submit" name="action" value="save" class="btn">Сохранить часовой пояс и активный файл</button>
+            {% endif %}
         </div>
     </form>
 </section>
 
+{% if is_admin %}
 <section class="card settings-page data-page">
     <h3>Импорт JSON карты полей в каталог settings</h3>
     <form method="post" action="{{ url_for('main_blueprint.settings_save') }}" enctype="multipart/form-data" class="settings-upload-form">
@@ -147,5 +158,6 @@
         <p class="hint">Правил пока нет.</p>
     {% endif %}
 </section>
+{% endif %}
 
 {% endblock %}
