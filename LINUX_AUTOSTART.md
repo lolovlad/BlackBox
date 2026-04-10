@@ -87,6 +87,29 @@ sudo systemctl restart blackbox.service
 
 ---
 
+## Ошибка «Permission denied» на `/opt/blackbox/.venv/bin/python3`
+
+Каталог **`.venv` создан не от пользователя `blackbox`** (типично: от root командой `sudo uv sync` в `/opt/blackbox`).
+
+**Исправление от root:**
+
+```bash
+sudo chown -R blackbox:blackbox /opt/blackbox/.venv
+sudo systemctl restart blackbox.service
+```
+
+Если не помогло — удалите окружение и дайте службе создать его заново:
+
+```bash
+sudo systemctl stop blackbox.service
+sudo rm -rf /opt/blackbox/.venv
+sudo systemctl start blackbox.service
+```
+
+Актуальный `install_systemd_service.sh` после копирования делает `chown -R blackbox:blackbox` и один раз выполняет `uv sync` от имени `blackbox`, чтобы `.venv` сразу был с правильным владельцем.
+
+---
+
 ## Интерактивный мастер `.env` на установленной копии
 
 Если при установке службы создался `.env` с дефолтами и вы хотите пройти вопросы мастера:

@@ -26,6 +26,7 @@ fi
 
 mkdir -p /opt/blackbox
 cp -a "$PROJECT_ROOT/." /opt/blackbox/
+# Всё дерево — пользователь службы (иначе .venv от root / чужой UID → Permission denied у uv).
 chown -R blackbox:blackbox /opt/blackbox
 chmod +x /opt/blackbox/scripts/linux/create_env.sh /opt/blackbox/scripts/linux/run_blackbox.sh
 
@@ -52,6 +53,13 @@ if [ ! -x /opt/blackbox/.local/bin/uv ] && [ ! -x /usr/local/bin/uv ]; then
   echo "ERROR: после установки uv по-прежнему нет в ожидаемых путях."
   exit 1
 fi
+
+BB_UV=/opt/blackbox/.local/bin/uv
+[ -x "$BB_UV" ] || BB_UV=/usr/local/bin/uv
+echo "Creating/updating venv as user blackbox (uv sync)..."
+chown -R blackbox:blackbox /opt/blackbox
+sudo -u blackbox env HOME=/opt/blackbox PATH="/opt/blackbox/.local/bin:/usr/local/bin:/usr/bin:/bin" \
+  sh -c "cd /opt/blackbox && \"$BB_UV\" sync --frozen --no-dev"
 
 cp "$SERVICE_SRC" "$SERVICE_DST"
 

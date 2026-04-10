@@ -65,6 +65,23 @@ if [ ! -f "$PROJECT_ROOT/settings/settings.json" ]; then
     > "$PROJECT_ROOT/settings/settings.json"
 fi
 
+_venv="$PROJECT_ROOT/.venv"
+_venvp="$_venv/bin/python3"
+if [ -d "$_venv" ]; then
+  if ! [ -x "$_venv" ]; then
+    echo "ERROR: нет прав на каталог .venv (часто владелец root). От root выполните:"
+    echo "  sudo chown -R blackbox:blackbox \"$_venv\""
+    echo "или удалите окружение и перезапустите службу:"
+    echo "  sudo rm -rf \"$_venv\""
+    exit 1
+  fi
+  if [ -e "$_venvp" ] && ! [ -x "$_venvp" ]; then
+    echo "ERROR: $_venvp недоступен для пользователя $(id -un). От root:"
+    echo "  sudo chown -R blackbox:blackbox \"$_venv\""
+    exit 1
+  fi
+fi
+
 "$UV_BIN" sync --frozen --no-dev
 "$UV_BIN" run flask db upgrade
 
