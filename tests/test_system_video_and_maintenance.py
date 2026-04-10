@@ -107,7 +107,7 @@ def test_api_video_add_uses_alarms_state_intervals(app_with_env) -> None:
 
     client = app.test_client()
     ok_resp = client.post("/api/video/add", json={"path": "D:/cam/camera_(2026-04-09_14-10-00).mp4"})
-    assert ok_resp.status_code == 200
+    assert ok_resp.status_code == 201
     ok_data = ok_resp.get_json()
     assert ok_data["ok"] is True
     assert ok_data["alarm_name"] == "Low oil pressure"
@@ -169,7 +169,7 @@ def test_api_video_add_accepts_compact_filename_from_cam_folder(app_with_env) ->
 
     client = app.test_client()
     resp = client.post("/api/video/add", json={"path": "/mnt/nvme/motion/cam1/20260409_145117.mkv"})
-    assert resp.status_code == 200
+    assert resp.status_code == 201
     data = resp.get_json()
     assert data["ok"] is True
     assert data["captured_at"] == "2026-04-09T14:51:17"
@@ -195,7 +195,7 @@ def test_api_video_add_accepts_plain_text_body(app_with_env) -> None:
 
     client = app.test_client()
     resp = client.post("/api/video/add", data="/mnt/nvme/motion/cam2/20260409_145117.mkv", content_type="text/plain")
-    assert resp.status_code == 200
+    assert resp.status_code == 201
 
 
 def test_api_video_add_accepts_between_active_and_inactive_even_if_over_20m(app_with_env) -> None:
@@ -223,7 +223,7 @@ def test_api_video_add_accepts_between_active_and_inactive_even_if_over_20m(app_
 
     client = app.test_client()
     ok_resp = client.post("/api/video/add", json={"path": "/mnt/nvme/motion/cam1/20260410_104000.mkv"})
-    assert ok_resp.status_code == 200
+    assert ok_resp.status_code == 201
     ok_data = ok_resp.get_json()
     assert ok_data["ok"] is True
     assert ok_data["alarm_name"] == "A2"

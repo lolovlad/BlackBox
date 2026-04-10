@@ -94,6 +94,15 @@ def _is_under_any_root(path: Path, roots: list[Path]) -> bool:
     return False
 
 
+def _normalize_video_fs_path(raw: str) -> Path:
+    value = str(raw or "").strip()
+    if value.lower().startswith("file="):
+        value = value.split("=", 1)[1].strip()
+    if value.lower().startswith("file://"):
+        value = value[7:].strip()
+    return Path(value).expanduser()
+
+
 @data_router.route("/videos/<int:video_id>/download", methods=["GET"])
 @login_required
 def download_video(video_id: int):
@@ -103,7 +112,7 @@ def download_video(video_id: int):
     if item is None:
         abort(404)
 
-    file_path = Path(item.file_path).expanduser()
+    file_path = _normalize_video_fs_path(item.file_path)
     try:
         resolved = file_path.resolve()
     except OSError:

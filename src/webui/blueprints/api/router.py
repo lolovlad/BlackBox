@@ -57,6 +57,15 @@ def _video_add_request_debug_preview(raw_body_full: str, max_len: int = 800) -> 
     return raw_body_full[:max_len] + f"... (+{len(raw_body_full) - max_len} симв.)"
 
 
+def _normalize_video_source_path(raw_path: str) -> str:
+    value = str(raw_path).strip()
+    if value.lower().startswith("file="):
+        value = value.split("=", 1)[1].strip()
+    if value.lower().startswith("file://"):
+        value = value[7:].strip()
+    return value
+
+
 def _is_active_state(value: str | None) -> bool:
     return (value or "").strip().lower() == "active"
 
@@ -114,7 +123,8 @@ def video_add():
         )
         return jsonify({"ok": False, "error": "Поле path обязательно."}), 400
 
-    path = Path(raw_path).expanduser()
+    normalized_path = _normalize_video_source_path(raw_path)
+    path = Path(normalized_path).expanduser()
     file_name = path.name
     captured_at = _extract_video_datetime(file_name)
     if captured_at is None:
@@ -197,7 +207,8 @@ def video_add():
         session.add(row)
         session.commit()
         session.refresh(row)
-        return jsonify(
+        return (
+            jsonify(
             {
                 "ok": True,
                 "video_id": row.id,
@@ -207,4 +218,6 @@ def video_add():
                 "captured_at": captured_at.isoformat(),
                 "file_name": file_name,
             }
+            ),
+            201,
         )
