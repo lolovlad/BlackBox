@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import queue
 import struct
 import threading
@@ -14,7 +13,7 @@ from typing import Any
 
 import minimalmodbus
 from modbus_acquire.instrument import build_instrument
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import sessionmaker
 
@@ -24,14 +23,6 @@ from src.webui.timezone_utils import now_in_configured_timezone_naive
 
 logger = logging.getLogger(__name__)
 SETTINGS_PATH = Path("settings/settings.json")
-
-# Встроенные системные состояния для UI/экспорта.
-MODBUS_READING_KEY = "modbus_reading"
-MODBUS_ALARM_LABEL = "Чтение по Modbus"
-
-# Если включено — любые проблемы парсинга считаем фатальными (используется в reader_subprocess).
-_STRICT_PARSER = (os.getenv("BLACKBOX_STRICT_PARSER", "0") == "1")
-_STRICT_DB_WRITE = (os.getenv("BLACKBOX_STRICT_DB_WRITE", "0") == "1")
 
 
 @dataclass
@@ -165,9 +156,7 @@ def parse_fields(config: dict[str, Any], source_values: dict[str, list[Any]]) ->
         if f_type == "expr":
             try:
                 result[name] = _eval_expr(field["expr"], result)
-            except Exception as exc:
-                if _STRICT_PARSER:
-                    raise ValueError(f"expr field '{name}' failed: {exc}") from exc
+            except Exception:
                 result[name] = 0
             continue
 
@@ -175,10 +164,6 @@ def parse_fields(config: dict[str, Any], source_values: dict[str, list[Any]]) ->
             source = field.get("source")
             address = int(field.get("address", 0))
             values = source_values.get(source, [])
-            if _STRICT_PARSER and address >= len(values):
-                raise ValueError(
-                    f"bitfield '{name}': address {address} out of range for source '{source}' len={len(values)}"
-                )
             reg_value = int(values[address]) if address < len(values) else 0
             bits_map = field.get("bits", {})
             active: list[str] = []
@@ -191,13 +176,7 @@ def parse_fields(config: dict[str, Any], source_values: dict[str, list[Any]]) ->
         source = field.get("source")
         address = int(field.get("address", 0))
         values = source_values.get(source, [])
-        if _STRICT_PARSER and address >= len(values):
-            raise ValueError(f"field '{name}': address {address} out of range for source '{source}' len={len(values)}")
         if f_type == "uint32_be":
-            if _STRICT_PARSER and (address + 1) >= len(values):
-                raise ValueError(
-                    f"field '{name}': uint32_be needs 2 regs at {address}, source '{source}' len={len(values)}"
-                )
             hi = int(values[address]) if address < len(values) else 0
             lo = int(values[address + 1]) if (address + 1) < len(values) else 0
             value: Any = (hi << 16) | lo
@@ -215,58 +194,12 @@ def parse_fields(config: dict[str, Any], source_values: dict[str, list[Any]]) ->
         if "expr" in field:
             try:
                 value = _eval_expr(field["expr"], {"x": value, **result})
-            except Exception as exc:
-                if _STRICT_PARSER:
-                    raise ValueError(f"field '{name}' expr failed: {exc}") from exc
+            except Exception:
+                pass
         result[name] = value
     for name in result.get("active_status", []):
         result[name] = True
-
-    # Системное дискретное состояние: есть ли фактические данные Modbus в текущем снапшоте.
-    has_modbus_requests = bool(config.get("requests"))
-    if has_modbus_requests:
-        modbus_available = any(isinstance(v, list) and len(v) > 0 for v in source_values.values())
-        result[MODBUS_READING_KEY] = bool(modbus_available)
-
-        # В "Сообщения аварий" добавляем одно псевдо-сообщение при пропадании Modbus-данных.
-        existing_active_alarms = result.get("active_alarms", [])
-        active_list: list[str] = [str(x) for x in existing_active_alarms] if isinstance(existing_active_alarms, list) else []
-        if not modbus_available:
-            if MODBUS_ALARM_LABEL not in active_list:
-                active_list.append(MODBUS_ALARM_LABEL)
-        else:
-            active_list = [x for x in active_list if x != MODBUS_ALARM_LABEL]
-        result["active_alarms"] = active_list
-    else:
-        # Если Modbus не настроен (нет запросов) — не сигнализируем аварии.
-        result[MODBUS_READING_KEY] = True
     return result
-
-
-def try_parse_controller_datetime(
-    processed: dict[str, Any], *, field: str = "controller_datetime_iso"
-) -> datetime | None:
-    """Пытается преобразовать время контроллера в datetime.
-
-    Ожидаемый формат: ISO `YYYY-MM-DDTHH:MM:SS` без часового пояса.
-    """
-
-    raw = processed.get(field)
-    if raw is None:
-        return None
-    if not isinstance(raw, str):
-        return None
-    s = raw.strip()
-    if not s:
-        return None
-    try:
-        dt = datetime.fromisoformat(s)
-    except ValueError:
-        return None
-    # datetime в Python поддерживает только годы 1..9999; дополнительные проверки на всякий случай.
-    if dt.year < 1 or dt.year > 9999:
-        return None
-    return dt
 
 
 def _field_categories(config: dict[str, Any]) -> tuple[list[str], list[str]]:
@@ -290,10 +223,7 @@ def _field_categories(config: dict[str, Any]) -> tuple[list[str], list[str]]:
 
 
 def analog_discrete_keys() -> tuple[list[str], list[str]]:
-    analog, discrete = _field_categories(_load_settings())
-    if MODBUS_READING_KEY not in discrete:
-        discrete.append(MODBUS_READING_KEY)
-    return analog, discrete
+    return _field_categories(_load_settings())
 
 
 def analog_discrete_for_csv(processed: dict[str, Any]) -> tuple[dict[str, Any], dict[str, bool]]:
@@ -330,8 +260,6 @@ def decode_to_processed(payload: bytes) -> dict[str, Any]:
                 return parse_fields(config, data.get("sources", {}))
         except Exception:
             pass
-        if _STRICT_PARSER:
-            raise
         return {}
 
 
@@ -356,13 +284,6 @@ class ModbusCollector:
         self._modbus_data_unavailable = False
         # SQLite: один writer за раз из потоков опроса / emergency — иначе database is locked.
         self._db_write_lock = threading.Lock()
-        self._db_path_resolved = self._resolve_db_path()
-        self._samples_written_total = 0
-
-    def _resolve_db_path(self) -> str:
-        p = Path(str(self._config.db_path or "").rstrip("/\\"))
-        resolved = p.resolve() if p.is_absolute() else (Path.cwd() / p).resolve()
-        return resolved.as_posix()
 
     def start(self) -> None:
         with self._thread_lock:
@@ -487,16 +408,8 @@ class ModbusCollector:
                             last_error_log = now
 
                 # Persist timestamps already in configured APP_TIMEZONE.
-                try:
-                    processed = parse_fields(config, source_values)
-                except Exception:
-                    logger.exception("Fatal parser error (BLACKBOX_STRICT_PARSER=1). Exiting reader process.")
-                    if _STRICT_PARSER:
-                        os._exit(2)  # noqa: S404
-                    raise
-                app_created_at = now_in_configured_timezone_naive()
-                controller_created_at = try_parse_controller_datetime(processed)
-                created_at = controller_created_at or app_created_at
+                created_at = now_in_configured_timezone_naive()
+                processed = parse_fields(config, source_values)
                 if self._alarms_enabled:
                     self._persist_alarm_snapshot(created_at=created_at, processed=processed)
                 self._append({"created_at": created_at, "sources": source_values, "processed": processed})
@@ -534,10 +447,8 @@ class ModbusCollector:
                     analog_snapshot, _ = analog_discrete_for_csv(processed)
                     # Show a compact health snapshot for operator visibility.
                     logger.info(
-                        "Modbus poll: ok=%s db=%s samples_written_total=%d cycle_read_errors=%d active_alarms=%d sample={Fgen=%s, Pgen=%s, RPM=%s}",
+                        "Modbus poll: ok=%s cycle_read_errors=%d active_alarms=%d sample={Fgen=%s, Pgen=%s, RPM=%s}",
                         not had_error,
-                        self._db_path_resolved,
-                        self._samples_written_total,
                         cycle_read_errors,
                         len(processed.get("active_alarms", []) or []),
                         analog_snapshot.get("Fgen", "-"),
@@ -557,72 +468,29 @@ class ModbusCollector:
 
     def _append(self, sample: dict[str, Any]) -> None:
         batch: list[dict[str, Any]] = []
-        buf_len = 0
         with self._lock:
             self._ram_buffer.append(sample)
-            buf_len = len(self._ram_buffer)
             if len(self._ram_buffer) >= self._config.ram_batch_size:
                 batch = self._ram_buffer[:]
                 self._ram_buffer.clear()
         if batch:
-            try:
-                t0 = batch[0].get("created_at")
-                t1 = batch[-1].get("created_at")
-                logger.info(
-                    "DB flush scheduled: buffer_full size=%d range=%s..%s",
-                    len(batch),
-                    getattr(t0, "isoformat", lambda: str(t0))(),
-                    getattr(t1, "isoformat", lambda: str(t1))(),
-                )
-            except Exception:
-                logger.info("DB flush scheduled: buffer_full size=%d", len(batch))
             self._flush(batch)
-        elif buf_len in (1, max(1, self._config.ram_batch_size // 2)):
-            # Неболтливый прогресс буфера (1-я запись и 50%).
-            logger.info("DB buffer: queued=%d/%d", buf_len, self._config.ram_batch_size)
 
     def _flush(self, batch: list[dict[str, Any]]) -> None:
         flush_started = time.monotonic()
         with self._db_write_lock:
             session = self._session_factory()
             try:
-                t0 = batch[0]["created_at"] if batch else None
-                t1 = batch[-1]["created_at"] if batch else None
-                before_cnt: int | None = None
-                if _STRICT_DB_WRITE:
-                    before_cnt = int(session.execute(select(func.count()).select_from(Samples)).scalar_one())
                 for sample in batch:
                     created_at = sample["created_at"]
                     blob = pack_snapshot(dict(sample.get("sources", {})))
                     session.add(Samples(created_at=created_at, date=blob))
                 session.commit()
-                if _STRICT_DB_WRITE and before_cnt is not None:
-                    after_cnt = int(session.execute(select(func.count()).select_from(Samples)).scalar_one())
-                    expected_min = before_cnt + len(batch)
-                    if after_cnt < expected_min:
-                        logger.error(
-                            "DB WRITE FAILED: samples count did not increase. before=%d after=%d expected_min=%d db=%s",
-                            before_cnt,
-                            after_cnt,
-                            expected_min,
-                            self._db_path_resolved,
-                        )
-                        os._exit(3)  # noqa: S404
-                    logger.info(
-                        "DB samples_count_changed: %d -> %d (+%d) db=%s",
-                        before_cnt,
-                        after_cnt,
-                        after_cnt - before_cnt,
-                        self._db_path_resolved,
-                    )
-                self._samples_written_total += len(batch)
                 elapsed_ms = (time.monotonic() - flush_started) * 1000.0
                 logger.info(
-                    "DB flush: samples_written=%d elapsed_ms=%.1f range=%s..%s",
+                    "DB flush: samples_written=%d elapsed_ms=%.1f",
                     len(batch),
                     elapsed_ms,
-                    t0.isoformat() if hasattr(t0, "isoformat") else str(t0),
-                    t1.isoformat() if hasattr(t1, "isoformat") else str(t1),
                 )
             except OperationalError:
                 session.rollback()
@@ -694,13 +562,10 @@ class ModbusCollector:
     def _close_all_active_alarms(self, *, created_at: datetime, reason: str) -> None:
         if not self._active_alarm_names:
             return
-        # Для UI/экспорта держим системную "Чтение по Modbus" как активную,
-        # пока реально нет Modbus-данных. Иначе она может закрыться в тот же тик.
-        to_close = {a for a in self._active_alarm_names if a != MODBUS_ALARM_LABEL}
         with self._db_write_lock:
             session = self._session_factory()
             try:
-                for alarm_name in sorted(to_close):
+                for alarm_name in sorted(self._active_alarm_names):
                     payload = {
                         "alarm": alarm_name,
                         "created_at": created_at.isoformat(),
@@ -722,8 +587,7 @@ class ModbusCollector:
                 logger.exception("Failed to close active alarms on Modbus data loss")
             finally:
                 session.close()
-            # Если системная авария должна оставаться активной — сохраняем её в памяти.
-            self._active_alarm_names = self._active_alarm_names.intersection({MODBUS_ALARM_LABEL})
+            self._active_alarm_names.clear()
 
     def _log_event(
         self,

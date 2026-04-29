@@ -83,10 +83,7 @@ def create_app() -> Flask:
 
     db_path_raw = env_map.get("BLACKBOX_DB_PATH", ROOT_ENV_DEFAULTS["BLACKBOX_DB_PATH"])
     config = build_runtime_config(app_rt, db_path=db_path_raw, static_csv_dir=static_csv_dir)
-    # В проекте допускают путь к файлу без расширения (например /mnt/nvme/db).
-    # Если в .env случайно добавили слеш в конце — убираем его, не подставляя имя файла.
-    db_path_norm = str(config.db_path or "").rstrip("/\\")
-    _db_path = Path(db_path_norm)
+    _db_path = Path(config.db_path)
     db_file = _db_path.resolve() if _db_path.is_absolute() else (project_root / _db_path).resolve()
     db_file.parent.mkdir(parents=True, exist_ok=True)
 

@@ -57,3 +57,5 @@ src/static/csv/*.csv
 settings.json
 settings/
 
+# Local debug artifacts
+tmp_diag*/
