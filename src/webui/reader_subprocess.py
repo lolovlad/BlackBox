@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import json
 import os
 import time
@@ -34,6 +35,7 @@ def _write_heartbeat(path: Path, *, pid: int) -> None:
 
 
 def main() -> int:
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
     heartbeat_path = Path(os.getenv("READER_HEARTBEAT_PATH", "instance/reader-control/heartbeat.json"))
     stop_path = Path(os.getenv("READER_STOP_PATH", "instance/reader-control/stop.flag"))
     configure_settings_path(os.getenv("PARSER_SETTINGS_PATH", "settings/settings.json"))
