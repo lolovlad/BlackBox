@@ -522,19 +522,37 @@ class ModbusCollector:
 
     def _append(self, sample: dict[str, Any]) -> None:
         batch: list[dict[str, Any]] = []
+        buf_len = 0
         with self._lock:
             self._ram_buffer.append(sample)
+            buf_len = len(self._ram_buffer)
             if len(self._ram_buffer) >= self._config.ram_batch_size:
                 batch = self._ram_buffer[:]
                 self._ram_buffer.clear()
         if batch:
+            try:
+                t0 = batch[0].get("created_at")
+                t1 = batch[-1].get("created_at")
+                logger.info(
+                    "DB flush scheduled: buffer_full size=%d range=%s..%s",
+                    len(batch),
+                    getattr(t0, "isoformat", lambda: str(t0))(),
+                    getattr(t1, "isoformat", lambda: str(t1))(),
+                )
+            except Exception:
+                logger.info("DB flush scheduled: buffer_full size=%d", len(batch))
             self._flush(batch)
+        elif buf_len in (1, max(1, self._config.ram_batch_size // 2)):
+            # Неболтливый прогресс буфера (1-я запись и 50%).
+            logger.info("DB buffer: queued=%d/%d", buf_len, self._config.ram_batch_size)
 
     def _flush(self, batch: list[dict[str, Any]]) -> None:
         flush_started = time.monotonic()
         with self._db_write_lock:
             session = self._session_factory()
             try:
+                t0 = batch[0]["created_at"] if batch else None
+                t1 = batch[-1]["created_at"] if batch else None
                 for sample in batch:
                     created_at = sample["created_at"]
                     blob = pack_snapshot(dict(sample.get("sources", {})))
@@ -542,9 +560,11 @@ class ModbusCollector:
                 session.commit()
                 elapsed_ms = (time.monotonic() - flush_started) * 1000.0
                 logger.info(
-                    "DB flush: samples_written=%d elapsed_ms=%.1f",
+                    "DB flush: samples_written=%d elapsed_ms=%.1f range=%s..%s",
                     len(batch),
                     elapsed_ms,
+                    t0.isoformat() if hasattr(t0, "isoformat") else str(t0),
+                    t1.isoformat() if hasattr(t1, "isoformat") else str(t1),
                 )
             except OperationalError:
                 session.rollback()
