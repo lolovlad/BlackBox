@@ -32,10 +32,8 @@ class ReaderSupervisor:
         self._control_dir.mkdir(parents=True, exist_ok=True)
         self._heartbeat_path = self._control_dir / "heartbeat.json"
         self._stop_path = self._control_dir / "stop.flag"
-        self._log_path = self._control_dir / "reader.log"
         self._proc: subprocess.Popen | None = None
         self._lock = threading.Lock()
-        self._log_file = None
 
     def start(self) -> None:
         with self._lock:
@@ -54,27 +52,15 @@ class ReaderSupervisor:
                     "PYTHONUNBUFFERED": "1",
                 }
             )
-            # Пишем stdout/stderr сабпроцесса в файл, иначе падения при старте “тихие”.
-            try:
-                self._log_path.parent.mkdir(parents=True, exist_ok=True)
-                self._log_file = open(self._log_path, "a", encoding="utf-8", buffering=1)
-            except OSError:
-                self._log_file = None
             self._proc = subprocess.Popen(
                 [sys.executable, "-m", "src.webui.reader_subprocess"],
                 cwd=str(self._project_root),
                 env=env,
-                stdout=self._log_file or subprocess.DEVNULL,
-                stderr=subprocess.STDOUT,
+                # Важно: не перенаправляем stdout/stderr, чтобы логи шли в консоль
+                # родительского процесса (как раньше).
+                stdout=None,
+                stderr=None,
             )
-            # Если процесс завершился сразу — это обычно ImportError/ошибка окружения.
-            time.sleep(0.05)
-            if self._proc.poll() is not None and self._log_file is not None:
-                try:
-                    self._log_file.write(f"\n[supervisor] reader exited early with code={self._proc.returncode}\n")
-                    self._log_file.flush()
-                except Exception:
-                    pass
 
     def stop(self) -> None:
         with self._lock:
@@ -92,12 +78,6 @@ class ReaderSupervisor:
                 except subprocess.TimeoutExpired:
                     proc.kill()
             self._proc = None
-            if self._log_file is not None:
-                try:
-                    self._log_file.close()
-                except Exception:
-                    pass
-                self._log_file = None
 
     def restart(self, new_config: RuntimeConfig | None = None) -> None:
         if new_config is not None:
