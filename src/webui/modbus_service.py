@@ -31,6 +31,7 @@ MODBUS_ALARM_LABEL = "Чтение по Modbus"
 
 # Если включено — любые проблемы парсинга считаем фатальными (используется в reader_subprocess).
 _STRICT_PARSER = (os.getenv("BLACKBOX_STRICT_PARSER", "0") == "1")
+_STRICT_DB_WRITE = (os.getenv("BLACKBOX_STRICT_DB_WRITE", "0") == "1")
 
 
 @dataclass
@@ -356,27 +357,12 @@ class ModbusCollector:
         # SQLite: один writer за раз из потоков опроса / emergency — иначе database is locked.
         self._db_write_lock = threading.Lock()
         self._db_path_resolved = self._resolve_db_path()
-        self._last_samples_total_at = 0.0
-        self._last_samples_total: int | None = None
+        self._samples_written_total = 0
 
     def _resolve_db_path(self) -> str:
         p = Path(self._config.db_path)
         resolved = p.resolve() if p.is_absolute() else (Path.cwd() / p).resolve()
         return resolved.as_posix()
-
-    def _samples_total_cached(self) -> int | None:
-        """Сколько строк в samples (кэш, чтобы не долбить SQLite каждый лог)."""
-        now = time.monotonic()
-        if self._last_samples_total is not None and (now - self._last_samples_total_at) < 10.0:
-            return self._last_samples_total
-        try:
-            with self._session_factory() as session:
-                total = int(session.execute(select(func.count()).select_from(Samples)).scalar_one())
-            self._last_samples_total = total
-            self._last_samples_total_at = now
-            return total
-        except Exception:
-            return self._last_samples_total
 
     def start(self) -> None:
         with self._thread_lock:
@@ -546,13 +532,12 @@ class ModbusCollector:
                 now = time.monotonic()
                 if now - last_success_log >= 5.0:
                     analog_snapshot, _ = analog_discrete_for_csv(processed)
-                    total_samples = self._samples_total_cached()
                     # Show a compact health snapshot for operator visibility.
                     logger.info(
-                        "Modbus poll: ok=%s db=%s samples_total=%s cycle_read_errors=%d active_alarms=%d sample={Fgen=%s, Pgen=%s, RPM=%s}",
+                        "Modbus poll: ok=%s db=%s samples_written_total=%d cycle_read_errors=%d active_alarms=%d sample={Fgen=%s, Pgen=%s, RPM=%s}",
                         not had_error,
                         self._db_path_resolved,
-                        total_samples if total_samples is not None else "?",
+                        self._samples_written_total,
                         cycle_read_errors,
                         len(processed.get("active_alarms", []) or []),
                         analog_snapshot.get("Fgen", "-"),
@@ -603,11 +588,27 @@ class ModbusCollector:
             try:
                 t0 = batch[0]["created_at"] if batch else None
                 t1 = batch[-1]["created_at"] if batch else None
+                before_cnt: int | None = None
+                if _STRICT_DB_WRITE:
+                    before_cnt = int(session.execute(select(func.count()).select_from(Samples)).scalar_one())
                 for sample in batch:
                     created_at = sample["created_at"]
                     blob = pack_snapshot(dict(sample.get("sources", {})))
                     session.add(Samples(created_at=created_at, date=blob))
                 session.commit()
+                if _STRICT_DB_WRITE and before_cnt is not None:
+                    after_cnt = int(session.execute(select(func.count()).select_from(Samples)).scalar_one())
+                    expected_min = before_cnt + len(batch)
+                    if after_cnt < expected_min:
+                        logger.error(
+                            "DB WRITE FAILED: samples count did not increase. before=%d after=%d expected_min=%d db=%s",
+                            before_cnt,
+                            after_cnt,
+                            expected_min,
+                            self._db_path_resolved,
+                        )
+                        os._exit(3)  # noqa: S404
+                self._samples_written_total += len(batch)
                 elapsed_ms = (time.monotonic() - flush_started) * 1000.0
                 logger.info(
                     "DB flush: samples_written=%d elapsed_ms=%.1f range=%s..%s",

@@ -61,6 +61,8 @@ class ReaderSupervisor:
                     "PYTHONUNBUFFERED": "1",
                     # Fail fast: любые проблемы парсинга/декодирования считаем фатальными.
                     "BLACKBOX_STRICT_PARSER": "1",
+                    # Fail fast: если commit не приводит к росту samples — падаем.
+                    "BLACKBOX_STRICT_DB_WRITE": "1",
                 }
             )
             self._proc = subprocess.Popen(
