@@ -36,6 +36,12 @@ def _write_heartbeat(path: Path, *, pid: int) -> None:
 
 def main() -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+    logging.getLogger(__name__).info(
+        "Reader starting: db_path=%r strict_parser=%s parser_settings=%r",
+        os.getenv("BLACKBOX_DB_PATH", ""),
+        os.getenv("BLACKBOX_STRICT_PARSER", "0"),
+        os.getenv("PARSER_SETTINGS_PATH", ""),
+    )
     heartbeat_path = Path(os.getenv("READER_HEARTBEAT_PATH", "instance/reader-control/heartbeat.json"))
     stop_path = Path(os.getenv("READER_STOP_PATH", "instance/reader-control/stop.flag"))
     configure_settings_path(os.getenv("PARSER_SETTINGS_PATH", "settings/settings.json"))
@@ -43,6 +49,7 @@ def main() -> int:
     cfg = _build_runtime_config()
     db_file = Path(cfg.db_path).resolve()
     db_file.parent.mkdir(parents=True, exist_ok=True)
+    logging.getLogger(__name__).info("Reader DB resolved path: %s", db_file.as_posix())
     engine = create_engine(f"sqlite:///{db_file.as_posix()}")
     sf = sessionmaker(bind=engine, autoflush=False, autocommit=False, expire_on_commit=False)
     alarms_enabled = os.getenv("READER_ALARMS_ENABLED", "1") == "1"

@@ -14,7 +14,7 @@ from typing import Any
 
 import minimalmodbus
 from modbus_acquire.instrument import build_instrument
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import sessionmaker
 
@@ -355,6 +355,28 @@ class ModbusCollector:
         self._modbus_data_unavailable = False
         # SQLite: один writer за раз из потоков опроса / emergency — иначе database is locked.
         self._db_write_lock = threading.Lock()
+        self._db_path_resolved = self._resolve_db_path()
+        self._last_samples_total_at = 0.0
+        self._last_samples_total: int | None = None
+
+    def _resolve_db_path(self) -> str:
+        p = Path(self._config.db_path)
+        resolved = p.resolve() if p.is_absolute() else (Path.cwd() / p).resolve()
+        return resolved.as_posix()
+
+    def _samples_total_cached(self) -> int | None:
+        """Сколько строк в samples (кэш, чтобы не долбить SQLite каждый лог)."""
+        now = time.monotonic()
+        if self._last_samples_total is not None and (now - self._last_samples_total_at) < 10.0:
+            return self._last_samples_total
+        try:
+            with self._session_factory() as session:
+                total = int(session.execute(select(func.count()).select_from(Samples)).scalar_one())
+            self._last_samples_total = total
+            self._last_samples_total_at = now
+            return total
+        except Exception:
+            return self._last_samples_total
 
     def start(self) -> None:
         with self._thread_lock:
@@ -524,10 +546,13 @@ class ModbusCollector:
                 now = time.monotonic()
                 if now - last_success_log >= 5.0:
                     analog_snapshot, _ = analog_discrete_for_csv(processed)
+                    total_samples = self._samples_total_cached()
                     # Show a compact health snapshot for operator visibility.
                     logger.info(
-                        "Modbus poll: ok=%s cycle_read_errors=%d active_alarms=%d sample={Fgen=%s, Pgen=%s, RPM=%s}",
+                        "Modbus poll: ok=%s db=%s samples_total=%s cycle_read_errors=%d active_alarms=%d sample={Fgen=%s, Pgen=%s, RPM=%s}",
                         not had_error,
+                        self._db_path_resolved,
+                        total_samples if total_samples is not None else "?",
                         cycle_read_errors,
                         len(processed.get("active_alarms", []) or []),
                         analog_snapshot.get("Fgen", "-"),
