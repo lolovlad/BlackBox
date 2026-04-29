@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import queue
 import struct
 import threading
@@ -27,6 +28,9 @@ SETTINGS_PATH = Path("settings/settings.json")
 # Встроенные системные состояния для UI/экспорта.
 MODBUS_READING_KEY = "modbus_reading"
 MODBUS_ALARM_LABEL = "Чтение по Modbus"
+
+# Если включено — любые проблемы парсинга считаем фатальными (используется в reader_subprocess).
+_STRICT_PARSER = (os.getenv("BLACKBOX_STRICT_PARSER", "0") == "1")
 
 
 @dataclass
@@ -160,7 +164,9 @@ def parse_fields(config: dict[str, Any], source_values: dict[str, list[Any]]) ->
         if f_type == "expr":
             try:
                 result[name] = _eval_expr(field["expr"], result)
-            except Exception:
+            except Exception as exc:
+                if _STRICT_PARSER:
+                    raise ValueError(f"expr field '{name}' failed: {exc}") from exc
                 result[name] = 0
             continue
 
@@ -168,6 +174,10 @@ def parse_fields(config: dict[str, Any], source_values: dict[str, list[Any]]) ->
             source = field.get("source")
             address = int(field.get("address", 0))
             values = source_values.get(source, [])
+            if _STRICT_PARSER and address >= len(values):
+                raise ValueError(
+                    f"bitfield '{name}': address {address} out of range for source '{source}' len={len(values)}"
+                )
             reg_value = int(values[address]) if address < len(values) else 0
             bits_map = field.get("bits", {})
             active: list[str] = []
@@ -180,7 +190,13 @@ def parse_fields(config: dict[str, Any], source_values: dict[str, list[Any]]) ->
         source = field.get("source")
         address = int(field.get("address", 0))
         values = source_values.get(source, [])
+        if _STRICT_PARSER and address >= len(values):
+            raise ValueError(f"field '{name}': address {address} out of range for source '{source}' len={len(values)}")
         if f_type == "uint32_be":
+            if _STRICT_PARSER and (address + 1) >= len(values):
+                raise ValueError(
+                    f"field '{name}': uint32_be needs 2 regs at {address}, source '{source}' len={len(values)}"
+                )
             hi = int(values[address]) if address < len(values) else 0
             lo = int(values[address + 1]) if (address + 1) < len(values) else 0
             value: Any = (hi << 16) | lo
@@ -198,8 +214,9 @@ def parse_fields(config: dict[str, Any], source_values: dict[str, list[Any]]) ->
         if "expr" in field:
             try:
                 value = _eval_expr(field["expr"], {"x": value, **result})
-            except Exception:
-                pass
+            except Exception as exc:
+                if _STRICT_PARSER:
+                    raise ValueError(f"field '{name}' expr failed: {exc}") from exc
         result[name] = value
     for name in result.get("active_status", []):
         result[name] = True
@@ -312,6 +329,8 @@ def decode_to_processed(payload: bytes) -> dict[str, Any]:
                 return parse_fields(config, data.get("sources", {}))
         except Exception:
             pass
+        if _STRICT_PARSER:
+            raise
         return {}
 
 
@@ -460,7 +479,13 @@ class ModbusCollector:
                             last_error_log = now
 
                 # Persist timestamps already in configured APP_TIMEZONE.
-                processed = parse_fields(config, source_values)
+                try:
+                    processed = parse_fields(config, source_values)
+                except Exception:
+                    logger.exception("Fatal parser error (BLACKBOX_STRICT_PARSER=1). Exiting reader process.")
+                    if _STRICT_PARSER:
+                        os._exit(2)  # noqa: S404
+                    raise
                 app_created_at = now_in_configured_timezone_naive()
                 controller_created_at = try_parse_controller_datetime(processed)
                 created_at = controller_created_at or app_created_at

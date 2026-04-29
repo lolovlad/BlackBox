@@ -44,12 +44,23 @@ class ReaderSupervisor:
             env = os.environ.copy()
             env.update(
                 {
+                    # Критично: сабпроцесс должен писать в ту же БД, что читает веб.
+                    "BLACKBOX_DB_PATH": str(self._config.db_path),
+                    "MODBUS_PORT": str(self._config.modbus_port),
+                    "MODBUS_SLAVE": str(self._config.modbus_slave),
+                    "MODBUS_BAUDRATE": str(self._config.modbus_baudrate),
+                    "MODBUS_TIMEOUT": str(self._config.modbus_timeout),
+                    "MODBUS_INTERVAL": str(self._config.modbus_interval),
+                    "MODBUS_ADDRESS_OFFSET": str(self._config.address_offset),
+                    "RAM_BATCH_SIZE": str(self._config.ram_batch_size),
                     "READER_HEARTBEAT_PATH": str(self._heartbeat_path),
                     "READER_STOP_PATH": str(self._stop_path),
                     "READER_STATIC_CSV_DIR": str(self._config.static_csv_dir),
                     "READER_ALARMS_ENABLED": "1" if self._alarms_enabled else "0",
                     # Чтобы лог в файле был “живым” (не буферизовался).
                     "PYTHONUNBUFFERED": "1",
+                    # Fail fast: любые проблемы парсинга/декодирования считаем фатальными.
+                    "BLACKBOX_STRICT_PARSER": "1",
                 }
             )
             self._proc = subprocess.Popen(
