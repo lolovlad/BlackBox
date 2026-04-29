@@ -154,10 +154,14 @@ class DataLogger:
         self._running = False
         
         # Ждем завершения потоков
+        analog_alive = False
+        alarm_alive = False
         if self._analog_thread:
             self._analog_thread.join(timeout=2.0)
+            analog_alive = self._analog_thread.is_alive()
         if self._alarm_thread:
             self._alarm_thread.join(timeout=2.0)
+            alarm_alive = self._alarm_thread.is_alive()
         if self._modbus_thread:
             self._modbus_thread.join(timeout=2.0)
         if self._modbus_process_event:
@@ -172,9 +176,12 @@ class DataLogger:
         self._modbus_process = None
         self._modbus_process_event = None
         
-        # Закрываем файлы
-        self.data_writer.close()
-        self.alarm_writer.close()
+        # Закрываем файлы только если соответствующие потоки завершились.
+        # Иначе возможен дедлок на внутренних lock'ах при конкурентной записи.
+        if not analog_alive:
+            self.data_writer.close()
+        if not alarm_alive:
+            self.alarm_writer.close()
     
     def _analog_poll_loop(self):
         """Цикл опроса аналоговых входов"""

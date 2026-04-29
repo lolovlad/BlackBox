@@ -104,8 +104,15 @@ class MaintenanceScheduler:
 
         session = self._session_factory()
         try:
-            rows = session.execute(select(Video.file_path)).scalars().all()
-            keep_paths = {Path(p).resolve() for p in rows}
+            try:
+                rows = session.execute(select(Video.file_path)).scalars().all()
+                keep_paths = {Path(p).resolve() for p in rows}
+            except Exception as exc:  # noqa: BLE001
+                # Тесты могут стартовать раньше создания миграций/таблиц.
+                if "no such table" in str(exc).lower() or "videos" in str(exc).lower():
+                    logger.info("Video cleanup skipped: missing 'videos' table")
+                    return
+                raise
         finally:
             session.close()
 

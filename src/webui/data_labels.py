@@ -49,4 +49,7 @@ def _labels_map() -> dict[str, str]:
             continue
         label = field.get("display_name") or field.get("title") or field.get("ru_name") or field.get("label") or name
         mapping[str(name)] = str(label)
+
+    # Системное дискретное состояние Modbus.
+    mapping.setdefault("modbus_reading", "Чтение по Modbus")
     return mapping

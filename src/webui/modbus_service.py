@@ -24,6 +24,10 @@ from src.webui.timezone_utils import now_in_configured_timezone_naive
 logger = logging.getLogger(__name__)
 SETTINGS_PATH = Path("settings/settings.json")
 
+# Встроенные системные состояния для UI/экспорта.
+MODBUS_READING_KEY = "modbus_reading"
+MODBUS_ALARM_LABEL = "Чтение по Modbus"
+
 
 @dataclass
 class RuntimeConfig:
@@ -199,7 +203,52 @@ def parse_fields(config: dict[str, Any], source_values: dict[str, list[Any]]) ->
         result[name] = value
     for name in result.get("active_status", []):
         result[name] = True
+
+    # Системное дискретное состояние: есть ли фактические данные Modbus в текущем снапшоте.
+    has_modbus_requests = bool(config.get("requests"))
+    if has_modbus_requests:
+        modbus_available = any(isinstance(v, list) and len(v) > 0 for v in source_values.values())
+        result[MODBUS_READING_KEY] = bool(modbus_available)
+
+        # В "Сообщения аварий" добавляем одно псевдо-сообщение при пропадании Modbus-данных.
+        existing_active_alarms = result.get("active_alarms", [])
+        active_list: list[str] = [str(x) for x in existing_active_alarms] if isinstance(existing_active_alarms, list) else []
+        if not modbus_available:
+            if MODBUS_ALARM_LABEL not in active_list:
+                active_list.append(MODBUS_ALARM_LABEL)
+        else:
+            active_list = [x for x in active_list if x != MODBUS_ALARM_LABEL]
+        result["active_alarms"] = active_list
+    else:
+        # Если Modbus не настроен (нет запросов) — не сигнализируем аварии.
+        result[MODBUS_READING_KEY] = True
     return result
+
+
+def try_parse_controller_datetime(
+    processed: dict[str, Any], *, field: str = "controller_datetime_iso"
+) -> datetime | None:
+    """Пытается преобразовать время контроллера в datetime.
+
+    Ожидаемый формат: ISO `YYYY-MM-DDTHH:MM:SS` без часового пояса.
+    """
+
+    raw = processed.get(field)
+    if raw is None:
+        return None
+    if not isinstance(raw, str):
+        return None
+    s = raw.strip()
+    if not s:
+        return None
+    try:
+        dt = datetime.fromisoformat(s)
+    except ValueError:
+        return None
+    # datetime в Python поддерживает только годы 1..9999; дополнительные проверки на всякий случай.
+    if dt.year < 1 or dt.year > 9999:
+        return None
+    return dt
 
 
 def _field_categories(config: dict[str, Any]) -> tuple[list[str], list[str]]:
@@ -223,7 +272,10 @@ def _field_categories(config: dict[str, Any]) -> tuple[list[str], list[str]]:
 
 
 def analog_discrete_keys() -> tuple[list[str], list[str]]:
-    return _field_categories(_load_settings())
+    analog, discrete = _field_categories(_load_settings())
+    if MODBUS_READING_KEY not in discrete:
+        discrete.append(MODBUS_READING_KEY)
+    return analog, discrete
 
 
 def analog_discrete_for_csv(processed: dict[str, Any]) -> tuple[dict[str, Any], dict[str, bool]]:
@@ -408,8 +460,10 @@ class ModbusCollector:
                             last_error_log = now
 
                 # Persist timestamps already in configured APP_TIMEZONE.
-                created_at = now_in_configured_timezone_naive()
                 processed = parse_fields(config, source_values)
+                app_created_at = now_in_configured_timezone_naive()
+                controller_created_at = try_parse_controller_datetime(processed)
+                created_at = controller_created_at or app_created_at
                 if self._alarms_enabled:
                     self._persist_alarm_snapshot(created_at=created_at, processed=processed)
                 self._append({"created_at": created_at, "sources": source_values, "processed": processed})
@@ -562,10 +616,13 @@ class ModbusCollector:
     def _close_all_active_alarms(self, *, created_at: datetime, reason: str) -> None:
         if not self._active_alarm_names:
             return
+        # Для UI/экспорта держим системную "Чтение по Modbus" как активную,
+        # пока реально нет Modbus-данных. Иначе она может закрыться в тот же тик.
+        to_close = {a for a in self._active_alarm_names if a != MODBUS_ALARM_LABEL}
         with self._db_write_lock:
             session = self._session_factory()
             try:
-                for alarm_name in sorted(self._active_alarm_names):
+                for alarm_name in sorted(to_close):
                     payload = {
                         "alarm": alarm_name,
                         "created_at": created_at.isoformat(),
@@ -587,7 +644,8 @@ class ModbusCollector:
                 logger.exception("Failed to close active alarms on Modbus data loss")
             finally:
                 session.close()
-            self._active_alarm_names.clear()
+            # Если системная авария должна оставаться активной — сохраняем её в памяти.
+            self._active_alarm_names = self._active_alarm_names.intersection({MODBUS_ALARM_LABEL})
 
     def _log_event(
         self,

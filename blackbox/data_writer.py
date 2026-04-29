@@ -233,10 +233,16 @@ class DataWriter:
     
     def close(self):
         """Закрыть файл"""
-        with self._lock:
+        # Закрытие должно быть безопасным при конкурентной записи.
+        # Если другой поток держит lock — не ждём бесконечно.
+        if not self._lock.acquire(timeout=0.2):
+            return
+        try:
             if self._current_file:
                 self._current_file.close()
                 self._current_file = None
+        finally:
+            self._lock.release()
 
 
 class AlarmWriter:
@@ -301,14 +307,9 @@ class AlarmWriter:
     def is_alarm_active(self) -> bool:
         """Проверить, активно ли аварийное событие"""
         with self._lock:
-            if not self._alarm_active:
-                return False
-            
-            # Проверяем, не истекло ли время записи
-            if self._alarm_end_time and datetime.now() >= self._alarm_end_time:
-                return False
-            
-            return True
+            # Время окончания обрабатывается снаружи (DataLogger._alarm_monitor_loop),
+            # чтобы избежать ситуации, когда событие "схлопывается" раньше, чем finish_alarm().
+            return bool(self._alarm_active)
     
     def get_alarm_end_time(self) -> Optional[datetime]:
         """Получить время окончания записи аварийного события"""
@@ -466,5 +467,10 @@ class AlarmWriter:
     
     def close(self):
         """Закрыть writer"""
-        with self._lock:
+        # Не блокируемся на lock при конкурентной записи.
+        if not self._lock.acquire(timeout=0.2):
+            return
+        try:
             self._buffer.clear()
+        finally:
+            self._lock.release()

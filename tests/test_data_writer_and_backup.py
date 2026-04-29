@@ -40,9 +40,11 @@ def test_data_writer_backup_when_main_unavailable(tmp_path):
     writer = DataWriter(cfg)
 
     # Имитируем недоступность основного файла
-    writer._current_file = None
-
     ts = datetime.now()
+    # При write_data() вызывается _check_date_change(): если _current_date != today,
+    # DataWriter откроет основной файл и ветка backup не сработает.
+    writer._current_date = ts.strftime("%Y-%m-%d")
+    writer._current_file = None
     writer.write_data(ts, {0: True}, {0: 1.0})
 
     backup_file = Path(cfg.backup_directory) / "backup_data.jsonl"

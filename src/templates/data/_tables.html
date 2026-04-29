@@ -26,7 +26,10 @@
                     <td>{{ row.file_name }}</td>
                     <td>{{ row.file_path }}</td>
                     <td>{% if row.alarm_id is not none %}{{ row.alarm_id }}{% else %}-{% endif %}</td>
-                    <td><a class="btn secondary" href="{{ url_for('data_blueprint.download_video', video_id=row.id) }}">Скачать</a></td>
+                    <td>
+                        <a class="btn secondary" href="{{ url_for('data_blueprint.open_video', video_id=row.id) }}" target="_blank" rel="noopener noreferrer">Открыть</a>
+                        <a class="btn secondary" href="{{ url_for('data_blueprint.download_video', video_id=row.id) }}">Скачать</a>
+                    </td>
                 </tr>
             {% endfor %}
             </tbody>

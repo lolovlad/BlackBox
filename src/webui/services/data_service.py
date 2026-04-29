@@ -288,8 +288,9 @@ class DataService:
                 w.writerow(["№", "Дата", "Время", "Название", "Состояние"])
                 for i, item in enumerate(rows_db, start=1):
                     dt = item.created_at
-                    dt_display = format_in_configured_timezone(dt, "%Y-%m-%d %H:%M:%S")
-                    w.writerow([i, dt_display[:10], dt_display[11:], item.name, getattr(item, "state", "active")])
+                    date_part = format_in_configured_timezone(dt, "%d/%m/%Y")
+                    time_part = format_in_configured_timezone(dt, "%H:%M:%S")
+                    w.writerow([i, date_part, time_part, item.name, getattr(item, "state", "active")])
             return path
 
         if flt.active_tab == "analog":
@@ -309,9 +310,10 @@ class DataService:
                     processed = decode_to_processed(row.date)
                     analog, _ = analog_discrete_for_csv(processed)
                     dt = row.created_at
-                    dt_display = format_in_configured_timezone(dt, "%Y-%m-%d %H:%M:%S")
+                    date_part = format_in_configured_timezone(dt, "%d/%m/%Y")
+                    time_part = format_in_configured_timezone(dt, "%H:%M:%S")
                     w.writerow(
-                        [i, dt_display[:10], dt_display[11:], *[analog.get(k, "") for k in keys]]
+                        [i, date_part, time_part, *[analog.get(k, "") for k in keys]]
                     )
             return path
 
@@ -332,12 +334,13 @@ class DataService:
                     processed = decode_to_processed(row.date)
                     _, discrete = analog_discrete_for_csv(processed)
                     dt = row.created_at
-                    dt_display = format_in_configured_timezone(dt, "%Y-%m-%d %H:%M:%S")
+                    date_part = format_in_configured_timezone(dt, "%d/%m/%Y")
+                    time_part = format_in_configured_timezone(dt, "%H:%M:%S")
                     w.writerow(
                         [
                             i,
-                            dt_display[:10],
-                            dt_display[11:],
+                            date_part,
+                            time_part,
                             *[1 if bool(discrete.get(k, False)) else 0 for k in keys],
                         ]
                     )

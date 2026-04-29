@@ -199,7 +199,8 @@ def video_add():
         elif _is_inactive_state(nearest.state):
             prev_active = _prev_active_before(session, nearest)
             if prev_active is not None and prev_active.created_at <= captured_at <= nearest.created_at:
-                matched_alarm = prev_active
+                # Для фиксации "момента исчезновения" связываем видео с ближайшей inactive-записью.
+                matched_alarm = nearest
                 reason = "between_prev_active_and_nearest_inactive"
         if matched_alarm is None:
             current_app.logger.warning(

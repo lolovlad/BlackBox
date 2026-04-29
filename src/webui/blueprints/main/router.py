@@ -5,6 +5,7 @@ import binascii
 import csv
 import io
 import json
+import re
 import os
 import shutil
 import time
@@ -30,6 +31,7 @@ from src.webui.paths import TEMPLATES_DIR
 from src.webui.emergency_rule_validation import validate_emergency_rule_expression
 from src.webui.repositories.data_repository import DataRepository
 from src.webui.repositories.emergency_repository import EmergencyRepository
+from src.database import Alarms, Video
 from src.webui.modbus_service import analog_discrete_for_csv, configure_settings_path, decode_to_processed
 from src.webui.modbus_service import reload_settings_cache
 
@@ -561,7 +563,7 @@ def _alarm_export_rows(
     if table == "alarms":
         headers = ["Дата", "Время", "Название", "Состояние"]
         body = [
-            [item.created_at.strftime("%Y-%m-%d"), item.created_at.strftime("%H:%M:%S"), item.name, getattr(item, "state", "active")]
+            [item.created_at.strftime("%d/%m/%Y"), item.created_at.strftime("%H:%M:%S"), item.name, getattr(item, "state", "active")]
             for item in rows_db
         ]
         return headers, body
@@ -574,7 +576,7 @@ def _alarm_export_rows(
             analog, _ = analog_discrete_for_csv(processed)
             body.append(
                 [
-                    item.created_at.strftime("%Y-%m-%d"),
+                    item.created_at.strftime("%d/%m/%Y"),
                     item.created_at.strftime("%H:%M:%S"),
                     *[analog.get(k, "") for k in analog_keys],
                 ]
@@ -588,7 +590,7 @@ def _alarm_export_rows(
         _, discrete = analog_discrete_for_csv(processed)
         body.append(
             [
-                item.created_at.strftime("%Y-%m-%d"),
+                item.created_at.strftime("%d/%m/%Y"),
                 item.created_at.strftime("%H:%M:%S"),
                 *[1 if bool(discrete.get(k, False)) else 0 for k in discrete_keys],
             ]
@@ -646,6 +648,44 @@ def alarms_export():
     static_csv_dir.mkdir(parents=True, exist_ok=True)
     stamp = event.datetime.strftime("%Y%m%d_%H%M%S")
     dataset: dict[str, tuple[list[str], list[list[Any]]]] = {}
+    video_meta_rows: list[list[Any]] = []
+    video_files_to_add: list[tuple[str, str]] = []  # (absolute_path, arcname)
+
+    def _video_allowed_roots() -> list[Path]:
+        env = read_env_file(current_app.extensions["env_path"])
+        raw = (env.get("VIDEO_STORAGE_DIR") or "").strip()
+        if not raw:
+            return []
+        root = Path(raw).expanduser().resolve()
+        roots = [root]
+        if re.fullmatch(r"cam\d+", root.name.lower()) and root.parent.is_dir():
+            roots.append(root.parent.resolve())
+        uniq: list[Path] = []
+        for p in roots:
+            if p not in uniq:
+                uniq.append(p)
+        return uniq
+
+    def _normalize_video_fs_path(raw: str) -> Path:
+        value = str(raw or "").strip()
+        lower = value.lower()
+        if lower.startswith("file="):
+            value = value.split("=", 1)[1].strip()
+        elif lower.startswith("file://"):
+            value = value[7:].strip()
+        return Path(value).expanduser()
+
+    def _is_under_any_root(path: Path, roots: list[Path]) -> bool:
+        if not roots:
+            return True
+        for root in roots:
+            try:
+                path.relative_to(root)
+                return True
+            except ValueError:
+                continue
+        return False
+
     for table in tables:
         if table == "analog":
             rows_db = repo.list_analogs(created_from=window_from, created_to=window_to, sort_desc=sort_desc, offset=0, limit=None)
@@ -660,6 +700,42 @@ def alarms_export():
             discrete_keys=discrete_keys,
         )
 
+    # Если экспортируются аварии — добавляем в пакет связанные видео по alarm_id.
+    if "alarms" in tables:
+        session_factory = current_app.extensions["session_factory"]
+        allowed_video_roots = _video_allowed_roots()
+        with session_factory() as session:
+            video_q = (
+                session.query(Video)
+                .join(Alarms, Video.alarm_id == Alarms.id)
+                .filter(Video.alarm_id.is_not(None))
+                .filter(Alarms.created_at >= window_from, Alarms.created_at <= window_to)
+                .order_by(Video.created_at.desc() if sort_desc else Video.created_at.asc())
+            )
+            for v in video_q.yield_per(1000):
+                video_meta_rows.append(
+                    [
+                        v.id,
+                        v.created_at.strftime("%d/%m/%Y"),
+                        v.created_at.strftime("%H:%M:%S"),
+                        v.captured_at.strftime("%d/%m/%Y %H:%M:%S"),
+                        v.file_name,
+                        v.file_path,
+                        v.alarm_id if v.alarm_id is not None else "",
+                    ]
+                )
+                file_path = _normalize_video_fs_path(v.file_path)
+                try:
+                    resolved = file_path.resolve()
+                except OSError:
+                    continue
+                if not resolved.exists() or not resolved.is_file():
+                    continue
+                if not _is_under_any_root(resolved, allowed_video_roots):
+                    continue
+                arcname = f"videos/{v.id}_{v.file_name}"
+                video_files_to_add.append((str(resolved), arcname))
+
     if export_format == "csv_zip":
         out_path = static_csv_dir / f"alarm_event_export_{event_id}_{stamp}.zip"
         with zipfile.ZipFile(out_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
@@ -670,6 +746,15 @@ def alarms_export():
                 writer.writerow(headers)
                 writer.writerows(body)
                 zf.writestr(f"{table}.csv", sio.getvalue().encode("utf-8-sig"))
+
+            if video_meta_rows:
+                sio = io.StringIO()
+                writer = csv.writer(sio, delimiter=";")
+                writer.writerow(["ID", "Дата", "Время", "Время_захвата", "Имя_файла", "Путь_к_файлу", "ID_аварии"])
+                writer.writerows(video_meta_rows)
+                zf.writestr("videos.csv", sio.getvalue().encode("utf-8-sig"))
+                for abs_path, arcname in video_files_to_add:
+                    zf.write(abs_path, arcname=arcname)
         rel = out_path.relative_to(current_app.static_folder)
         return render_template(
             "data/_export_result.html",
@@ -693,6 +778,12 @@ def alarms_export():
         headers, body = dataset[table]
         ws.append(headers)
         for row in body:
+            ws.append(row)
+
+    if video_meta_rows:
+        ws = wb.create_sheet("Видео")
+        ws.append(["ID", "Дата", "Время", "Время_захвата", "Имя_файла", "Путь_к_файлу", "ID_аварии"])
+        for row in video_meta_rows:
             ws.append(row)
     out_path = static_csv_dir / f"alarm_event_export_{event_id}_{stamp}.xlsx"
     wb.save(out_path)

@@ -40,21 +40,28 @@ class DiscreteInputs:
         if input_index < 0 or input_index >= self.max_inputs:
             raise ValueError(f"Номер входа должен быть от 0 до {self.max_inputs - 1}")
         
+        callback_to_call = None
+        args = None
+        changed = False
         with self._lock:
             previous = self._values.get(input_index, False)
             self._previous_values[input_index] = previous
             self._values[input_index] = value
-            
-            changed = (previous != value)
-            
+
+            changed = previous != value
             if changed and input_index in self._change_callbacks:
-                callback = self._change_callbacks[input_index]
-                try:
-                    callback(input_index, previous, value)
-                except Exception as e:
-                    print(f"Ошибка в callback для входа {input_index}: {e}")
-            
-            return changed
+                callback_to_call = self._change_callbacks[input_index]
+                args = (input_index, previous, value)
+
+        # Важно: вызываем callback после выхода из lock.
+        # Иначе легко получить deadlock, если callback снова обратится к дискретным входам.
+        if callback_to_call is not None and args is not None:
+            try:
+                callback_to_call(*args)
+            except Exception as e:
+                print(f"Ошибка в callback для входа {input_index}: {e}")
+
+        return changed
     
     def get_value(self, input_index: int) -> bool:
         """

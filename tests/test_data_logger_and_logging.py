@@ -12,6 +12,7 @@ def _cfg(tmp_path: Path) -> DataLoggerConfig:
         backup_directory=str(tmp_path / "backup"),
         log_directory=str(tmp_path / "logs"),
         analog_poll_interval=0.05,
+        fsync_on_write=False,  # иначе осфскрн на каждом цикле может сильно тормозить/зависать
     )
 
 
@@ -37,6 +38,9 @@ def test_datalogger_triggers_alarm_and_creates_alarm_file(tmp_path):
     cfg = _cfg(tmp_path)
     cfg.alarm_pre_time = 1
     cfg.alarm_post_time = 1
+    # Важно: аварийный файл создаётся только после "post_time" (AlarmWriter.finish_alarm),
+    # поэтому в тесте нужно подождать достаточно времени, иначе запись может не успеть.
+    wait_after_set_discrete_sec = 1.6
 
     dl = DataLogger(cfg)
 
@@ -52,7 +56,7 @@ def test_datalogger_triggers_alarm_and_creates_alarm_file(tmp_path):
     # Зададим дискретный вход, чтобы спровоцировать аварию
     dl.set_discrete_value(0, True)
 
-    time.sleep(0.3)
+    time.sleep(wait_after_set_discrete_sec)
     dl.stop()
 
     alarm_dir = Path(cfg.alarm_directory)

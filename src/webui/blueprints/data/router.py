@@ -125,6 +125,30 @@ def download_video(video_id: int):
     return send_file(resolved, as_attachment=True, download_name=(item.file_name or resolved.name))
 
 
+@data_router.route("/videos/<int:video_id>/open", methods=["GET"])
+@login_required
+def open_video(video_id: int):
+    session_factory = current_app.extensions["session_factory"]
+    with session_factory() as session:
+        item = session.get(Video, video_id)
+    if item is None:
+        abort(404)
+
+    file_path = _normalize_video_fs_path(item.file_path)
+    try:
+        resolved = file_path.resolve()
+    except OSError:
+        abort(404)
+
+    if not resolved.exists() or not resolved.is_file():
+        abort(404)
+    if not _is_under_any_root(resolved, _video_allowed_roots()):
+        abort(403)
+
+    # Отдаём видео как inline-контент, чтобы его можно было открыть прямо в браузере.
+    return send_file(resolved, as_attachment=False, download_name=(item.file_name or resolved.name))
+
+
 @data_router.route("/export", methods=["POST"])
 @login_required
 def export_submit():
@@ -212,6 +236,59 @@ def export_batch():
         try:
             with zipfile.ZipFile(out_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
                 with session_factory() as session:
+                    # Если экспортируем аварии — добавляем в пакет и связанные видео.
+                    allowed_video_roots = _video_allowed_roots() if "alarms" in tables else []
+                    videos_csv_tmp_path: Path | None = None
+                    if "alarms" in tables:
+                        alarm_ids = [
+                            r[0]
+                            for r in session.query(Alarms.id)
+                            .filter(Alarms.created_at >= date_from, Alarms.created_at <= date_to)
+                            .all()
+                        ]
+                        video_q = (
+                            session.query(Video)
+                            .filter(Video.alarm_id.is_not(None))
+                            .filter(Video.alarm_id.in_(alarm_ids))
+                            .order_by(Video.created_at.desc() if sort_desc else Video.created_at.asc())
+                        )
+                        videos_csv_tmp = tempfile.NamedTemporaryFile(
+                            prefix="videos_", suffix=".csv", delete=False, mode="w", newline="", encoding="utf-8-sig"
+                        )
+                        videos_csv_tmp_path = Path(videos_csv_tmp.name)
+                        try:
+                            vw = csv.writer(videos_csv_tmp, delimiter=";")
+                            vw.writerow(
+                                ["ID", "Дата", "Время", "Время_захвата", "Имя_файла", "Путь_к_файлу", "ID_аварии"]
+                            )
+                            for v in video_q.yield_per(1000):
+                                vw.writerow(
+                                    [
+                                        v.id,
+                                        v.created_at.strftime("%d/%m/%Y"),
+                                        v.created_at.strftime("%H:%M:%S"),
+                                        v.captured_at.strftime("%d/%m/%Y %H:%M:%S"),
+                                        v.file_name,
+                                        v.file_path,
+                                        v.alarm_id if v.alarm_id is not None else "",
+                                    ]
+                                )
+
+                                # Подключаем бинарные файлы в ZIP.
+                                file_path = _normalize_video_fs_path(v.file_path)
+                                try:
+                                    resolved = file_path.resolve()
+                                except OSError:
+                                    continue
+                                if not resolved.exists() or not resolved.is_file():
+                                    continue
+                                if not _is_under_any_root(resolved, allowed_video_roots):
+                                    continue
+                                arcname = f"videos/{v.id}_{v.file_name}"
+                                zf.write(str(resolved), arcname=arcname)
+                        finally:
+                            videos_csv_tmp.close()
+
                     for table in tables:
                         csv_tmp = tempfile.NamedTemporaryFile(
                             prefix=f"{table}_", suffix=".csv", delete=False, mode="w", newline="", encoding="utf-8-sig"
@@ -230,7 +307,7 @@ def export_batch():
                                     analog, _ = analog_discrete_for_csv(processed)
                                     writer.writerow(
                                         [
-                                            item.created_at.strftime("%Y-%m-%d"),
+                                            item.created_at.strftime("%d/%m/%Y"),
                                             item.created_at.strftime("%H:%M:%S"),
                                             *[analog.get(k, "") for k in analog_keys],
                                         ]
@@ -246,7 +323,7 @@ def export_batch():
                                     _, discrete = analog_discrete_for_csv(processed)
                                     writer.writerow(
                                         [
-                                            item.created_at.strftime("%Y-%m-%d"),
+                                            item.created_at.strftime("%d/%m/%Y"),
                                             item.created_at.strftime("%H:%M:%S"),
                                             *[1 if bool(discrete.get(k, False)) else 0 for k in discrete_keys],
                                         ]
@@ -260,7 +337,7 @@ def export_batch():
                                 for item in stmt.yield_per(1000):
                                     writer.writerow(
                                         [
-                                            item.created_at.strftime("%Y-%m-%d"),
+                                            item.created_at.strftime("%d/%m/%Y"),
                                             item.created_at.strftime("%H:%M:%S"),
                                             item.name,
                                             getattr(item, "state", "active"),
@@ -270,6 +347,9 @@ def export_batch():
                             csv_tmp.close()
                         zf.write(csv_tmp_path, arcname=f"{table}.csv")
                         csv_tmp_path.unlink(missing_ok=True)
+                        if videos_csv_tmp_path is not None:
+                            zf.write(str(videos_csv_tmp_path), arcname="videos.csv")
+                            videos_csv_tmp_path.unlink(missing_ok=True)
         except Exception:
             out_path.unlink(missing_ok=True)
             raise
@@ -293,7 +373,7 @@ def export_batch():
     try:
         wb = Workbook()
         wb.remove(wb.active)
-        sheet_title = {"analog": "Аналоги", "discrete": "Дискреты", "alarms": "Аварии"}
+        sheet_title = {"analog": "Аналоги", "discrete": "Дискреты", "alarms": "Аварии", "videos": "Видео"}
         with session_factory() as session:
             for table in tables:
                 ws = wb.create_sheet(sheet_title.get(table, table))
@@ -306,7 +386,7 @@ def export_batch():
                         analog, _ = analog_discrete_for_csv(processed)
                         ws.append(
                             [
-                                item.created_at.strftime("%Y-%m-%d"),
+                                item.created_at.strftime("%d/%m/%Y"),
                                 item.created_at.strftime("%H:%M:%S"),
                                 *[analog.get(k, "") for k in analog_keys],
                             ]
@@ -320,7 +400,7 @@ def export_batch():
                         _, discrete = analog_discrete_for_csv(processed)
                         ws.append(
                             [
-                                item.created_at.strftime("%Y-%m-%d"),
+                                item.created_at.strftime("%d/%m/%Y"),
                                 item.created_at.strftime("%H:%M:%S"),
                                 *[1 if bool(discrete.get(k, False)) else 0 for k in discrete_keys],
                             ]
@@ -332,12 +412,33 @@ def export_batch():
                     for item in stmt.yield_per(1000):
                         ws.append(
                             [
-                                item.created_at.strftime("%Y-%m-%d"),
+                                item.created_at.strftime("%d/%m/%Y"),
                                 item.created_at.strftime("%H:%M:%S"),
                                 item.name,
                                 getattr(item, "state", "active"),
                             ]
                         )
+
+            if "alarms" in tables:
+                ws = wb.create_sheet(sheet_title["videos"])
+                ws.append(["ID", "Сохранено_в_БД", "Время_захвата", "Имя_файла", "ID_аварии", "Путь_к_файлу"])
+                video_stmt = (
+                    session.query(Video)
+                    .join(Alarms, Video.alarm_id == Alarms.id)
+                    .filter(Alarms.created_at >= date_from, Alarms.created_at <= date_to)
+                    .order_by(Video.created_at.desc() if sort_desc else Video.created_at.asc())
+                )
+                for v in video_stmt.yield_per(1000):
+                    ws.append(
+                        [
+                            v.id,
+                            f"{v.created_at.strftime('%d/%m/%Y')} {v.created_at.strftime('%H:%M:%S')}",
+                            f"{v.captured_at.strftime('%d/%m/%Y %H:%M:%S')}",
+                            v.file_name,
+                            v.alarm_id,
+                            v.file_path,
+                        ]
+                    )
         wb.save(out_path)
     except Exception:
         out_path.unlink(missing_ok=True)
