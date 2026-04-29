@@ -34,7 +34,7 @@ from src.webui.timezone_utils import (
 )
 
 data_router = Blueprint("data", __name__, url_prefix="/data", template_folder=str(TEMPLATES_DIR))
-DATETIME_UI_FORMAT = "%d.%m.%Y %H:%M:%S"
+DATETIME_UI_FORMAT = "%d/%m/%Y %H:%M:%S"
 DATETIME_API_FORMAT = "%Y-%m-%dT%H:%M:%S"
 
 
@@ -160,6 +160,8 @@ def _selected_export_tables() -> list[str]:
         out.append("discrete")
     if request.form.get("table_alarms") == "1":
         out.append("alarms")
+    if request.form.get("table_videos") == "1":
+        out.append("videos")
     return out
 
 
@@ -220,7 +222,7 @@ def export_batch():
                         try:
                             writer = csv.writer(csv_tmp, delimiter=";")
                             if table == "analog":
-                                writer.writerow(["Дата", "Время", *analog_keys])
+                                writer.writerow(["Дата", "Время", "Время контроллера", *analog_keys])
                                 stmt = session.query(Samples).filter(
                                     Samples.created_at >= date_from, Samples.created_at <= date_to
                                 )
@@ -228,15 +230,17 @@ def export_batch():
                                 for item in stmt.yield_per(1000):
                                     processed = decode_to_processed(item.date)
                                     analog, _ = analog_discrete_for_csv(processed)
+                                    controller_time = str(processed.get("controller_time", "") or "")
                                     writer.writerow(
                                         [
-                                            item.created_at.strftime("%Y-%m-%d"),
+                                            item.created_at.strftime("%d/%m/%Y"),
                                             item.created_at.strftime("%H:%M:%S"),
+                                            controller_time,
                                             *[analog.get(k, "") for k in analog_keys],
                                         ]
                                     )
                             elif table == "discrete":
-                                writer.writerow(["Дата", "Время", *discrete_keys])
+                                writer.writerow(["Дата", "Время", "Время контроллера", *discrete_keys])
                                 stmt = session.query(Samples).filter(
                                     Samples.created_at >= date_from, Samples.created_at <= date_to
                                 )
@@ -244,26 +248,52 @@ def export_batch():
                                 for item in stmt.yield_per(1000):
                                     processed = decode_to_processed(item.date)
                                     _, discrete = analog_discrete_for_csv(processed)
+                                    controller_time = str(processed.get("controller_time", "") or "")
                                     writer.writerow(
                                         [
-                                            item.created_at.strftime("%Y-%m-%d"),
+                                            item.created_at.strftime("%d/%m/%Y"),
                                             item.created_at.strftime("%H:%M:%S"),
+                                            controller_time,
                                             *[1 if bool(discrete.get(k, False)) else 0 for k in discrete_keys],
                                         ]
                                     )
-                            else:
-                                writer.writerow(["Дата", "Время", "Название", "Состояние"])
+                            elif table == "alarms":
+                                writer.writerow(["Дата", "Время", "Время контроллера", "Название", "Состояние"])
                                 stmt = session.query(Alarms).filter(
                                     Alarms.created_at >= date_from, Alarms.created_at <= date_to
                                 )
                                 stmt = stmt.order_by(Alarms.created_at.desc() if sort_desc else Alarms.created_at.asc())
                                 for item in stmt.yield_per(1000):
+                                    controller_time = ""
+                                    try:
+                                        alarm_payload = json.loads(item.date.decode("utf-8"))
+                                        if isinstance(alarm_payload, dict):
+                                            controller_time = str(alarm_payload.get("controller_time", "") or "")
+                                    except Exception:
+                                        pass
                                     writer.writerow(
                                         [
-                                            item.created_at.strftime("%Y-%m-%d"),
+                                            item.created_at.strftime("%d/%m/%Y"),
                                             item.created_at.strftime("%H:%M:%S"),
+                                            controller_time,
                                             item.name,
                                             getattr(item, "state", "active"),
+                                        ]
+                                    )
+                            else:
+                                writer.writerow(["Сохранено", "Время файла", "Имя файла", "Путь", "ID аварии"])
+                                stmt = session.query(Video).filter(
+                                    Video.created_at >= date_from, Video.created_at <= date_to
+                                )
+                                stmt = stmt.order_by(Video.created_at.desc() if sort_desc else Video.created_at.asc())
+                                for item in stmt.yield_per(1000):
+                                    writer.writerow(
+                                        [
+                                            format_in_configured_timezone(item.created_at, DATETIME_UI_FORMAT),
+                                            format_in_configured_timezone(item.captured_at, DATETIME_UI_FORMAT),
+                                            item.file_name,
+                                            item.file_path,
+                                            item.alarm_id if item.alarm_id is not None else "",
                                         ]
                                     )
                         finally:
@@ -293,49 +323,75 @@ def export_batch():
     try:
         wb = Workbook()
         wb.remove(wb.active)
-        sheet_title = {"analog": "Аналоги", "discrete": "Дискреты", "alarms": "Аварии"}
+        sheet_title = {"analog": "Аналоги", "discrete": "Дискреты", "alarms": "Аварии", "videos": "Видео"}
         with session_factory() as session:
             for table in tables:
                 ws = wb.create_sheet(sheet_title.get(table, table))
                 if table == "analog":
-                    ws.append(["Дата", "Время", *analog_keys])
+                    ws.append(["Дата", "Время", "Время контроллера", *analog_keys])
                     stmt = session.query(Samples).filter(Samples.created_at >= date_from, Samples.created_at <= date_to)
                     stmt = stmt.order_by(Samples.created_at.desc() if sort_desc else Samples.created_at.asc())
                     for item in stmt.yield_per(1000):
                         processed = decode_to_processed(item.date)
                         analog, _ = analog_discrete_for_csv(processed)
+                        controller_time = str(processed.get("controller_time", "") or "")
                         ws.append(
                             [
-                                item.created_at.strftime("%Y-%m-%d"),
+                                item.created_at.strftime("%d/%m/%Y"),
                                 item.created_at.strftime("%H:%M:%S"),
+                                controller_time,
                                 *[analog.get(k, "") for k in analog_keys],
                             ]
                         )
                 elif table == "discrete":
-                    ws.append(["Дата", "Время", *discrete_keys])
+                    ws.append(["Дата", "Время", "Время контроллера", *discrete_keys])
                     stmt = session.query(Samples).filter(Samples.created_at >= date_from, Samples.created_at <= date_to)
                     stmt = stmt.order_by(Samples.created_at.desc() if sort_desc else Samples.created_at.asc())
                     for item in stmt.yield_per(1000):
                         processed = decode_to_processed(item.date)
                         _, discrete = analog_discrete_for_csv(processed)
+                        controller_time = str(processed.get("controller_time", "") or "")
                         ws.append(
                             [
-                                item.created_at.strftime("%Y-%m-%d"),
+                                item.created_at.strftime("%d/%m/%Y"),
                                 item.created_at.strftime("%H:%M:%S"),
+                                controller_time,
                                 *[1 if bool(discrete.get(k, False)) else 0 for k in discrete_keys],
                             ]
                         )
-                else:
-                    ws.append(["Дата", "Время", "Название", "Состояние"])
+                elif table == "alarms":
+                    ws.append(["Дата", "Время", "Время контроллера", "Название", "Состояние"])
                     stmt = session.query(Alarms).filter(Alarms.created_at >= date_from, Alarms.created_at <= date_to)
                     stmt = stmt.order_by(Alarms.created_at.desc() if sort_desc else Alarms.created_at.asc())
                     for item in stmt.yield_per(1000):
+                        controller_time = ""
+                        try:
+                            alarm_payload = json.loads(item.date.decode("utf-8"))
+                            if isinstance(alarm_payload, dict):
+                                controller_time = str(alarm_payload.get("controller_time", "") or "")
+                        except Exception:
+                            pass
                         ws.append(
                             [
-                                item.created_at.strftime("%Y-%m-%d"),
+                                item.created_at.strftime("%d/%m/%Y"),
                                 item.created_at.strftime("%H:%M:%S"),
+                                controller_time,
                                 item.name,
                                 getattr(item, "state", "active"),
+                            ]
+                        )
+                else:
+                    ws.append(["Сохранено", "Время файла", "Имя файла", "Путь", "ID аварии"])
+                    stmt = session.query(Video).filter(Video.created_at >= date_from, Video.created_at <= date_to)
+                    stmt = stmt.order_by(Video.created_at.desc() if sort_desc else Video.created_at.asc())
+                    for item in stmt.yield_per(1000):
+                        ws.append(
+                            [
+                                format_in_configured_timezone(item.created_at, DATETIME_UI_FORMAT),
+                                format_in_configured_timezone(item.captured_at, DATETIME_UI_FORMAT),
+                                item.file_name,
+                                item.file_path,
+                                item.alarm_id if item.alarm_id is not None else "",
                             ]
                         )
         wb.save(out_path)
@@ -423,7 +479,7 @@ def _collect_second_points(rows: list[Any], table: str, columns: list[str]) -> l
 
     points: list[dict[str, Any]] = []
     for sec in sorted(by_second.keys()):
-        date_label = format_in_configured_timezone(sec, "%d.%m.%Y")
+        date_label = format_in_configured_timezone(sec, "%d/%m/%Y")
         time_label = format_in_configured_timezone(sec, "%H:%M")
         ts_ms = int(to_configured_timezone(sec).timestamp() * 1000)
         points.append(

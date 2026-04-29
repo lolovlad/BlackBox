@@ -19,7 +19,7 @@ from sqlalchemy.orm import sessionmaker
 
 from src.database import Alarms, Emergency, EmergencyConditions, EventLog, Samples
 from src.webui.emergency_rule_validation import evaluate_emergency_rule_expression
-from src.webui.timezone_utils import now_in_configured_timezone_naive
+from src.webui.timezone_utils import format_in_configured_timezone, now_in_configured_timezone_naive
 
 logger = logging.getLogger(__name__)
 SETTINGS_PATH = Path("settings/settings.json")
@@ -92,7 +92,16 @@ def configure_settings_path(path: str | Path) -> None:
 
 
 def _eval_expr(expr: str, context: dict[str, Any]) -> Any:
-    return eval(expr, {"__builtins__": {}}, context)
+    safe_builtins = {
+        "round": round,
+        "abs": abs,
+        "min": min,
+        "max": max,
+        "int": int,
+        "float": float,
+        "bool": bool,
+    }
+    return eval(expr, {"__builtins__": safe_builtins}, context)
 
 
 def _uint16_to_int16(raw: int) -> int:
@@ -219,6 +228,12 @@ def _field_categories(config: dict[str, Any]) -> tuple[list[str], list[str]]:
         if f_type in {"bitfield"} or name in {"active_alarms", "active_status"}:
             continue
         analog.append(name)
+    if "modbus_reading" not in discrete:
+        discrete.append("modbus_reading")
+    for idx in range(1, 9):
+        key = f"gpio_{idx}"
+        if key not in discrete:
+            discrete.append(key)
     return analog, discrete
 
 
@@ -282,8 +297,82 @@ class ModbusCollector:
         self._rules_snapshot: list[tuple[int, str]] = []
         self._active_alarm_names: set[str] = set()
         self._modbus_data_unavailable = False
+        self._modbus_discrete_active = False
         # SQLite: один writer за раз из потоков опроса / emergency — иначе database is locked.
         self._db_write_lock = threading.Lock()
+        self._gpio_available = False
+        self._gpio_pins = [27, 22, 23, 24, 25, 5, 6, 26]
+        self._gpio_last_values: dict[int, int] = {}
+        self._gpio_hold_cfg: dict[int, float] = {}
+        self._gpio_pending_since: dict[int, datetime] = {}
+        self._gpio_stable_state: dict[int, int] = {}
+        self._init_gpio()
+
+    def _init_gpio(self) -> None:
+        try:
+            import RPi.GPIO as GPIO  # type: ignore
+
+            GPIO.setmode(GPIO.BCM)
+            for pin in self._gpio_pins:
+                GPIO.setup(pin, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+                self._gpio_last_values[pin] = int(GPIO.input(pin))
+                self._gpio_stable_state[pin] = self._gpio_last_values[pin]
+                self._gpio_hold_cfg[pin] = 0.5
+            self._gpio_available = True
+        except Exception:
+            self._gpio_available = False
+            logger.info("GPIO is unavailable in current environment")
+
+    def _read_gpio_values(self, *, now_dt: datetime) -> dict[str, bool]:
+        if not self._gpio_available:
+            return {}
+        try:
+            import RPi.GPIO as GPIO  # type: ignore
+        except Exception:
+            self._gpio_available = False
+            return {}
+
+        out: dict[str, bool] = {}
+        for index, pin in enumerate(self._gpio_pins, start=1):
+            try:
+                raw = int(GPIO.input(pin))
+            except Exception:
+                continue
+            stable_raw = self._gpio_stable_state.get(pin, raw)
+            if raw != stable_raw:
+                pending_since = self._gpio_pending_since.get(pin)
+                if pending_since is None:
+                    self._gpio_pending_since[pin] = now_dt
+                hold_seconds = max(0.0, float(self._gpio_hold_cfg.get(pin, 0.0)))
+                if (now_dt - self._gpio_pending_since[pin]).total_seconds() >= hold_seconds:
+                    self._gpio_stable_state[pin] = raw
+                    self._gpio_pending_since.pop(pin, None)
+            else:
+                self._gpio_pending_since.pop(pin, None)
+            stable = self._gpio_stable_state.get(pin, raw)
+            out[f"gpio_{index}"] = stable == 0
+            self._gpio_last_values[pin] = raw
+        return out
+
+    @staticmethod
+    def _extract_controller_datetime(source_values: dict[str, list[Any]]) -> datetime | None:
+        regs: list[int] = []
+        for values in source_values.values():
+            if len(values) > 19006:
+                regs = [int(v) for v in values]
+                break
+        if not regs:
+            return None
+        try:
+            year = int(regs[19000])
+            month = int(regs[19001])
+            day = int(regs[19002])
+            hour = int(regs[19004])
+            minute = int(regs[19005])
+            second = int(regs[19006])
+            return datetime(year, month, day, hour, minute, second)
+        except Exception:
+            return None
 
     def start(self) -> None:
         with self._thread_lock:
@@ -312,6 +401,13 @@ class ModbusCollector:
                 self._thread.join(timeout=3)
             if self._events_thread is not None and self._events_thread.is_alive():
                 self._events_thread.join(timeout=3)
+        if self._gpio_available:
+            try:
+                import RPi.GPIO as GPIO  # type: ignore
+
+                GPIO.cleanup()
+            except Exception:
+                pass
 
     def restart(self, new_config: RuntimeConfig | None = None) -> None:
         if new_config is not None:
@@ -410,6 +506,12 @@ class ModbusCollector:
                 # Persist timestamps already in configured APP_TIMEZONE.
                 created_at = now_in_configured_timezone_naive()
                 processed = parse_fields(config, source_values)
+                controller_dt = self._extract_controller_datetime(source_values)
+                if controller_dt is not None:
+                    processed["controller_time"] = format_in_configured_timezone(controller_dt, "%d/%m/%Y %H:%M:%S")
+                gpio_states = self._read_gpio_values(now_dt=created_at)
+                processed.update(gpio_states)
+                processed["modbus_reading"] = not had_error
                 if self._alarms_enabled:
                     self._persist_alarm_snapshot(created_at=created_at, processed=processed)
                 self._append({"created_at": created_at, "sources": source_values, "processed": processed})
@@ -433,6 +535,15 @@ class ModbusCollector:
                         payload={"cycle_read_errors": cycle_read_errors, "requests_count": len(requests)},
                     )
                     self._close_all_active_alarms(created_at=created_at, reason="modbus_data_unavailable")
+                if no_data and not self._modbus_discrete_active:
+                    self._modbus_discrete_active = True
+                    self._log_event(
+                        created_at=created_at,
+                        level="error",
+                        code="modbus_discrete_lost",
+                        message="Пропало чтение по Modbus.",
+                        payload={"video_capture": True, "edge": "alarm_on"},
+                    )
                 elif (not no_data) and self._modbus_data_unavailable:
                     self._modbus_data_unavailable = False
                     self._log_event(
@@ -441,6 +552,15 @@ class ModbusCollector:
                         code="modbus_data_restored",
                         message="Данные Modbus восстановлены.",
                         payload={"cycle_read_errors": cycle_read_errors, "requests_count": len(requests)},
+                    )
+                if (not no_data) and self._modbus_discrete_active:
+                    self._modbus_discrete_active = False
+                    self._log_event(
+                        created_at=created_at,
+                        level="info",
+                        code="modbus_discrete_restored",
+                        message="Чтение по Modbus восстановлено.",
+                        payload={"video_capture": True, "edge": "alarm_off"},
                     )
                 now = time.monotonic()
                 if now - last_success_log >= 5.0:
@@ -517,6 +637,8 @@ class ModbusCollector:
             is_new = alarm_name not in self._active_alarm_names
             if is_new:
                 payload = {"alarm": alarm_name, "created_at": created_at.isoformat(), "state": "active"}
+                if processed.get("controller_time"):
+                    payload["controller_time"] = str(processed.get("controller_time"))
                 session.add(
                     Alarms(
                         created_at=created_at,
@@ -532,6 +654,8 @@ class ModbusCollector:
         resolved = sorted(self._active_alarm_names - active_now)
         for alarm_name in resolved:
             payload = {"alarm": alarm_name, "created_at": created_at.isoformat(), "state": "inactive"}
+            if processed.get("controller_time"):
+                payload["controller_time"] = str(processed.get("controller_time"))
             session.add(
                 Alarms(
                     created_at=created_at,

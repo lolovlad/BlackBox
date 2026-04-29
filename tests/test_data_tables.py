@@ -191,7 +191,7 @@ def test_data_service_collect_tab_respects_sort_and_page(memory_app) -> None:
     ctx = svc.collect_tab(flt)
     assert ctx["total_rows"] == 3
     assert ctx["total_pages"] == 1
-    assert ctx["rows"][0]["time"].startswith("03.01.2026")
+    assert ctx["rows"][0]["time"].startswith("03/01/2026")
 
 
 def _csrf_from_login_page(html: str) -> str:
@@ -220,7 +220,7 @@ def test_http_data_tables_returns_rows_for_admin(memory_app) -> None:
     r = client.get("/data/tables?active_tab=analog&sort=desc&page=1")
     assert r.status_code == 200
     body = r.get_data(as_text=True)
-    assert "03.01.2026" in body
+    assert "03/01/2026" in body
     assert "data-table-result" in body
     assert "Всего записей: 3" in body
 
@@ -236,3 +236,15 @@ def test_parse_fields_int16_signed_temperature_raw() -> None:
     out = parse_fields(cfg, {"hr": [0xFFF6, 850]})
     assert out["PT100_2"] == -10
     assert out["warm"] == 850
+
+
+def test_parse_fields_expr_round_supported() -> None:
+    cfg = {
+        "requests": [{"name": "hr", "fc": 3, "address": 0, "count": 1}],
+        "fields": [
+            {"name": "raw", "source": "hr", "address": 0, "type": "uint16"},
+            {"name": "scaled", "type": "expr", "expr": "round((raw - 512) * 100.0 / 511.0, 2)"},
+        ],
+    }
+    out = parse_fields(cfg, {"hr": [523]})
+    assert out["scaled"] == round((523 - 512) * 100.0 / 511.0, 2)

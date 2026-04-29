@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import json
 import re
 from dataclasses import dataclass
 from datetime import datetime, time, timezone
@@ -24,7 +25,7 @@ from src.webui.timezone_utils import format_in_configured_timezone
 
 # Таблица на экране: фиксированный размер страницы (экспорт без лимита строк)
 TABLE_PAGE_SIZE = 1000
-DATETIME_UI_FORMAT = "%d.%m.%Y %H:%M:%S"
+DATETIME_UI_FORMAT = "%d/%m/%Y %H:%M:%S"
 
 
 @dataclass(frozen=True)
@@ -156,6 +157,7 @@ class DataService:
                 out_rows.append(
                     {
                         "time": format_in_configured_timezone(item.created_at, DATETIME_UI_FORMAT),
+                        "controller_time": processed.get("controller_time", ""),
                         "cells": [analog.get(k, "") for k in keys],
                     }
                 )
@@ -191,6 +193,7 @@ class DataService:
                 out_rows.append(
                     {
                         "time": format_in_configured_timezone(item.created_at, DATETIME_UI_FORMAT),
+                        "controller_time": processed.get("controller_time", ""),
                         "cells": [1 if bool(discrete.get(k, False)) else 0 for k in keys],
                     }
                 )
@@ -225,6 +228,7 @@ class DataService:
                     "file_name": item.file_name,
                     "file_path": item.file_path,
                     "alarm_id": item.alarm_id,
+                    "video_url": f"/data/videos/{item.id}/download",
                 }
                 for item in rows_db
             ]
@@ -253,6 +257,7 @@ class DataService:
         out_rows = [
             {
                 "time": format_in_configured_timezone(item.created_at, DATETIME_UI_FORMAT),
+                "controller_time": _alarm_controller_time(item.date),
                 "name": item.name,
                 "state": getattr(item, "state", "active"),
             }
@@ -288,7 +293,7 @@ class DataService:
                 w.writerow(["№", "Дата", "Время", "Название", "Состояние"])
                 for i, item in enumerate(rows_db, start=1):
                     dt = item.created_at
-                    dt_display = format_in_configured_timezone(dt, "%Y-%m-%d %H:%M:%S")
+                    dt_display = format_in_configured_timezone(dt, DATETIME_UI_FORMAT)
                     w.writerow([i, dt_display[:10], dt_display[11:], item.name, getattr(item, "state", "active")])
             return path
 
@@ -309,7 +314,7 @@ class DataService:
                     processed = decode_to_processed(row.date)
                     analog, _ = analog_discrete_for_csv(processed)
                     dt = row.created_at
-                    dt_display = format_in_configured_timezone(dt, "%Y-%m-%d %H:%M:%S")
+                    dt_display = format_in_configured_timezone(dt, DATETIME_UI_FORMAT)
                     w.writerow(
                         [i, dt_display[:10], dt_display[11:], *[analog.get(k, "") for k in keys]]
                     )
@@ -332,7 +337,7 @@ class DataService:
                     processed = decode_to_processed(row.date)
                     _, discrete = analog_discrete_for_csv(processed)
                     dt = row.created_at
-                    dt_display = format_in_configured_timezone(dt, "%Y-%m-%d %H:%M:%S")
+                    dt_display = format_in_configured_timezone(dt, DATETIME_UI_FORMAT)
                     w.writerow(
                         [
                             i,
@@ -344,3 +349,13 @@ class DataService:
             return path
 
         raise ValueError("unknown_tab")
+
+
+def _alarm_controller_time(raw: bytes) -> str:
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+        if isinstance(payload, dict):
+            return str(payload.get("controller_time", "") or "")
+    except Exception:
+        pass
+    return ""

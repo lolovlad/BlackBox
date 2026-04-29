@@ -58,7 +58,7 @@ window.dataPage = function dataPage() {
                 }
             });
             document
-                .querySelectorAll('#export-form input[name="table_analog"], #export-form input[name="table_discrete"], #export-form input[name="table_alarms"]')
+                .querySelectorAll('#export-form input[name="table_analog"], #export-form input[name="table_discrete"], #export-form input[name="table_alarms"], #export-form input[name="table_videos"]')
                 .forEach((el) => el.addEventListener("change", () => this.syncExportPanels()));
         },
         syncColPanels() {

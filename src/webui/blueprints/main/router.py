@@ -54,7 +54,7 @@ from src.webui.system_settings import (
 from src.webui.timezone_utils import format_in_configured_timezone
 
 main_router = Blueprint("main", __name__, template_folder=str(TEMPLATES_DIR))
-DATETIME_UI_FORMAT = "%d.%m.%Y %H:%M:%S"
+DATETIME_UI_FORMAT = "%d/%m/%Y %H:%M:%S"
 
 
 def _is_admin() -> bool:
@@ -295,7 +295,7 @@ def event_logs_page():
             <tbody>
             {% for row in rows %}
                 <tr>
-                    <td>{{ format_in_configured_timezone(row.created_at, "%d.%m.%Y %H:%M:%S") }}</td>
+                    <td>{{ format_in_configured_timezone(row.created_at, "%d/%m/%Y %H:%M:%S") }}</td>
                     <td>{{ row.level }}</td>
                     <td>{{ row.code }}</td>
                     <td>{{ row.message }}</td>
@@ -559,37 +559,53 @@ def _alarm_export_rows(
     discrete_keys: list[str],
 ) -> tuple[list[str], list[list[Any]]]:
     if table == "alarms":
-        headers = ["Дата", "Время", "Название", "Состояние"]
-        body = [
-            [item.created_at.strftime("%Y-%m-%d"), item.created_at.strftime("%H:%M:%S"), item.name, getattr(item, "state", "active")]
-            for item in rows_db
-        ]
+        headers = ["Дата", "Время", "Время контроллера", "Название", "Состояние"]
+        body = []
+        for item in rows_db:
+            controller_time = ""
+            try:
+                payload = json.loads(item.date.decode("utf-8"))
+                if isinstance(payload, dict):
+                    controller_time = str(payload.get("controller_time", "") or "")
+            except Exception:
+                pass
+            body.append(
+                [
+                    item.created_at.strftime("%d/%m/%Y"),
+                    item.created_at.strftime("%H:%M:%S"),
+                    controller_time,
+                    item.name,
+                    getattr(item, "state", "active"),
+                ]
+            )
         return headers, body
 
     if table == "analog":
-        headers = ["Дата", "Время", *analog_keys]
+        headers = ["Дата", "Время", "Время контроллера", *analog_keys]
         body: list[list[Any]] = []
         for item in rows_db:
             processed = decode_to_processed(item.date)
             analog, _ = analog_discrete_for_csv(processed)
             body.append(
                 [
-                    item.created_at.strftime("%Y-%m-%d"),
+                    item.created_at.strftime("%d/%m/%Y"),
                     item.created_at.strftime("%H:%M:%S"),
+                    str(processed.get("controller_time", "") or ""),
                     *[analog.get(k, "") for k in analog_keys],
                 ]
             )
         return headers, body
 
-    headers = ["Дата", "Время", *discrete_keys]
+    headers = ["Дата", "Время", "Время контроллера", *discrete_keys]
     body = []
     for item in rows_db:
         processed = decode_to_processed(item.date)
         _, discrete = analog_discrete_for_csv(processed)
         body.append(
             [
-                item.created_at.strftime("%Y-%m-%d"),
+                item.created_at.strftime("%d/%m/%Y"),
                 item.created_at.strftime("%H:%M:%S"),
+                str(processed.get("controller_time", "") or ""),
                 *[1 if bool(discrete.get(k, False)) else 0 for k in discrete_keys],
             ]
         )
@@ -791,6 +807,8 @@ def _build_live_dashboard_context(
     alarm_rows = [{"time": latest_time, "name": name} for name in active_alarms]
 
     system_monitor = _collect_system_monitor()
+    rpi_time = format_in_configured_timezone(now_in_configured_timezone_naive(), DATETIME_UI_FORMAT)
+    controller_time = str(latest_processed.get("controller_time", "") or "")
 
     return {
         "analog_time": analog_time,
@@ -800,6 +818,8 @@ def _build_live_dashboard_context(
         "alarm_rows": alarm_rows,
         "alarm_time": latest_time,
         "system_monitor": system_monitor,
+        "rpi_time": rpi_time,
+        "controller_time": controller_time,
     }
 
 

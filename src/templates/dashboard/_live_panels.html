@@ -1,5 +1,10 @@
 <div class="dashboard-grid">
     <section class="card">
+        <h3>Системное время</h3>
+        <p class="hint">RPi5: <strong>{{ rpi_time or "нет данных" }}</strong></p>
+        <p class="hint">Контроллер Deif: <strong>{{ controller_time or "нет данных" }}</strong></p>
+    </section>
+    <section class="card">
         <h3>Аналоговые данные</h3>
         <p class="hint">Последнее обновление: {{ analog_time or "нет данных" }}</p>
         {% if analog_items %}
