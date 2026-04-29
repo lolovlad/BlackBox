@@ -47,7 +47,10 @@ def main() -> int:
     configure_settings_path(os.getenv("PARSER_SETTINGS_PATH", "settings/settings.json"))
     reload_settings_cache()
     cfg = _build_runtime_config()
-    db_file = Path(cfg.db_path).resolve()
+    # В проекте допускают путь к файлу без расширения (например /mnt/nvme/db).
+    # Если в env случайно добавили слеш в конце — убираем его, не подставляя имя файла.
+    db_norm = str(cfg.db_path or "").rstrip("/\\")
+    db_file = Path(db_norm).resolve()
     db_file.parent.mkdir(parents=True, exist_ok=True)
     logging.getLogger(__name__).info("Reader DB resolved path: %s", db_file.as_posix())
     engine = create_engine(f"sqlite:///{db_file.as_posix()}")

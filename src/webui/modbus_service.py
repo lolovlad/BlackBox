@@ -360,7 +360,7 @@ class ModbusCollector:
         self._samples_written_total = 0
 
     def _resolve_db_path(self) -> str:
-        p = Path(self._config.db_path)
+        p = Path(str(self._config.db_path or "").rstrip("/\\"))
         resolved = p.resolve() if p.is_absolute() else (Path.cwd() / p).resolve()
         return resolved.as_posix()
 
@@ -608,6 +608,13 @@ class ModbusCollector:
                             self._db_path_resolved,
                         )
                         os._exit(3)  # noqa: S404
+                    logger.info(
+                        "DB samples_count_changed: %d -> %d (+%d) db=%s",
+                        before_cnt,
+                        after_cnt,
+                        after_cnt - before_cnt,
+                        self._db_path_resolved,
+                    )
                 self._samples_written_total += len(batch)
                 elapsed_ms = (time.monotonic() - flush_started) * 1000.0
                 logger.info(
