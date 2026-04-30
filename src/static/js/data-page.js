@@ -57,9 +57,8 @@ window.dataPage = function dataPage() {
                     }
                 }
             });
-            document
-                .querySelectorAll('#export-form input[name="table_analog"], #export-form input[name="table_discrete"], #export-form input[name="table_alarms"]')
-                .forEach((el) => el.addEventListener("change", () => this.syncExportPanels()));
+            // Export always includes Analog/Discrete/Alarms/GPIO tables now,
+            // so we don't depend on legacy table_* checkboxes anymore.
         },
         syncColPanels() {
             const tab = document.querySelector('input[name="active_tab"]:checked');
@@ -116,9 +115,11 @@ window.dataPage = function dataPage() {
             this.toggleExportModal(true);
         },
         syncExportPanels() {
-            const analogOn = !!document.querySelector('#export-form input[name="table_analog"]:checked');
-            const discreteOn = !!document.querySelector('#export-form input[name="table_discrete"]:checked');
-            const alarmsOn = !!document.querySelector('#export-form input[name="table_alarms"]:checked');
+            // Legacy UI used table_* checkboxes to enable/disable panels.
+            // Current export always includes the base tables, so panels are always enabled.
+            const analogOn = true;
+            const discreteOn = true;
+            const alarmsOn = true;
             const setPanel = (selector, enabled) => {
                 document.querySelectorAll(selector).forEach((el) => {
                     el.style.display = enabled ? "" : "none";
