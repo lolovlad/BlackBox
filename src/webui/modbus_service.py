@@ -258,7 +258,7 @@ def parse_fields(config: dict[str, Any], source_values: dict[str, list[Any]]) ->
 
         if f_type == "expr":
             try:
-                result[name] = _auto_round_value(_eval_expr(field["expr"], result), field=field)
+                result[name] = _eval_expr(field["expr"], result)
             except Exception:
                 result[name] = 0
             continue
@@ -299,7 +299,14 @@ def parse_fields(config: dict[str, Any], source_values: dict[str, list[Any]]) ->
                 value = _eval_expr(field["expr"], {"x": value, **result})
             except Exception:
                 pass
-        result[name] = _auto_round_value(value, field=field)
+        result[name] = value
+
+    # Finalization: apply per-field rounding only to final computed values.
+    for field in config.get("fields", []):
+        name = field.get("name")
+        if not name or name not in result:
+            continue
+        result[name] = _auto_round_value(result[name], field=field)
     for name in result.get("active_status", []):
         result[name] = True
     return result
