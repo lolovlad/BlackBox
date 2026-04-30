@@ -33,27 +33,6 @@
             <p class="hint">Дискретные записи еще не поступали.</p>
         {% endif %}
     </section>
-
-    <section class="card">
-        <h3>GPIO (Raspberry)</h3>
-        <p class="hint">Последнее обновление: {{ gpio_time or "нет данных" }}</p>
-        {% if gpio_items %}
-            <ul class="discrete-list">
-                {% for item in gpio_items %}
-                    <li class="{{ 'state-on' if item.is_on else 'state-off' }}">
-                        <span>{{ item.name }}</span>
-                        {% if item.value is none %}
-                            <strong>n/a</strong>
-                        {% else %}
-                            <strong>{{ "1" if item.is_on else "0" }}</strong>
-                        {% endif %}
-                    </li>
-                {% endfor %}
-            </ul>
-        {% else %}
-            <p class="hint">GPIO-данные еще не поступали.</p>
-        {% endif %}
-    </section>
 </div>
 
 <section class="card">
@@ -75,6 +54,27 @@
         </ul>
     {% else %}
         <p class="hint">Активных аварийных сообщений нет.</p>
+    {% endif %}
+</section>
+
+<section class="card">
+    <h3>GPIO (Raspberry)</h3>
+    <p class="hint">Последнее обновление: {{ gpio_time or "нет данных" }}</p>
+    {% if gpio_items %}
+        <ul class="discrete-list">
+            {% for item in gpio_items %}
+                <li class="{{ 'state-on' if item.is_on else 'state-off' }}">
+                    <span>{{ item.name }}</span>
+                    {% if item.value is none %}
+                        <strong>n/a</strong>
+                    {% else %}
+                        <strong>{{ "1" if item.is_on else "0" }}</strong>
+                    {% endif %}
+                </li>
+            {% endfor %}
+        </ul>
+    {% else %}
+        <p class="hint">GPIO-данные еще не поступали.</p>
     {% endif %}
 </section>
 
