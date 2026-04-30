@@ -226,6 +226,16 @@ class GpioCollector:
                 self._write_alarm(now_dt, p, val, state="inactive")
                 self._states[p.bcm_pin] = PinState(last_value=st2.last_value, pending_since=st2.pending_since, alarm_active=False)
 
+    def current_pin_values(self) -> list[dict[str, Any]]:
+        """Return current pin states for UI (no DB)."""
+        out: list[dict[str, Any]] = []
+        for p in self._pins:
+            st = self._states.get(p.bcm_pin)
+            if st is None:
+                continue
+            out.append({"bcm_pin": int(p.bcm_pin), "name": str(p.name), "value": int(st.last_value)})
+        return out
+
     def _write_alarm(self, ts: datetime, pin_cfg: Any, value: int, *, state: str) -> None:
         session = self._session_factory()
         try:

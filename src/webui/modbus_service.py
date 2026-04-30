@@ -92,7 +92,17 @@ def configure_settings_path(path: str | Path) -> None:
 
 
 def _eval_expr(expr: str, context: dict[str, Any]) -> Any:
-    return eval(expr, {"__builtins__": {}}, context)
+    # Allow a small, safe subset of helpers for parser expressions.
+    safe = {
+        "round": round,
+        "min": min,
+        "max": max,
+        "abs": abs,
+        "int": int,
+        "float": float,
+        "bool": bool,
+    }
+    return eval(expr, {"__builtins__": {}, **safe}, context)
 
 
 def _uint16_to_int16(raw: int) -> int:

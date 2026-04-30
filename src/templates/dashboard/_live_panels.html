@@ -33,6 +33,23 @@
             <p class="hint">Дискретные записи еще не поступали.</p>
         {% endif %}
     </section>
+
+    <section class="card">
+        <h3>GPIO (Raspberry)</h3>
+        <p class="hint">Последнее обновление: {{ gpio_time or "нет данных" }}</p>
+        {% if gpio_items %}
+            <ul class="discrete-list">
+                {% for item in gpio_items %}
+                    <li class="{{ 'state-on' if item.is_on else 'state-off' }}">
+                        <span>{{ item.name }}</span>
+                        <strong>{{ "1" if item.is_on else "0" }}</strong>
+                    </li>
+                {% endfor %}
+            </ul>
+        {% else %}
+            <p class="hint">GPIO-данные еще не поступали.</p>
+        {% endif %}
+    </section>
 </div>
 
 <section class="card">

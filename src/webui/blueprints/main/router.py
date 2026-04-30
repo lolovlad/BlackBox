@@ -966,6 +966,26 @@ def _build_live_dashboard_context(
     alarm_rows = [{"time": latest_time, "name": name} for name in active_alarms]
 
     system_monitor = _collect_system_monitor()
+    gpio_state_path = Path(current_app.instance_path) / "gpio-control" / "state.json"
+    gpio_items: list[dict[str, Any]] = []
+    gpio_time = None
+    try:
+        if gpio_state_path.exists():
+            payload = json.loads(gpio_state_path.read_text(encoding="utf-8"))
+            if isinstance(payload, dict):
+                raw_pins = payload.get("pins", [])
+                if isinstance(raw_pins, list):
+                    gpio_items = [
+                        {"name": str(p.get("name", "")) or f"GPIO_{p.get('bcm_pin')}", "is_on": bool(int(p.get("value", 0)) == 1)}
+                        for p in raw_pins
+                        if isinstance(p, dict)
+                    ]
+                raw_ts = payload.get("ts")
+                if isinstance(raw_ts, (int, float)):
+                    gpio_time = format_in_configured_timezone(datetime.fromtimestamp(float(raw_ts)), DATETIME_UI_FORMAT)
+    except Exception:
+        gpio_items = []
+        gpio_time = None
 
     return {
         "server_time": format_in_configured_timezone(datetime.now(), DATETIME_UI_FORMAT),
@@ -973,6 +993,8 @@ def _build_live_dashboard_context(
         "analog_items": analog_items,
         "discrete_time": discrete_time,
         "discrete_items": discrete_items,
+        "gpio_time": gpio_time,
+        "gpio_items": gpio_items,
         "alarm_rows": alarm_rows,
         "alarm_time": latest_time,
         "system_monitor": system_monitor,

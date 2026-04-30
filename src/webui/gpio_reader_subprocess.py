@@ -17,10 +17,17 @@ def _write_heartbeat(path: Path, *, pid: int) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
 
 
+def _write_gpio_state(path: Path, *, pins: list[dict]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {"ts": time.time(), "pins": pins}
+    path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+
 def main() -> int:
     heartbeat_path = Path(os.getenv("GPIO_READER_HEARTBEAT_PATH", "instance/gpio-control/heartbeat.json"))
     stop_path = Path(os.getenv("GPIO_READER_STOP_PATH", "instance/gpio-control/stop.flag"))
     settings_path = Path(os.getenv("GPIO_SETTINGS_PATH", "settings/gpio_inputs.json"))
+    state_path = Path(os.getenv("GPIO_READER_STATE_PATH", "instance/gpio-control/state.json"))
 
     db_path = os.getenv("BLACKBOX_DB_PATH", "instance/blackbox.db")
     db_file = Path(db_path).resolve()
@@ -37,6 +44,7 @@ def main() -> int:
             if stop_path.exists():
                 break
             collector.poll_once()  # single step to keep heartbeat loop responsive
+            _write_gpio_state(state_path, pins=collector.current_pin_values())
             time.sleep(collector.poll_interval_sec)
     finally:
         collector.stop()
