@@ -113,11 +113,7 @@
 
             <fieldset>
                 <legend>Таблицы для экспорта</legend>
-                <div class="checkbox-grid">
-                    <label class="chk"><input type="checkbox" name="table_analog" value="1" checked> Аналоги</label>
-                    <label class="chk"><input type="checkbox" name="table_discrete" value="1" checked> Дискреты</label>
-                    <label class="chk"><input type="checkbox" name="table_alarms" value="1" checked> Аварии</label>
-                </div>
+                <p class="hint">Экспортируется пакет из 4 таблиц: Аналоги, Дискреты, Аварии, GPIO.</p>
             </fieldset>
 
             <div id="export-col-root" class="filter-root" data-cols="all">
@@ -139,7 +135,11 @@
                 </fieldset>
                 <fieldset class="col-panel col-panel-alarms export-panel">
                     <legend>Поля (аварии)</legend>
-                    <p class="hint">Фиксированные колонки: дата, время, название.</p>
+                    <p class="hint">Фиксированные колонки: дата, время, название, состояние, видео.</p>
+                </fieldset>
+                <fieldset class="col-panel col-panel-gpio_alarms export-panel">
+                    <legend>Поля (GPIO)</legend>
+                    <p class="hint">Фиксированные колонки: дата, время, пин, название, состояние.</p>
                 </fieldset>
             </div>
 

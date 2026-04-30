@@ -15,7 +15,7 @@ from flask import Blueprint, abort, current_app, jsonify, render_template, reque
 from flask_login import login_required
 from sqlalchemy import inspect
 
-from src.database import Alarms, Samples, Video, db
+from src.database import AlarmRaspberry, Alarms, Samples, Video, db
 from src.webui.data_labels import (
     all_analog_keys,
     all_discrete_keys,
@@ -201,10 +201,6 @@ def _normalize_export_range(date_from: datetime | None, date_to: datetime | None
 @data_router.route("/export/batch", methods=["POST"])
 @login_required
 def export_batch():
-    tables = _selected_export_tables()
-    if not tables:
-        return render_template("data/_export_result.html", error="Выберите хотя бы одну таблицу для экспорта.", download_url=None)
-
     export_format = (request.form.get("export_format") or "csv_zip").strip().lower()
     if export_format not in ("csv_zip", "excel"):
         return render_template("data/_export_result.html", error="Некорректный формат экспорта.", download_url=None)
@@ -214,20 +210,39 @@ def export_batch():
         _parse_dt_local(request.form.get("date_to")),
     )
     if date_from is None or date_to is None:
-        return render_template("data/_export_result.html", error="Для экспорта укажите дату/время начала и конца.", download_url=None)
+        return render_template(
+            "data/_export_result.html",
+            error="Для экспорта укажите дату/время начала и конца.",
+            download_url=None,
+        )
     sort_desc = (request.form.get("sort") or "desc").lower() != "asc"
     analog_keys = request.form.getlist("analog_col_export")
     discrete_keys = request.form.getlist("discrete_col_export")
-    if "analog" in tables and not analog_keys:
-        return render_template("data/_export_result.html", error="Для таблицы «Аналоги» выберите хотя бы одно поле.", download_url=None)
-    if "discrete" in tables and not discrete_keys:
-        return render_template("data/_export_result.html", error="Для таблицы «Дискреты» выберите хотя бы одно поле.", download_url=None)
+    if not analog_keys:
+        return render_template(
+            "data/_export_result.html",
+            error="Для таблицы «Аналоги» выберите хотя бы одно поле.",
+            download_url=None,
+        )
+    if not discrete_keys:
+        return render_template(
+            "data/_export_result.html",
+            error="Для таблицы «Дискреты» выберите хотя бы одно поле.",
+            download_url=None,
+        )
 
     collector = current_app.extensions["modbus_collector"]
-    if "alarms" in tables and not collector._alarms_enabled:
+    if not collector._alarms_enabled:
         return render_template(
             "data/_export_result.html",
             error="Таблица аварий недоступна (нет таблицы в БД). Выполните миграции.",
+            download_url=None,
+        )
+    gpio_enabled = bool(current_app.extensions.get("gpio_alarms_enabled", True))
+    if not gpio_enabled:
+        return render_template(
+            "data/_export_result.html",
+            error="Таблица GPIO недоступна (нет таблицы в БД). Выполните миграции.",
             download_url=None,
         )
 
@@ -236,218 +251,232 @@ def export_batch():
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     session_factory = current_app.extensions["session_factory"]
 
-    if export_format == "csv_zip":
-        out_path = static_csv_dir / f"export_package_{stamp}.zip"
-        try:
-            with zipfile.ZipFile(out_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-                with session_factory() as session:
-                    # Если экспортируем аварии — добавляем в пакет и связанные видео.
-                    allowed_video_roots = _video_allowed_roots() if "alarms" in tables else []
-                    videos_csv_tmp_path: Path | None = None
-                    if "alarms" in tables:
-                        alarm_ids = [
-                            r[0]
-                            for r in session.query(Alarms.id)
-                            .filter(Alarms.created_at >= date_from, Alarms.created_at <= date_to)
-                            .all()
-                        ]
-                        video_q = (
-                            session.query(Video)
-                            .filter(Video.alarm_id.is_not(None))
-                            .filter(Video.alarm_id.in_(alarm_ids))
-                            .order_by(Video.created_at.desc() if sort_desc else Video.created_at.asc())
-                        )
-                        videos_csv_tmp = tempfile.NamedTemporaryFile(
-                            prefix="videos_", suffix=".csv", delete=False, mode="w", newline="", encoding="utf-8-sig"
-                        )
-                        videos_csv_tmp_path = Path(videos_csv_tmp.name)
-                        try:
-                            vw = csv.writer(videos_csv_tmp, delimiter=";")
-                            vw.writerow(
-                                ["ID", "Дата", "Время", "Время_захвата", "Имя_файла", "Путь_к_файлу", "ID_аварии"]
-                            )
-                            for v in video_q.yield_per(1000):
-                                vw.writerow(
-                                    [
-                                        v.id,
-                                        v.created_at.strftime("%d/%m/%Y"),
-                                        v.created_at.strftime("%H:%M:%S"),
-                                        v.captured_at.strftime("%d/%m/%Y %H:%M:%S"),
-                                        v.file_name,
-                                        v.file_path,
-                                        v.alarm_id if v.alarm_id is not None else "",
-                                    ]
-                                )
-
-                                # Подключаем бинарные файлы в ZIP.
-                                file_path = _normalize_video_fs_path(v.file_path)
-                                try:
-                                    resolved = file_path.resolve()
-                                except OSError:
-                                    continue
-                                if not resolved.exists() or not resolved.is_file():
-                                    continue
-                                if not _is_under_any_root(resolved, allowed_video_roots):
-                                    continue
-                                arcname = f"videos/{v.id}_{v.file_name}"
-                                zf.write(str(resolved), arcname=arcname)
-                        finally:
-                            videos_csv_tmp.close()
-
-                    for table in tables:
-                        csv_tmp = tempfile.NamedTemporaryFile(
-                            prefix=f"{table}_", suffix=".csv", delete=False, mode="w", newline="", encoding="utf-8-sig"
-                        )
-                        csv_tmp_path = Path(csv_tmp.name)
-                        try:
-                            writer = csv.writer(csv_tmp, delimiter=";")
-                            if table == "analog":
-                                writer.writerow(["Дата", "Время", *analog_keys])
-                                stmt = session.query(Samples).filter(
-                                    Samples.created_at >= date_from, Samples.created_at <= date_to
-                                )
-                                stmt = stmt.order_by(Samples.created_at.desc() if sort_desc else Samples.created_at.asc())
-                                for item in stmt.yield_per(1000):
-                                    processed = decode_to_processed(item.date)
-                                    analog, _ = analog_discrete_for_csv(processed)
-                                    writer.writerow(
-                                        [
-                                            item.created_at.strftime("%d/%m/%Y"),
-                                            item.created_at.strftime("%H:%M:%S"),
-                                            *[analog.get(k, "") for k in analog_keys],
-                                        ]
-                                    )
-                            elif table == "discrete":
-                                writer.writerow(["Дата", "Время", *discrete_keys])
-                                stmt = session.query(Samples).filter(
-                                    Samples.created_at >= date_from, Samples.created_at <= date_to
-                                )
-                                stmt = stmt.order_by(Samples.created_at.desc() if sort_desc else Samples.created_at.asc())
-                                for item in stmt.yield_per(1000):
-                                    processed = decode_to_processed(item.date)
-                                    _, discrete = analog_discrete_for_csv(processed)
-                                    writer.writerow(
-                                        [
-                                            item.created_at.strftime("%d/%m/%Y"),
-                                            item.created_at.strftime("%H:%M:%S"),
-                                            *[1 if bool(discrete.get(k, False)) else 0 for k in discrete_keys],
-                                        ]
-                                    )
-                            else:
-                                writer.writerow(["Дата", "Время", "Название", "Состояние"])
-                                stmt = session.query(Alarms).filter(
-                                    Alarms.created_at >= date_from, Alarms.created_at <= date_to
-                                )
-                                stmt = stmt.order_by(Alarms.created_at.desc() if sort_desc else Alarms.created_at.asc())
-                                for item in stmt.yield_per(1000):
-                                    writer.writerow(
-                                        [
-                                            item.created_at.strftime("%d/%m/%Y"),
-                                            item.created_at.strftime("%H:%M:%S"),
-                                            item.name,
-                                            getattr(item, "state", "active"),
-                                        ]
-                                    )
-                        finally:
-                            csv_tmp.close()
-                        zf.write(csv_tmp_path, arcname=f"{table}.csv")
-                        csv_tmp_path.unlink(missing_ok=True)
-                        if videos_csv_tmp_path is not None:
-                            zf.write(str(videos_csv_tmp_path), arcname="videos.csv")
-                            videos_csv_tmp_path.unlink(missing_ok=True)
-        except Exception:
-            out_path.unlink(missing_ok=True)
-            raise
-        rel = out_path.relative_to(current_app.static_folder)
-        return render_template(
-            "data/_export_result.html",
-            error=None,
-            download_url=url_for("static", filename=str(rel).replace("\\", "/")),
-        )
-
+    out_path = static_csv_dir / f"export_package_{stamp}.zip"
     try:
-        from openpyxl import Workbook
-    except Exception:
-        return render_template(
-            "data/_export_result.html",
-            error="Для Excel-экспорта требуется пакет openpyxl. Установите зависимость и повторите.",
-            download_url=None,
-        )
-
-    out_path = static_csv_dir / f"export_package_{stamp}.xlsx"
-    try:
-        wb = Workbook()
-        wb.remove(wb.active)
-        sheet_title = {"analog": "Аналоги", "discrete": "Дискреты", "alarms": "Аварии", "videos": "Видео"}
-        with session_factory() as session:
-            for table in tables:
-                ws = wb.create_sheet(sheet_title.get(table, table))
-                if table == "analog":
-                    ws.append(["Дата", "Время", *analog_keys])
-                    stmt = session.query(Samples).filter(Samples.created_at >= date_from, Samples.created_at <= date_to)
-                    stmt = stmt.order_by(Samples.created_at.desc() if sort_desc else Samples.created_at.asc())
-                    for item in stmt.yield_per(1000):
-                        processed = decode_to_processed(item.date)
-                        analog, _ = analog_discrete_for_csv(processed)
-                        ws.append(
-                            [
-                                item.created_at.strftime("%d/%m/%Y"),
-                                item.created_at.strftime("%H:%M:%S"),
-                                *[analog.get(k, "") for k in analog_keys],
-                            ]
-                        )
-                elif table == "discrete":
-                    ws.append(["Дата", "Время", *discrete_keys])
-                    stmt = session.query(Samples).filter(Samples.created_at >= date_from, Samples.created_at <= date_to)
-                    stmt = stmt.order_by(Samples.created_at.desc() if sort_desc else Samples.created_at.asc())
-                    for item in stmt.yield_per(1000):
-                        processed = decode_to_processed(item.date)
-                        _, discrete = analog_discrete_for_csv(processed)
-                        ws.append(
-                            [
-                                item.created_at.strftime("%d/%m/%Y"),
-                                item.created_at.strftime("%H:%M:%S"),
-                                *[1 if bool(discrete.get(k, False)) else 0 for k in discrete_keys],
-                            ]
-                        )
-                else:
-                    ws.append(["Дата", "Время", "Название", "Состояние"])
-                    stmt = session.query(Alarms).filter(Alarms.created_at >= date_from, Alarms.created_at <= date_to)
-                    stmt = stmt.order_by(Alarms.created_at.desc() if sort_desc else Alarms.created_at.asc())
-                    for item in stmt.yield_per(1000):
-                        ws.append(
-                            [
-                                item.created_at.strftime("%d/%m/%Y"),
-                                item.created_at.strftime("%H:%M:%S"),
-                                item.name,
-                                getattr(item, "state", "active"),
-                            ]
-                        )
-
-            if "alarms" in tables:
-                ws = wb.create_sheet(sheet_title["videos"])
-                ws.append(["ID", "Сохранено_в_БД", "Время_захвата", "Имя_файла", "ID_аварии", "Путь_к_файлу"])
-                video_stmt = (
-                    session.query(Video)
-                    .join(Alarms, Video.alarm_id == Alarms.id)
+        with zipfile.ZipFile(out_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+            with session_factory() as session:
+                # Видео-файлы: берём только те, что привязаны к авариям в диапазоне.
+                allowed_video_roots = _video_allowed_roots()
+                alarm_rows = (
+                    session.query(Alarms)
                     .filter(Alarms.created_at >= date_from, Alarms.created_at <= date_to)
-                    .order_by(Video.created_at.desc() if sort_desc else Video.created_at.asc())
+                    .order_by(Alarms.created_at.desc() if sort_desc else Alarms.created_at.asc())
+                    .all()
                 )
-                for v in video_stmt.yield_per(1000):
-                    ws.append(
-                        [
-                            v.id,
-                            f"{v.created_at.strftime('%d/%m/%Y')} {v.created_at.strftime('%H:%M:%S')}",
-                            f"{v.captured_at.strftime('%d/%m/%Y %H:%M:%S')}",
-                            v.file_name,
-                            v.alarm_id,
-                            v.file_path,
-                        ]
+                alarm_ids = [int(a.id) for a in alarm_rows]
+                videos_by_alarm: dict[int, list[str]] = {}
+                if alarm_ids:
+                    video_q = (
+                        session.query(Video)
+                        .filter(Video.alarm_id.is_not(None))
+                        .filter(Video.alarm_id.in_(alarm_ids))
+                        .order_by(Video.created_at.desc() if sort_desc else Video.created_at.asc())
                     )
-        wb.save(out_path)
+                    for v in video_q.yield_per(1000):
+                        if v.alarm_id is None:
+                            continue
+                        videos_by_alarm.setdefault(int(v.alarm_id), []).append(str(v.file_name))
+
+                        file_path = _normalize_video_fs_path(v.file_path)
+                        try:
+                            resolved = file_path.resolve()
+                        except OSError:
+                            continue
+                        if not resolved.exists() or not resolved.is_file():
+                            continue
+                        if not _is_under_any_root(resolved, allowed_video_roots):
+                            continue
+                        arcname = f"videos/{v.id}_{v.file_name}"
+                        zf.write(str(resolved), arcname=arcname)
+
+                if export_format == "csv_zip":
+                    # analog.csv
+                    analog_tmp = tempfile.NamedTemporaryFile(
+                        prefix="analog_", suffix=".csv", delete=False, mode="w", newline="", encoding="utf-8-sig"
+                    )
+                    analog_path = Path(analog_tmp.name)
+                    try:
+                        w = csv.writer(analog_tmp, delimiter=";")
+                        w.writerow(["Дата", "Время", *analog_keys])
+                        stmt = session.query(Samples).filter(Samples.created_at >= date_from, Samples.created_at <= date_to)
+                        stmt = stmt.order_by(Samples.created_at.desc() if sort_desc else Samples.created_at.asc())
+                        for item in stmt.yield_per(1000):
+                            processed = decode_to_processed(item.date)
+                            analog, _ = analog_discrete_for_csv(processed)
+                            w.writerow(
+                                [
+                                    item.created_at.strftime("%d/%m/%Y"),
+                                    item.created_at.strftime("%H:%M:%S"),
+                                    *[analog.get(k, "") for k in analog_keys],
+                                ]
+                            )
+                    finally:
+                        analog_tmp.close()
+                    zf.write(str(analog_path), arcname="analog.csv")
+                    analog_path.unlink(missing_ok=True)
+
+                    # discrete.csv
+                    discrete_tmp = tempfile.NamedTemporaryFile(
+                        prefix="discrete_", suffix=".csv", delete=False, mode="w", newline="", encoding="utf-8-sig"
+                    )
+                    discrete_path = Path(discrete_tmp.name)
+                    try:
+                        w = csv.writer(discrete_tmp, delimiter=";")
+                        w.writerow(["Дата", "Время", *discrete_keys])
+                        stmt = session.query(Samples).filter(Samples.created_at >= date_from, Samples.created_at <= date_to)
+                        stmt = stmt.order_by(Samples.created_at.desc() if sort_desc else Samples.created_at.asc())
+                        for item in stmt.yield_per(1000):
+                            processed = decode_to_processed(item.date)
+                            _, discrete = analog_discrete_for_csv(processed)
+                            w.writerow(
+                                [
+                                    item.created_at.strftime("%d/%m/%Y"),
+                                    item.created_at.strftime("%H:%M:%S"),
+                                    *[1 if bool(discrete.get(k, False)) else 0 for k in discrete_keys],
+                                ]
+                            )
+                    finally:
+                        discrete_tmp.close()
+                    zf.write(str(discrete_path), arcname="discrete.csv")
+                    discrete_path.unlink(missing_ok=True)
+
+                    # alarms.csv (с именами видео)
+                    alarms_tmp = tempfile.NamedTemporaryFile(
+                        prefix="alarms_", suffix=".csv", delete=False, mode="w", newline="", encoding="utf-8-sig"
+                    )
+                    alarms_path = Path(alarms_tmp.name)
+                    try:
+                        w = csv.writer(alarms_tmp, delimiter=";")
+                        w.writerow(["Дата", "Время", "Название", "Состояние", "Видео"])
+                        for item in alarm_rows:
+                            vids = videos_by_alarm.get(int(item.id), [])
+                            w.writerow(
+                                [
+                                    item.created_at.strftime("%d/%m/%Y"),
+                                    item.created_at.strftime("%H:%M:%S"),
+                                    item.name,
+                                    getattr(item, "state", "active"),
+                                    ", ".join(vids),
+                                ]
+                            )
+                    finally:
+                        alarms_tmp.close()
+                    zf.write(str(alarms_path), arcname="alarms.csv")
+                    alarms_path.unlink(missing_ok=True)
+
+                    # gpio.csv
+                    gpio_tmp = tempfile.NamedTemporaryFile(
+                        prefix="gpio_", suffix=".csv", delete=False, mode="w", newline="", encoding="utf-8-sig"
+                    )
+                    gpio_path = Path(gpio_tmp.name)
+                    try:
+                        w = csv.writer(gpio_tmp, delimiter=";")
+                        w.writerow(["Дата", "Время", "Пин", "Название", "Состояние"])
+                        stmt = session.query(AlarmRaspberry).filter(
+                            AlarmRaspberry.created_at >= date_from, AlarmRaspberry.created_at <= date_to
+                        )
+                        stmt = stmt.order_by(
+                            AlarmRaspberry.created_at.desc() if sort_desc else AlarmRaspberry.created_at.asc()
+                        )
+                        for item in stmt.yield_per(1000):
+                            w.writerow(
+                                [
+                                    item.created_at.strftime("%d/%m/%Y"),
+                                    item.created_at.strftime("%H:%M:%S"),
+                                    item.bcm_pin,
+                                    item.name,
+                                    item.state,
+                                ]
+                            )
+                    finally:
+                        gpio_tmp.close()
+                    zf.write(str(gpio_path), arcname="gpio.csv")
+                    gpio_path.unlink(missing_ok=True)
+
+                else:
+                    try:
+                        from openpyxl import Workbook
+                    except Exception:
+                        raise RuntimeError("Для Excel-экспорта требуется пакет openpyxl.")
+
+                    xlsx_tmp = tempfile.NamedTemporaryFile(prefix="export_", suffix=".xlsx", delete=False)
+                    xlsx_path = Path(xlsx_tmp.name)
+                    xlsx_tmp.close()
+                    try:
+                        wb = Workbook()
+                        wb.remove(wb.active)
+
+                        ws = wb.create_sheet("Аналоги")
+                        ws.append(["Дата", "Время", *analog_keys])
+                        stmt = session.query(Samples).filter(Samples.created_at >= date_from, Samples.created_at <= date_to)
+                        stmt = stmt.order_by(Samples.created_at.desc() if sort_desc else Samples.created_at.asc())
+                        for item in stmt.yield_per(1000):
+                            processed = decode_to_processed(item.date)
+                            analog, _ = analog_discrete_for_csv(processed)
+                            ws.append(
+                                [
+                                    item.created_at.strftime("%d/%m/%Y"),
+                                    item.created_at.strftime("%H:%M:%S"),
+                                    *[analog.get(k, "") for k in analog_keys],
+                                ]
+                            )
+
+                        ws = wb.create_sheet("Дискреты")
+                        ws.append(["Дата", "Время", *discrete_keys])
+                        stmt = session.query(Samples).filter(Samples.created_at >= date_from, Samples.created_at <= date_to)
+                        stmt = stmt.order_by(Samples.created_at.desc() if sort_desc else Samples.created_at.asc())
+                        for item in stmt.yield_per(1000):
+                            processed = decode_to_processed(item.date)
+                            _, discrete = analog_discrete_for_csv(processed)
+                            ws.append(
+                                [
+                                    item.created_at.strftime("%d/%m/%Y"),
+                                    item.created_at.strftime("%H:%M:%S"),
+                                    *[1 if bool(discrete.get(k, False)) else 0 for k in discrete_keys],
+                                ]
+                            )
+
+                        ws = wb.create_sheet("Аварии")
+                        ws.append(["Дата", "Время", "Название", "Состояние", "Видео"])
+                        for item in alarm_rows:
+                            vids = videos_by_alarm.get(int(item.id), [])
+                            ws.append(
+                                [
+                                    item.created_at.strftime("%d/%m/%Y"),
+                                    item.created_at.strftime("%H:%M:%S"),
+                                    item.name,
+                                    getattr(item, "state", "active"),
+                                    ", ".join(vids),
+                                ]
+                            )
+
+                        ws = wb.create_sheet("GPIO")
+                        ws.append(["Дата", "Время", "Пин", "Название", "Состояние"])
+                        stmt = session.query(AlarmRaspberry).filter(
+                            AlarmRaspberry.created_at >= date_from, AlarmRaspberry.created_at <= date_to
+                        )
+                        stmt = stmt.order_by(
+                            AlarmRaspberry.created_at.desc() if sort_desc else AlarmRaspberry.created_at.asc()
+                        )
+                        for item in stmt.yield_per(1000):
+                            ws.append(
+                                [
+                                    item.created_at.strftime("%d/%m/%Y"),
+                                    item.created_at.strftime("%H:%M:%S"),
+                                    item.bcm_pin,
+                                    item.name,
+                                    item.state,
+                                ]
+                            )
+
+                        wb.save(xlsx_path)
+                        zf.write(str(xlsx_path), arcname="export.xlsx")
+                    finally:
+                        xlsx_path.unlink(missing_ok=True)
     except Exception:
         out_path.unlink(missing_ok=True)
         raise
+
     rel = out_path.relative_to(current_app.static_folder)
     return render_template(
         "data/_export_result.html",
