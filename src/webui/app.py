@@ -31,7 +31,9 @@ from src.webui.app_runtime_config import (
 from src.webui.modbus_service import configure_settings_path, reload_settings_cache
 from src.webui.paths import SRC_DIR, STATIC_DIR, TEMPLATES_DIR
 from src.webui.reader_supervisor import ReaderSupervisor
+from src.webui.gpio_reader_supervisor import GpioReaderSupervisor
 from src.webui.background_tasks import MaintenanceScheduler
+from src.webui.gpio_settings import ensure_gpio_inputs_file, gpio_inputs_path
 from src.webui.system_settings import (
     load_env_into_os,
     prune_parser_settings_json_files,
@@ -200,10 +202,12 @@ def create_app() -> Flask:
         required_tables = ("samples",)
         missing_required: list[str] = []
         alarms_enabled = False
+        gpio_alarms_enabled = False
         try:
             inspector = inspect(db.engine)
             missing_required = [t for t in required_tables if not inspector.has_table(t)]
             alarms_enabled = inspector.has_table("alarms")
+            gpio_alarms_enabled = inspector.has_table("alarms_raspberry")
         except OperationalError:
             missing_required = list(required_tables)
             logger.exception("Cannot inspect DB schema at %s", db_file)
@@ -212,11 +216,18 @@ def create_app() -> Flask:
             logger.error("Missing required tables %s. Run migrations.", ",".join(missing_required))
         if not alarms_enabled:
             logger.error("Table 'alarms' is missing. Run migrations.")
+        if not gpio_alarms_enabled:
+            logger.error("Table 'alarms_raspberry' is missing. Run migrations.")
 
         session_factory = sessionmaker(bind=db.engine, autoflush=False, autocommit=False, expire_on_commit=False)
 
     collector = ReaderSupervisor(
         runtime=config, alarms_enabled=alarms_enabled, instance_dir=instance_dir, project_root=project_root
+    )
+    gpio_settings = gpio_inputs_path(project_root)
+    ensure_gpio_inputs_file(gpio_settings)
+    gpio_collector = GpioReaderSupervisor(
+        instance_dir=instance_dir, project_root=project_root, gpio_settings_path=gpio_settings
     )
     maintenance = MaintenanceScheduler(
         session_factory=session_factory,
@@ -227,9 +238,15 @@ def create_app() -> Flask:
     if not app_rt.disable_modbus_collector and not missing_required:
         collector.start()
         atexit.register(collector.stop)
+    if os.getenv("GPIO_READER_ENABLED", "1") == "1" and gpio_alarms_enabled:
+        gpio_collector.start()
+        atexit.register(gpio_collector.stop)
 
     app.extensions["session_factory"] = session_factory
     app.extensions["modbus_collector"] = collector
+    app.extensions["gpio_collector"] = gpio_collector
+    app.extensions["gpio_settings_path"] = gpio_settings
+    app.extensions["gpio_alarms_enabled"] = gpio_alarms_enabled
     app.extensions["maintenance_scheduler"] = maintenance
     app.extensions["static_csv_dir"] = static_csv_dir
     app.extensions["env_path"] = env_path

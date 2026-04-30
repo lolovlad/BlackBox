@@ -29,7 +29,7 @@ DATETIME_UI_FORMAT = "%d.%m.%Y %H:%M:%S"
 
 @dataclass(frozen=True)
 class DataFilter:
-    active_tab: str  # analog | discrete | alarms | videos
+    active_tab: str  # analog | discrete | alarms | videos | gpio_alarms
     date_from: datetime | None
     date_to: datetime | None
     sort_desc: bool
@@ -93,7 +93,7 @@ def _parse_page(raw: str | None) -> int:
 
 def parse_data_filter(source: ImmutableMultiDict | MultiDict) -> DataFilter:
     tab = (source.get("active_tab") or "analog").strip().lower()
-    if tab not in ("analog", "discrete", "alarms", "videos"):
+    if tab not in ("analog", "discrete", "alarms", "videos", "gpio_alarms"):
         tab = "analog"
     date_from, date_to = _normalize_date_range(
         _parse_dt(source.get("date_from")),
@@ -117,15 +117,27 @@ def parse_data_filter(source: ImmutableMultiDict | MultiDict) -> DataFilter:
 
 
 class DataService:
-    def __init__(self, repository: DataRepository, alarms_enabled: bool) -> None:
+    def __init__(self, repository: DataRepository, alarms_enabled: bool, gpio_alarms_enabled: bool = True) -> None:
         self._repo = repository
         self._alarms_enabled = alarms_enabled
+        self._gpio_alarms_enabled = gpio_alarms_enabled
 
     def collect_tab(self, flt: DataFilter) -> dict[str, Any]:
         tab = flt.active_tab
         if tab == "alarms" and not self._alarms_enabled:
             return {
                 "tab": "alarms",
+                "alarms_disabled": True,
+                "columns": [],
+                "rows": [],
+                "page": 1,
+                "total_pages": 1,
+                "total_rows": 0,
+                "page_size": TABLE_PAGE_SIZE,
+            }
+        if tab == "gpio_alarms" and not self._gpio_alarms_enabled:
+            return {
+                "tab": "gpio_alarms",
                 "alarms_disabled": True,
                 "columns": [],
                 "rows": [],
@@ -239,6 +251,41 @@ class DataService:
                 "page_size": TABLE_PAGE_SIZE,
             }
 
+        if tab == "gpio_alarms":
+            total = self._repo.count_gpio_alarms(created_from=flt.date_from, created_to=flt.date_to)
+            total_pages = max(1, (total + TABLE_PAGE_SIZE - 1) // TABLE_PAGE_SIZE) if total else 1
+            page_eff = min(max(1, flt.page), total_pages)
+            offset = (page_eff - 1) * TABLE_PAGE_SIZE
+            rows_db = self._repo.list_gpio_alarms(
+                created_from=flt.date_from,
+                created_to=flt.date_to,
+                sort_desc=flt.sort_desc,
+                offset=offset,
+                limit=TABLE_PAGE_SIZE,
+            )
+            out_rows = [
+                {
+                    "time": format_in_configured_timezone(item.created_at, DATETIME_UI_FORMAT),
+                    "ended_at": format_in_configured_timezone(item.ended_at, DATETIME_UI_FORMAT)
+                    if item.ended_at is not None
+                    else "-",
+                    "pin": int(item.bcm_pin),
+                    "name": str(item.name),
+                    "state": str(item.state),
+                }
+                for item in rows_db
+            ]
+            return {
+                "tab": "gpio_alarms",
+                "columns": [],
+                "rows": out_rows,
+                "alarms_disabled": False,
+                "page": page_eff,
+                "total_pages": total_pages,
+                "total_rows": total,
+                "page_size": TABLE_PAGE_SIZE,
+            }
+
         total = self._repo.count_alarms(created_from=flt.date_from, created_to=flt.date_to)
         total_pages = max(1, (total + TABLE_PAGE_SIZE - 1) // TABLE_PAGE_SIZE) if total else 1
         page_eff = min(max(1, flt.page), total_pages)
@@ -291,6 +338,31 @@ class DataService:
                     date_part = format_in_configured_timezone(dt, "%d/%m/%Y")
                     time_part = format_in_configured_timezone(dt, "%H:%M:%S")
                     w.writerow([i, date_part, time_part, item.name, getattr(item, "state", "active")])
+            return path
+
+        if flt.active_tab == "gpio_alarms":
+            if not self._gpio_alarms_enabled:
+                raise ValueError("alarms_disabled")
+            rows_db = self._repo.list_gpio_alarms(
+                created_from=flt.date_from,
+                created_to=flt.date_to,
+                sort_desc=flt.sort_desc,
+                offset=0,
+                limit=None,
+            )
+            with path.open("w", newline="", encoding="utf-8") as f:
+                w = csv.writer(f, delimiter=";")
+                w.writerow(["№", "Дата", "Время", "Пин", "Название", "Состояние", "Окончание"])
+                for i, item in enumerate(rows_db, start=1):
+                    dt = item.created_at
+                    date_part = format_in_configured_timezone(dt, "%d/%m/%Y")
+                    time_part = format_in_configured_timezone(dt, "%H:%M:%S")
+                    end_part = (
+                        format_in_configured_timezone(item.ended_at, "%d.%m.%Y %H:%M:%S")
+                        if item.ended_at is not None
+                        else ""
+                    )
+                    w.writerow([i, date_part, time_part, item.bcm_pin, item.name, item.state, end_part])
             return path
 
         if flt.active_tab == "analog":

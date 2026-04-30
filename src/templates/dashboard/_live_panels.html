@@ -61,6 +61,11 @@
     <h3>Мониторинг устройства</h3>
     <div class="monitor-grid">
         <div class="monitor-item">
+            <div class="monitor-title">Время устройства</div>
+            <div class="monitor-value">{{ server_time }}</div>
+            <div class="monitor-hint">Системное время Raspberry (где запущен сервер)</div>
+        </div>
+        <div class="monitor-item">
             <div class="monitor-title">Диск</div>
             <div class="monitor-value">
                 {% if system_monitor.disk.percent is not none %}

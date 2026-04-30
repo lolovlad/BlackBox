@@ -4,6 +4,9 @@
 
 <section class="card settings-page data-page">
     <h2>Чтение Modbus и парсер</h2>
+    <p class="hint">
+        <a class="text-indigo-700 underline" href="{{ url_for('main_blueprint.settings_gpio') }}">Настройки GPIO (Raspberry Pi)</a>
+    </p>
 
     <form method="post" action="{{ url_for('main_blueprint.settings_save') }}" class="settings-form" lang="ru">
         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>

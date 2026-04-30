@@ -9,7 +9,7 @@ from datetime import datetime
 import pytest
 from werkzeug.datastructures import MultiDict
 
-from src.database import Samples, TypeUser, User, db
+from src.database import AlarmRaspberry, Samples, TypeUser, User, db
 from src.webui.modbus_service import pack_snapshot, parse_fields
 from src.webui.repositories.data_repository import DataRepository
 from src.webui.services.data_service import (
@@ -152,6 +152,18 @@ def memory_app(monkeypatch, tmp_path):
         blob = _minimal_blob()
         for ts in (t0, t1, t2):
             db.session.add(Samples(created_at=ts, date=blob))
+        db.session.add(
+            AlarmRaspberry(
+                created_at=t1,
+                ended_at=t2,
+                state="inactive",
+                bcm_pin=27,
+                name="GPIO_27",
+                trigger_level=0,
+                hold_sec=0.5,
+                description="value=0",
+            )
+        )
         db.session.commit()
     yield app
 
@@ -223,6 +235,13 @@ def test_http_data_tables_returns_rows_for_admin(memory_app) -> None:
     assert "03.01.2026" in body
     assert "data-table-result" in body
     assert "Всего записей: 3" in body
+
+    r2 = client.get("/data/tables?active_tab=gpio_alarms&sort=desc&page=1")
+    assert r2.status_code == 200
+    body2 = r2.get_data(as_text=True)
+    assert "GPIO (Raspberry)" in body2
+    assert "GPIO_27" in body2
+    assert "27" in body2
 
 
 def test_parse_fields_int16_signed_temperature_raw() -> None:

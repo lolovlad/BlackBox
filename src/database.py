@@ -4,7 +4,7 @@ from datetime import datetime
 
 from flask_login import UserMixin
 from flask_sqlalchemy import SQLAlchemy
-from sqlalchemy import DateTime, ForeignKey, Integer, LargeBinary, String, Text
+from sqlalchemy import DateTime, Float, ForeignKey, Integer, LargeBinary, String, Text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -56,6 +56,21 @@ class Alarms(db.Model, DateMixin):
     state: Mapped[str] = mapped_column(String(32), nullable=False, default="active")
     description: Mapped[str] = mapped_column(String(255), nullable=True)
     videos: Mapped[list["Video"]] = relationship(back_populates="alarm")
+
+
+class AlarmRaspberry(db.Model):
+    __tablename__ = "alarms_raspberry"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    state: Mapped[str] = mapped_column(String(32), nullable=False, default="active")
+
+    bcm_pin: Mapped[int] = mapped_column(Integer, nullable=False)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    trigger_level: Mapped[int] = mapped_column(Integer, nullable=False)
+    hold_sec: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    description: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
 
 class EventLog(db.Model):

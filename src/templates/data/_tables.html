@@ -2,6 +2,39 @@
 <section class="card" id="data-table-result" data-page="1" data-total-pages="1">
     <p class="flash error">Таблица аварий недоступна. Выполните миграции БД.</p>
 </section>
+{% elif tab == 'gpio_alarms' %}
+<section class="card" id="data-table-result" data-page="{{ page }}" data-total-pages="{{ total_pages }}">
+    <h3>GPIO (Raspberry)</h3>
+    <p class="hint data-table-meta">Всего записей: {{ total_rows }} · страница {{ page }} из {{ total_pages }} (по {{ page_size }})</p>
+    <div class="table-wrap">
+        <table>
+            <thead>
+            <tr>
+                <th>Время</th>
+                <th>Окончание</th>
+                <th>Пин (BCM)</th>
+                <th>Название</th>
+                <th>Состояние</th>
+            </tr>
+            </thead>
+            <tbody>
+            {% for row in rows %}
+                <tr>
+                    <td>{{ row.time }}</td>
+                    <td>{{ row.ended_at }}</td>
+                    <td>{{ row.pin }}</td>
+                    <td>{{ row.name }}</td>
+                    <td>{{ row.state }}</td>
+                </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% if not rows %}
+        <p class="hint">Нет записей за выбранные условия.</p>
+    {% endif %}
+    {% include "data/_pagination.html" %}
+</section>
 {% elif tab == 'videos' %}
 <section class="card" id="data-table-result" data-page="{{ page }}" data-total-pages="{{ total_pages }}">
     <h3>Видео (сохраненные записи)</h3>

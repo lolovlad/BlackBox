@@ -10,7 +10,7 @@ import os
 import shutil
 import time
 import zipfile
-from datetime import timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -53,6 +53,7 @@ from src.webui.system_settings import (
     test_modbus_settings,
     validate_parser_json,
 )
+from src.webui.gpio_settings import ensure_gpio_inputs_file, gpio_inputs_path, validate_gpio_inputs_json
 from src.webui.timezone_utils import format_in_configured_timezone
 
 main_router = Blueprint("main", __name__, template_folder=str(TEMPLATES_DIR))
@@ -271,6 +272,49 @@ def settings():
     with parser_path.open("r", encoding="utf-8") as f:
         parser_text = f.read()
     return render_template("settings/index.html", **_settings_page_context(io_cfg.model_dump(), parser_text))
+
+
+@main_router.route("/settings/gpio", methods=["GET"])
+@login_required
+def settings_gpio():
+    project_root = _project_root()
+    path = gpio_inputs_path(project_root)
+    ensure_gpio_inputs_file(path)
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        flash(f"Не удалось прочитать настройки GPIO: {exc}", "error")
+        text = ""
+    is_admin = _is_admin()
+    return render_template("settings/gpio.html", gpio_text=text, gpio_path=path, is_admin=is_admin)
+
+
+@main_router.route("/settings/gpio", methods=["POST"])
+@login_required
+def settings_gpio_save():
+    if not _is_admin():
+        flash("Недостаточно прав для этого действия.", "error")
+        return redirect(url_for("main_blueprint.settings_gpio"))
+
+    project_root = _project_root()
+    path = gpio_inputs_path(project_root)
+    ensure_gpio_inputs_file(path)
+    text = request.form.get("gpio_json") or ""
+    _cfg, err = validate_gpio_inputs_json(text)
+    if err:
+        flash(f"Настройки GPIO не сохранены: {err}", "error")
+        return render_template("settings/gpio.html", gpio_text=text, gpio_path=path, is_admin=True), 400
+    path.write_text(text.strip() + "\n", encoding="utf-8")
+    collector = current_app.extensions.get("gpio_collector")
+    try:
+        if collector is not None:
+            collector.restart(gpio_settings_path=path)
+            flash("Настройки GPIO сохранены. GPIO-ридер перезапущен.", "success")
+        else:
+            flash("Настройки GPIO сохранены.", "success")
+    except Exception as exc:
+        flash(f"Настройки GPIO сохранены, но перезапуск GPIO-ридера не удался: {exc}", "error")
+    return redirect(url_for("main_blueprint.settings_gpio"))
 
 
 @main_router.route("/admin/event-logs", methods=["GET"])
@@ -884,6 +928,7 @@ def _build_live_dashboard_context(
     system_monitor = _collect_system_monitor()
 
     return {
+        "server_time": format_in_configured_timezone(datetime.now(), DATETIME_UI_FORMAT),
         "analog_time": analog_time,
         "analog_items": analog_items,
         "discrete_time": discrete_time,

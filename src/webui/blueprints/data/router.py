@@ -13,8 +13,9 @@ from typing import Any
 
 from flask import Blueprint, abort, current_app, jsonify, render_template, request, send_file, url_for
 from flask_login import login_required
+from sqlalchemy import inspect
 
-from src.database import Alarms, Samples, Video
+from src.database import Alarms, Samples, Video, db
 from src.webui.data_labels import (
     all_analog_keys,
     all_discrete_keys,
@@ -42,7 +43,11 @@ def _service() -> DataService:
     session_factory = current_app.extensions["session_factory"]
     collector = current_app.extensions["modbus_collector"]
     repo = DataRepository(session_factory)
-    return DataService(repo, alarms_enabled=collector._alarms_enabled)
+    try:
+        gpio_enabled = bool(inspect(db.engine).has_table("alarms_raspberry"))
+    except Exception:
+        gpio_enabled = True
+    return DataService(repo, alarms_enabled=collector._alarms_enabled, gpio_alarms_enabled=gpio_enabled)
 
 
 @data_router.route("/", methods=["GET"])
