@@ -286,7 +286,44 @@ def settings_gpio():
         flash(f"Не удалось прочитать настройки GPIO: {exc}", "error")
         text = ""
     is_admin = _is_admin()
-    return render_template("settings/gpio.html", gpio_text=text, gpio_path=path, is_admin=is_admin)
+    try:
+        return render_template("settings/gpio.html", gpio_text=text, gpio_path=path, is_admin=is_admin)
+    except TemplateNotFound:
+        return render_template_string(
+            """
+{% extends "base.html" %}
+{% block title %}Настройки GPIO · BlackBox{% endblock %}
+{% block content %}
+<section class="card settings-page data-page">
+  <h2>GPIO (Raspberry Pi)</h2>
+  <p class="hint">Файл: <code>{{ gpio_path }}</code></p>
+  <form method="post" action="{{ url_for('main_blueprint.settings_gpio_save') }}" class="settings-form" lang="ru">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+    {% if is_admin %}
+      <label class="filter-field settings-json-label">Содержимое JSON GPIO
+        <textarea name="gpio_json" rows="18" class="settings-json-textarea" spellcheck="false">{{ gpio_text }}</textarea>
+      </label>
+      <div class="settings-actions">
+        <button type="submit" class="btn primary">Сохранить</button>
+        <a class="btn secondary" href="{{ url_for('main_blueprint.settings') }}">Назад к Modbus</a>
+      </div>
+    {% else %}
+      <p class="hint settings-warn">Только администратор может изменять настройки GPIO.</p>
+      <label class="filter-field settings-json-label">Содержимое JSON GPIO
+        <textarea rows="18" class="settings-json-textarea" spellcheck="false" readonly>{{ gpio_text }}</textarea>
+      </label>
+      <div class="settings-actions">
+        <a class="btn secondary" href="{{ url_for('main_blueprint.settings') }}">Назад к Modbus</a>
+      </div>
+    {% endif %}
+  </form>
+</section>
+{% endblock %}
+""",
+            gpio_text=text,
+            gpio_path=path,
+            is_admin=is_admin,
+        )
 
 
 @main_router.route("/settings/gpio", methods=["POST"])
@@ -303,7 +340,10 @@ def settings_gpio_save():
     _cfg, err = validate_gpio_inputs_json(text)
     if err:
         flash(f"Настройки GPIO не сохранены: {err}", "error")
-        return render_template("settings/gpio.html", gpio_text=text, gpio_path=path, is_admin=True), 400
+        try:
+            return render_template("settings/gpio.html", gpio_text=text, gpio_path=path, is_admin=True), 400
+        except TemplateNotFound:
+            return settings_gpio(), 400
     path.write_text(text.strip() + "\n", encoding="utf-8")
     collector = current_app.extensions.get("gpio_collector")
     try:
