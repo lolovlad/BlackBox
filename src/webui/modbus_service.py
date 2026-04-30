@@ -92,18 +92,10 @@ def configure_settings_path(path: str | Path) -> None:
 
 
 def _eval_expr(expr: str, context: dict[str, Any]) -> Any:
-    # Allow a small, safe subset of helpers for parser expressions.
-    safe = {
-        "round": round,
-        "min": min,
-        "max": max,
-        "abs": abs,
-        "int": int,
-        "float": float,
-        "bool": bool,
-    }
-    # Put safe helpers into locals as well (some expressions rely on locals resolution).
-    return eval(expr, {"__builtins__": {}}, {**safe, **context})
+    # NOTE: this intentionally uses Python eval() for full backward compatibility
+    # with existing parser expressions (e.g. string `.format(...)`).
+    # This is powerful but unsafe if settings JSON is untrusted.
+    return eval(str(expr), {}, dict(context))
 
 
 def _uint16_to_int16(raw: int) -> int:
