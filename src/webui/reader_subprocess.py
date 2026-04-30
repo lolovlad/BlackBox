@@ -48,6 +48,7 @@ def main() -> int:
         print(f"Reader snapshot format=BBX1 requests={req_summary}")
     except Exception:
         print("Reader snapshot format=BBX1")
+    print("Parser expr: safe_eval=1 auto_round=flag(round:true) decimals=3")
     cfg = _build_runtime_config()
     db_file = Path(cfg.db_path).resolve()
     db_file.parent.mkdir(parents=True, exist_ok=True)

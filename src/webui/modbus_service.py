@@ -119,7 +119,11 @@ def _auto_round_value(value: Any, *, field: dict[str, Any]) -> Any:
     if isinstance(value, bool):
         return value
     if isinstance(value, float):
-        return round(value, 3)
+        # Normalize via formatting so UI doesn't show long binary tails.
+        try:
+            return float(f"{value:.3f}")
+        except Exception:
+            return round(value, 3)
     return value
 
 
