@@ -37,7 +37,17 @@ def main() -> int:
     heartbeat_path = Path(os.getenv("READER_HEARTBEAT_PATH", "instance/reader-control/heartbeat.json"))
     stop_path = Path(os.getenv("READER_STOP_PATH", "instance/reader-control/stop.flag"))
     configure_settings_path(os.getenv("PARSER_SETTINGS_PATH", "settings/settings.json"))
-    reload_settings_cache()
+    cfg_settings = reload_settings_cache()
+    try:
+        reqs = cfg_settings.get("requests", []) if isinstance(cfg_settings, dict) else []
+        req_summary = ", ".join(
+            f"{r.get('name')}[fc={r.get('fc')},addr={r.get('address')},count={r.get('count')}]"
+            for r in reqs
+            if isinstance(r, dict)
+        )
+        print(f"Reader snapshot format=BBX1 requests={req_summary}")
+    except Exception:
+        print("Reader snapshot format=BBX1")
     cfg = _build_runtime_config()
     db_file = Path(cfg.db_path).resolve()
     db_file.parent.mkdir(parents=True, exist_ok=True)

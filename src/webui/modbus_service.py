@@ -100,33 +100,108 @@ def _uint16_to_int16(raw: int) -> int:
     return u - 65536 if u >= 32768 else u
 
 
-def _pick_sources_for_snapshot(source_values: dict[str, list[Any]]) -> tuple[list[int], list[bool]]:
-    config = _load_settings()
-    registers: list[int] = []
-    bits: list[bool] = []
-    for req in config.get("requests", []):
-        name = req.get("name")
-        fc = int(req.get("fc", 0))
-        values = list(source_values.get(name, []))
-        if fc == 3 and not registers:
-            registers = [int(v) & 0xFFFF for v in values]
-        elif fc == 1 and not bits:
-            bits = [bool(v) for v in values]
-    return registers, bits
+_SNAPSHOT_MAGIC = b"BBX1"
 
 
-def pack_snapshot(source_values: dict[str, list[Any]]) -> bytes:
-    registers, bits = _pick_sources_for_snapshot(source_values)
-    reg_part = b"".join(struct.pack(">H", v) for v in registers)
+def _pack_bits(bits: list[bool]) -> bytes:
     bit_count = len(bits)
     bit_bytes = bytearray((bit_count + 7) // 8)
     for idx, bit in enumerate(bits):
         if bit:
             bit_bytes[idx // 8] |= 1 << (idx % 8)
-    return struct.pack(">H", len(registers)) + reg_part + struct.pack(">H", bit_count) + bytes(bit_bytes)
+    return bytes(bit_bytes)
 
 
-def unpack_snapshot(blob: bytes) -> tuple[list[int], list[bool]]:
+def _unpack_bits(packed: bytes, bit_count: int) -> list[bool]:
+    return [bool((packed[i // 8] >> (i % 8)) & 1) for i in range(bit_count)]
+
+
+def pack_snapshot(source_values: dict[str, list[Any]]) -> bytes:
+    """Pack all Modbus request chunks into a versioned BBX1 blob.
+
+    Stores one segment per request from settings.json (fc=3 or fc=1).
+    """
+    config = _load_settings()
+    segments: list[bytes] = []
+    for req in config.get("requests", []):
+        name = str(req.get("name") or "")
+        if not name:
+            continue
+        fc = int(req.get("fc", 0))
+        values = list(source_values.get(name, []))
+        name_bytes = name.encode("utf-8")
+        if len(name_bytes) > 255:
+            raise ValueError(f"Request name too long for snapshot: {name!r}")
+
+        if fc == 3:
+            regs = [int(v) & 0xFFFF for v in values]
+            payload = b"".join(struct.pack(">H", v) for v in regs)
+            count = len(regs)
+        elif fc == 1:
+            bits = [bool(v) for v in values]
+            payload = _pack_bits(bits)
+            count = len(bits)
+        else:
+            continue
+
+        seg = (
+            struct.pack(">B", len(name_bytes))
+            + name_bytes
+            + struct.pack(">B", fc)
+            + struct.pack(">H", count)
+            + payload
+        )
+        segments.append(seg)
+
+    if len(segments) > 0xFFFF:
+        raise ValueError("Too many snapshot segments")
+    return _SNAPSHOT_MAGIC + struct.pack(">H", len(segments)) + b"".join(segments)
+
+
+def unpack_snapshot(blob: bytes) -> dict[str, list[Any]]:
+    """Unpack BBX1 blob into source_values dict (name -> list of values)."""
+    if len(blob) < 6 or blob[:4] != _SNAPSHOT_MAGIC:
+        raise ValueError("Not a BBX1 snapshot")
+    offset = 4
+    seg_count = struct.unpack_from(">H", blob, offset)[0]
+    offset += 2
+    out: dict[str, list[Any]] = {}
+    for _ in range(seg_count):
+        if offset >= len(blob):
+            raise ValueError("Invalid BBX1 snapshot: truncated segment header")
+        name_len = struct.unpack_from(">B", blob, offset)[0]
+        offset += 1
+        if len(blob) < offset + name_len + 3:
+            raise ValueError("Invalid BBX1 snapshot: truncated name/fc/count")
+        name = blob[offset : offset + name_len].decode("utf-8", errors="strict")
+        offset += name_len
+        fc = struct.unpack_from(">B", blob, offset)[0]
+        offset += 1
+        count = struct.unpack_from(">H", blob, offset)[0]
+        offset += 2
+
+        if fc == 3:
+            need = count * 2
+            if len(blob) < offset + need:
+                raise ValueError("Invalid BBX1 snapshot: truncated fc=3 payload")
+            regs = [struct.unpack_from(">H", blob, offset + i * 2)[0] for i in range(count)]
+            offset += need
+            out[name] = regs
+        elif fc == 1:
+            need = (count + 7) // 8
+            if len(blob) < offset + need:
+                raise ValueError("Invalid BBX1 snapshot: truncated fc=1 payload")
+            packed = blob[offset : offset + need]
+            offset += need
+            out[name] = _unpack_bits(packed, count)
+        else:
+            raise ValueError(f"Invalid BBX1 snapshot: unsupported fc={fc}")
+
+    return out
+
+
+def _unpack_snapshot_legacy(blob: bytes) -> tuple[list[int], list[bool]]:
+    """Legacy snapshot format: [u16 reg_count][reg_count*u16][u16 bit_count][bits packed]."""
     if len(blob) < 4:
         raise ValueError("Snapshot blob is too short")
     offset = 0
@@ -143,7 +218,7 @@ def unpack_snapshot(blob: bytes) -> tuple[list[int], list[bool]]:
     if len(blob) < offset + packed_len:
         raise ValueError("Invalid snapshot blob bit section")
     packed = blob[offset : offset + packed_len]
-    bits = [bool((packed[i // 8] >> (i % 8)) & 1) for i in range(bit_count)]
+    bits = _unpack_bits(packed, bit_count)
     return registers, bits
 
 
@@ -202,6 +277,26 @@ def parse_fields(config: dict[str, Any], source_values: dict[str, list[Any]]) ->
     return result
 
 
+def try_parse_controller_datetime(processed: dict[str, Any], *, field: str = "controller_datetime_iso") -> datetime | None:
+    """Parse controller time from processed fields (optional helper).
+
+    Expected format: ISO `YYYY-MM-DDTHH:MM:SS` without timezone.
+    """
+    raw = processed.get(field)
+    if raw is None or not isinstance(raw, str):
+        return None
+    s = raw.strip()
+    if not s:
+        return None
+    try:
+        dt = datetime.fromisoformat(s)
+    except ValueError:
+        return None
+    if dt.year < 1 or dt.year > 9999:
+        return None
+    return dt
+
+
 def _field_categories(config: dict[str, Any]) -> tuple[list[str], list[str]]:
     analog: list[str] = []
     discrete: list[str] = []
@@ -236,22 +331,28 @@ def analog_discrete_for_csv(processed: dict[str, Any]) -> tuple[dict[str, Any], 
 def decode_to_processed(payload: bytes) -> dict[str, Any]:
     config = _load_settings()
     try:
-        registers, bits = unpack_snapshot(payload)
-        source_values: dict[str, list[Any]] = {}
+        # New format (BBX1): contains per-request segments.
+        if payload[:4] == _SNAPSHOT_MAGIC:
+            source_values = unpack_snapshot(payload)
+            return parse_fields(config, source_values)
+
+        # Legacy format: one fc=3 block + one fc=1 block.
+        registers, bits = _unpack_snapshot_legacy(payload)
+        source_values_legacy: dict[str, list[Any]] = {}
         reg_used = False
         bit_used = False
         for req in config.get("requests", []):
             req_name = req.get("name")
             fc = int(req.get("fc", 0))
             if fc == 3 and not reg_used:
-                source_values[req_name] = list(registers)
+                source_values_legacy[req_name] = list(registers)
                 reg_used = True
             elif fc == 1 and not bit_used:
-                source_values[req_name] = list(bits)
+                source_values_legacy[req_name] = list(bits)
                 bit_used = True
             else:
-                source_values[req_name] = []
-        return parse_fields(config, source_values)
+                source_values_legacy[req_name] = []
+        return parse_fields(config, source_values_legacy)
     except Exception:
         # Backward compatibility for a short transition period if JSON payloads exist.
         try:
