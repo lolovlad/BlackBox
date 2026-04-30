@@ -42,7 +42,11 @@
                 {% for item in gpio_items %}
                     <li class="{{ 'state-on' if item.is_on else 'state-off' }}">
                         <span>{{ item.name }}</span>
-                        <strong>{{ "1" if item.is_on else "0" }}</strong>
+                        {% if item.value is none %}
+                            <strong>n/a</strong>
+                        {% else %}
+                            <strong>{{ "1" if item.is_on else "0" }}</strong>
+                        {% endif %}
                     </li>
                 {% endfor %}
             </ul>

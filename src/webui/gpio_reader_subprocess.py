@@ -36,7 +36,18 @@ def main() -> int:
     sf = sessionmaker(bind=engine, autoflush=False, autocommit=False, expire_on_commit=False)
 
     backend = build_gpio_backend()
+    print(f"GPIO reader backend={backend.__class__.__name__} settings={settings_path.resolve()}")
     collector = GpioCollector(sf, gpio_settings_path=settings_path.resolve(), backend=backend)
+    try:
+        pins = collector.current_pin_values()
+        ok = sum(1 for p in pins if p.get("value") is not None)
+        bad = sum(1 for p in pins if p.get("value") is None)
+        print(f"GPIO reader pins: ok={ok} unavailable={bad}")
+        for p in pins:
+            if p.get("value") is None:
+                print(f"GPIO pin unavailable: bcm_pin={p.get('bcm_pin')} name={p.get('name')} error={p.get('error')}")
+    except Exception as exc:
+        print(f"GPIO reader pin scan failed: {exc}")
 
     try:
         while True:

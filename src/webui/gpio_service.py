@@ -29,6 +29,10 @@ class RpiGpioBackend(GpioBackend):
         import RPi.GPIO as GPIO  # type: ignore
 
         self._GPIO = GPIO
+        try:
+            self._GPIO.setwarnings(False)
+        except Exception:
+            pass
         self._GPIO.setmode(self._GPIO.BCM)
 
     def setup_pin(self, bcm_pin: int, *, pull: str) -> None:  # pragma: no cover (hw)
@@ -181,18 +185,26 @@ class GpioCollector:
         self._stop = False
 
         self._cfg = _load_gpio_config(gpio_settings_path)
-        self._pins = list(self._cfg.pins)
+        self._pins_all = list(self._cfg.pins)
+        self._pins_active: list[Any] = []
+        self._pin_errors: dict[int, str] = {}
         self._states: dict[int, PinState] = {}
         self._engines: dict[int, HoldEngine] = {}
 
-        for p in self._pins:
-            self._backend.setup_pin(p.bcm_pin, pull=str(p.pull))
-            init_val = 1 if self._backend.read_pin(p.bcm_pin) else 0
-            self._states[p.bcm_pin] = PinState(last_value=init_val, pending_since=None, alarm_active=False)
-            trig = p.trigger_level
-            if p.invert:
-                trig = 0 if trig == 1 else 1
-            self._engines[p.bcm_pin] = HoldEngine(trigger_level=trig, hold_sec=p.hold_sec)
+        for p in self._pins_all:
+            pin = int(p.bcm_pin)
+            try:
+                self._backend.setup_pin(pin, pull=str(p.pull))
+                init_val = 1 if self._backend.read_pin(pin) else 0
+                self._states[pin] = PinState(last_value=init_val, pending_since=None, alarm_active=False)
+                trig = p.trigger_level
+                if p.invert:
+                    trig = 0 if trig == 1 else 1
+                self._engines[pin] = HoldEngine(trigger_level=trig, hold_sec=p.hold_sec)
+                self._pins_active.append(p)
+            except Exception as exc:
+                # Do not crash the subprocess if a pin is busy/unavailable.
+                self._pin_errors[pin] = str(exc)
 
     @property
     def poll_interval_sec(self) -> float:
@@ -213,27 +225,35 @@ class GpioCollector:
         now_mono = time.monotonic()
         now_dt = datetime.now()
 
-        for p in self._pins:
-            val = 1 if self._backend.read_pin(p.bcm_pin) else 0
-            st = self._states[p.bcm_pin]
-            st2, should_open, should_close = self._engines[p.bcm_pin].step(now_mono=now_mono, value=val, state=st)
-            self._states[p.bcm_pin] = st2
+        for p in self._pins_active:
+            pin = int(p.bcm_pin)
+            try:
+                val = 1 if self._backend.read_pin(pin) else 0
+            except Exception as exc:
+                self._pin_errors[pin] = str(exc)
+                continue
+            st = self._states[pin]
+            st2, should_open, should_close = self._engines[pin].step(now_mono=now_mono, value=val, state=st)
+            self._states[pin] = st2
 
             if should_open:
                 self._write_alarm(now_dt, p, val, state="active")
-                self._states[p.bcm_pin] = PinState(last_value=st2.last_value, pending_since=st2.pending_since, alarm_active=True)
+                self._states[pin] = PinState(last_value=st2.last_value, pending_since=st2.pending_since, alarm_active=True)
             elif should_close:
                 self._write_alarm(now_dt, p, val, state="inactive")
-                self._states[p.bcm_pin] = PinState(last_value=st2.last_value, pending_since=st2.pending_since, alarm_active=False)
+                self._states[pin] = PinState(last_value=st2.last_value, pending_since=st2.pending_since, alarm_active=False)
 
     def current_pin_values(self) -> list[dict[str, Any]]:
         """Return current pin states for UI (no DB)."""
         out: list[dict[str, Any]] = []
-        for p in self._pins:
-            st = self._states.get(p.bcm_pin)
+        for p in self._pins_all:
+            pin = int(p.bcm_pin)
+            st = self._states.get(pin)
+            err = self._pin_errors.get(pin)
             if st is None:
-                continue
-            out.append({"bcm_pin": int(p.bcm_pin), "name": str(p.name), "value": int(st.last_value)})
+                out.append({"bcm_pin": pin, "name": str(p.name), "value": None, "error": err or "unavailable"})
+            else:
+                out.append({"bcm_pin": pin, "name": str(p.name), "value": int(st.last_value), "error": err})
         return out
 
     def _write_alarm(self, ts: datetime, pin_cfg: Any, value: int, *, state: str) -> None:

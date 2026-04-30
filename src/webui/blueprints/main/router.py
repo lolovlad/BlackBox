@@ -976,7 +976,12 @@ def _build_live_dashboard_context(
                 raw_pins = payload.get("pins", [])
                 if isinstance(raw_pins, list):
                     gpio_items = [
-                        {"name": str(p.get("name", "")) or f"GPIO_{p.get('bcm_pin')}", "is_on": bool(int(p.get("value", 0)) == 1)}
+                        {
+                            "name": str(p.get("name", "")) or f"GPIO_{p.get('bcm_pin')}",
+                            "is_on": bool(int(p.get("value", 0)) == 1) if p.get("value") is not None else False,
+                            "value": p.get("value"),
+                            "error": p.get("error"),
+                        }
                         for p in raw_pins
                         if isinstance(p, dict)
                     ]
