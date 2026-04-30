@@ -5,7 +5,7 @@ from src.webui.gpio_service import HoldEngine, PinState
 
 def test_hold_engine_ignores_short_pulse() -> None:
     eng = HoldEngine(trigger_level=1, hold_sec=0.5)
-    st = PinState(last_value=0, pending_since=None, alarm_active=False, active_alarm_id=None)
+    st = PinState(last_value=0, pending_since=None, alarm_active=False)
 
     st, open1, close1 = eng.step(now_mono=0.0, value=1, state=st)
     assert (open1, close1) == (False, False)
@@ -19,7 +19,7 @@ def test_hold_engine_ignores_short_pulse() -> None:
 
 def test_hold_engine_opens_after_hold_and_closes_on_release() -> None:
     eng = HoldEngine(trigger_level=0, hold_sec=0.5)
-    st = PinState(last_value=1, pending_since=None, alarm_active=False, active_alarm_id=123)
+    st = PinState(last_value=1, pending_since=None, alarm_active=False)
 
     st, o1, c1 = eng.step(now_mono=0.0, value=0, state=st)
     assert (o1, c1) == (False, False)

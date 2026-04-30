@@ -127,7 +127,6 @@ class PinState:
     last_value: int
     pending_since: float | None
     alarm_active: bool
-    active_alarm_id: int | None
 
 
 class HoldEngine:
@@ -151,26 +150,26 @@ class HoldEngine:
 
         if state.alarm_active:
             if v != self.trigger_level:
-                state = PinState(last_value=v, pending_since=None, alarm_active=False, active_alarm_id=state.active_alarm_id)
+                state = PinState(last_value=v, pending_since=None, alarm_active=False)
                 should_close = True
             else:
-                state = PinState(last_value=v, pending_since=None, alarm_active=True, active_alarm_id=state.active_alarm_id)
+                state = PinState(last_value=v, pending_since=None, alarm_active=True)
             return state, should_open, should_close
 
         # not active
         if v == self.trigger_level:
             if self.hold_sec <= 0.0:
-                state = PinState(last_value=v, pending_since=None, alarm_active=True, active_alarm_id=state.active_alarm_id)
+                state = PinState(last_value=v, pending_since=None, alarm_active=True)
                 should_open = True
                 return state, should_open, should_close
             if state.pending_since is None:
-                state = PinState(last_value=v, pending_since=now_mono, alarm_active=False, active_alarm_id=state.active_alarm_id)
+                state = PinState(last_value=v, pending_since=now_mono, alarm_active=False)
             else:
                 if now_mono - state.pending_since >= self.hold_sec:
-                    state = PinState(last_value=v, pending_since=None, alarm_active=True, active_alarm_id=state.active_alarm_id)
+                    state = PinState(last_value=v, pending_since=None, alarm_active=True)
                     should_open = True
         else:
-            state = PinState(last_value=v, pending_since=None, alarm_active=False, active_alarm_id=state.active_alarm_id)
+            state = PinState(last_value=v, pending_since=None, alarm_active=False)
         return state, should_open, should_close
 
 
@@ -189,7 +188,7 @@ class GpioCollector:
         for p in self._pins:
             self._backend.setup_pin(p.bcm_pin, pull=str(p.pull))
             init_val = 1 if self._backend.read_pin(p.bcm_pin) else 0
-            self._states[p.bcm_pin] = PinState(last_value=init_val, pending_since=None, alarm_active=False, active_alarm_id=None)
+            self._states[p.bcm_pin] = PinState(last_value=init_val, pending_since=None, alarm_active=False)
             trig = p.trigger_level
             if p.invert:
                 trig = 0 if trig == 1 else 1
@@ -221,29 +220,19 @@ class GpioCollector:
             self._states[p.bcm_pin] = st2
 
             if should_open:
-                alarm_id = self._open_alarm(now_dt, p, val)
-                self._states[p.bcm_pin] = PinState(
-                    last_value=st2.last_value,
-                    pending_since=st2.pending_since,
-                    alarm_active=True,
-                    active_alarm_id=alarm_id,
-                )
+                self._write_alarm(now_dt, p, val, state="active")
+                self._states[p.bcm_pin] = PinState(last_value=st2.last_value, pending_since=st2.pending_since, alarm_active=True)
             elif should_close:
-                self._close_alarm(now_dt, p.bcm_pin, st2.active_alarm_id)
-                self._states[p.bcm_pin] = PinState(
-                    last_value=st2.last_value,
-                    pending_since=st2.pending_since,
-                    alarm_active=False,
-                    active_alarm_id=None,
-                )
+                self._write_alarm(now_dt, p, val, state="inactive")
+                self._states[p.bcm_pin] = PinState(last_value=st2.last_value, pending_since=st2.pending_since, alarm_active=False)
 
-    def _open_alarm(self, ts: datetime, pin_cfg: Any, value: int) -> int:
+    def _write_alarm(self, ts: datetime, pin_cfg: Any, value: int, *, state: str) -> None:
         session = self._session_factory()
         try:
             row = AlarmRaspberry(
                 created_at=ts,
                 ended_at=None,
-                state="active",
+                state=str(state),
                 bcm_pin=int(pin_cfg.bcm_pin),
                 name=str(pin_cfg.name),
                 trigger_level=int(pin_cfg.trigger_level),
@@ -251,24 +240,6 @@ class GpioCollector:
                 description=f"value={int(value)}",
             )
             session.add(row)
-            session.commit()
-            return int(row.id)
-        except Exception:
-            session.rollback()
-            raise
-        finally:
-            session.close()
-
-    def _close_alarm(self, ts: datetime, bcm_pin: int, alarm_id: int | None) -> None:
-        if alarm_id is None:
-            return
-        session = self._session_factory()
-        try:
-            row = session.get(AlarmRaspberry, int(alarm_id))
-            if row is None:
-                return
-            row.ended_at = ts
-            row.state = "inactive"
             session.commit()
         except Exception:
             session.rollback()

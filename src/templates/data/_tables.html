@@ -1,6 +1,10 @@
-{% if alarms_disabled %}
+{% if alarms_disabled and tab == 'alarms' %}
 <section class="card" id="data-table-result" data-page="1" data-total-pages="1">
     <p class="flash error">Таблица аварий недоступна. Выполните миграции БД.</p>
+</section>
+{% elif alarms_disabled and tab == 'gpio_alarms' %}
+<section class="card" id="data-table-result" data-page="1" data-total-pages="1">
+    <p class="flash error">Таблица GPIO недоступна. Выполните миграции БД.</p>
 </section>
 {% elif tab == 'gpio_alarms' %}
 <section class="card" id="data-table-result" data-page="{{ page }}" data-total-pages="{{ total_pages }}">
