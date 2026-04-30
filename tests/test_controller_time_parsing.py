@@ -20,6 +20,7 @@ def test_controller_datetime_iso_parsing_from_fields() -> None:
                 "name": "controller_datetime_iso",
                 "type": "expr",
                 "system": True,
+                    "round": False,
                 "expr": "'{:04d}-{:02d}-{:02d}T{:02d}:{:02d}:{:02d}'.format(ctl_year, ctl_month, ctl_day, ctl_hour, ctl_minute, ctl_second)",
             },
         ],

@@ -92,10 +92,35 @@ def configure_settings_path(path: str | Path) -> None:
 
 
 def _eval_expr(expr: str, context: dict[str, Any]) -> Any:
-    # NOTE: this intentionally uses Python eval() for full backward compatibility
-    # with existing parser expressions (e.g. string `.format(...)`).
-    # This is powerful but unsafe if settings JSON is untrusted.
-    return eval(str(expr), {}, dict(context))
+    # Safe-ish eval: no builtins/imports, only explicitly allowed helpers + computed fields.
+    safe = {
+        "round": round,
+        "min": min,
+        "max": max,
+        "abs": abs,
+        "int": int,
+        "float": float,
+        "bool": bool,
+        "str": str,
+        "len": len,
+    }
+    return eval(str(expr), {"__builtins__": {}}, {**safe, **context})
+
+
+def _should_apply_auto_round(field: dict[str, Any]) -> bool:
+    # Default: do NOT apply. Enable per-field via JSON: {"round": true}
+    return bool(field.get("round", False))
+
+
+def _auto_round_value(value: Any, *, field: dict[str, Any]) -> Any:
+    if not _should_apply_auto_round(field):
+        return value
+    # Only round floats (ints should stay ints; bool is subclass of int).
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, float):
+        return round(value, 3)
+    return value
 
 
 def _uint16_to_int16(raw: int) -> int:
@@ -233,7 +258,7 @@ def parse_fields(config: dict[str, Any], source_values: dict[str, list[Any]]) ->
 
         if f_type == "expr":
             try:
-                result[name] = _eval_expr(field["expr"], result)
+                result[name] = _auto_round_value(_eval_expr(field["expr"], result), field=field)
             except Exception:
                 result[name] = 0
             continue
@@ -274,7 +299,7 @@ def parse_fields(config: dict[str, Any], source_values: dict[str, list[Any]]) ->
                 value = _eval_expr(field["expr"], {"x": value, **result})
             except Exception:
                 pass
-        result[name] = value
+        result[name] = _auto_round_value(value, field=field)
     for name in result.get("active_status", []):
         result[name] = True
     return result
