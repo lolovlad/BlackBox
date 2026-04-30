@@ -102,7 +102,8 @@ def _eval_expr(expr: str, context: dict[str, Any]) -> Any:
         "float": float,
         "bool": bool,
     }
-    return eval(expr, {"__builtins__": {}, **safe}, context)
+    # Put safe helpers into locals as well (some expressions rely on locals resolution).
+    return eval(expr, {"__builtins__": {}}, {**safe, **context})
 
 
 def _uint16_to_int16(raw: int) -> int:
