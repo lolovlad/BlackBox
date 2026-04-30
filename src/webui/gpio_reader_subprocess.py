@@ -8,7 +8,7 @@ from pathlib import Path
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from src.webui.gpio_service import GpioCollector, RpiGpioBackend
+from src.webui.gpio_service import GpioCollector, build_gpio_backend
 
 
 def _write_heartbeat(path: Path, *, pid: int) -> None:
@@ -28,7 +28,7 @@ def main() -> int:
     engine = create_engine(f"sqlite:///{db_file.as_posix()}")
     sf = sessionmaker(bind=engine, autoflush=False, autocommit=False, expire_on_commit=False)
 
-    backend = RpiGpioBackend()
+    backend = build_gpio_backend()
     collector = GpioCollector(sf, gpio_settings_path=settings_path.resolve(), backend=backend)
 
     try:

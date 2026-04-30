@@ -49,6 +49,71 @@ class RpiGpioBackend(GpioBackend):
             pass
 
 
+class GpiodBackend(GpioBackend):
+    def __init__(self) -> None:  # pragma: no cover (hw)
+        import gpiod  # type: ignore
+
+        self._gpiod = gpiod
+        self._chip = gpiod.Chip("gpiochip0")
+        self._lines: dict[int, Any] = {}
+
+    def setup_pin(self, bcm_pin: int, *, pull: str) -> None:  # pragma: no cover (hw)
+        # libgpiod v2: pulls are configured via line settings; if unavailable, ignore.
+        # We keep it best-effort; hardware pull resistors might be configured externally.
+        line = self._chip.get_line(int(bcm_pin))
+        try:
+            # Newer API
+            settings = self._gpiod.LineSettings(direction=self._gpiod.line.Direction.INPUT)
+            if pull == "up":
+                settings.bias = self._gpiod.line.Bias.PULL_UP
+            elif pull == "down":
+                settings.bias = self._gpiod.line.Bias.PULL_DOWN
+            elif pull == "none":
+                settings.bias = self._gpiod.line.Bias.DISABLED
+            req = self._gpiod.request_lines(
+                "/dev/gpiochip0",
+                consumer="blackbox-gpio",
+                config={int(bcm_pin): settings},
+            )
+            self._lines[int(bcm_pin)] = req
+        except Exception:
+            # Fallback: request line without bias control (older bindings / permissions).
+            line.request(consumer="blackbox-gpio", type=self._gpiod.LINE_REQ_DIR_IN)
+            self._lines[int(bcm_pin)] = line
+
+    def read_pin(self, bcm_pin: int) -> int:  # pragma: no cover (hw)
+        obj = self._lines.get(int(bcm_pin))
+        if obj is None:
+            return 0
+        try:
+            # request_lines returns a request object with get_value()
+            return int(obj.get_value(int(bcm_pin)))
+        except Exception:
+            return int(obj.get_value())
+
+    def cleanup(self) -> None:  # pragma: no cover (hw)
+        try:
+            for obj in self._lines.values():
+                try:
+                    obj.release()
+                except Exception:
+                    pass
+        finally:
+            self._lines.clear()
+            try:
+                self._chip.close()
+            except Exception:
+                pass
+
+
+def build_gpio_backend() -> GpioBackend:
+    """Prefer gpiod on Pi5; fallback to RPi.GPIO-compatible backend."""
+    try:
+        return GpiodBackend()
+    except Exception:
+        return RpiGpioBackend()
+
+
 def _load_gpio_config(path: Path) -> GpioInputsModel:
     raw = path.read_text(encoding="utf-8")
     cfg_d, err = validate_gpio_inputs_json(raw)
