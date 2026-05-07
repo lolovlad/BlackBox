@@ -59,8 +59,9 @@ def _const_str(node: ast.AST) -> str | None:
     return None
 
 
-def _collect_membership_string_literals(tree: ast.AST) -> list[str]:
-    out: list[str] = []
+def _collect_membership_string_literals(tree: ast.AST) -> list[tuple[str, str | None]]:
+    """Return pairs (literal, right_ref) for `literal in <right>` comparisons."""
+    out: list[tuple[str, str | None]] = []
     for node in ast.walk(tree):
         if not isinstance(node, ast.Compare):
             continue
@@ -69,7 +70,7 @@ def _collect_membership_string_literals(tree: ast.AST) -> list[str]:
             if isinstance(op, (ast.In, ast.NotIn)):
                 s = _const_str(left)
                 if s is not None:
-                    out.append(s)
+                    out.append((s, _dotted_from_name_or_attr(right)))
             left = right
     return out
 
@@ -167,11 +168,15 @@ def validate_emergency_rule_expression(
                 "Используйте имена из settings.json (аналоги, дискреты, регистры bitfield, expr-поля)."
             )
 
-    for literal in _collect_membership_string_literals(tree):
+    for literal, right_ref in _collect_membership_string_literals(tree):
+        # For `"... in active_alarms"` allow any string: active_alarms is a dynamic list of alarm names.
+        if right_ref == "active_alarms":
+            continue
         if literal not in error_labels:
             return False, (
                 f"Неизвестная строка аварии в проверке вхождения: «{literal}». "
-                "Используйте подписи из секций bits в bitfield полях settings.json."
+                "Используйте подписи из секций bits в bitfield полях settings.json, "
+                "или проверяйте вхождение в active_alarms."
             )
 
     for node in ast.walk(tree):
