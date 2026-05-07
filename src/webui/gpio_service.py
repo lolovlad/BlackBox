@@ -250,6 +250,39 @@ class GpioCollector:
                 self._write_alarm(now_dt, p, val, state="inactive")
                 self._states[pin] = PinState(last_value=st2.last_value, pending_since=st2.pending_since, alarm_active=False)
 
+    def debug_pin_snapshot(self) -> list[dict[str, Any]]:
+        """Detailed pin snapshot for debugging/logging."""
+        now_mono = time.monotonic()
+        out: list[dict[str, Any]] = []
+        for p in self._pins_all:
+            pin = int(p.bcm_pin)
+            st = self._states.get(pin)
+            err = self._pin_errors.get(pin)
+            trig = int(getattr(p, "trigger_level", 0))
+            if bool(getattr(p, "invert", False)):
+                trig = 0 if trig == 1 else 1
+            pending_age = None
+            alarm_active = None
+            last_val = None
+            if st is not None:
+                last_val = int(st.last_value)
+                alarm_active = bool(st.alarm_active)
+                if st.pending_since is not None:
+                    pending_age = max(0.0, now_mono - float(st.pending_since))
+            out.append(
+                {
+                    "bcm_pin": pin,
+                    "name": str(p.name),
+                    "value": last_val,
+                    "trigger": trig,
+                    "hold_sec": float(getattr(p, "hold_sec", 0.0)),
+                    "pending_sec": pending_age,
+                    "alarm_active": alarm_active,
+                    "error": err,
+                }
+            )
+        return out
+
     def current_pin_values(self) -> list[dict[str, Any]]:
         """Return current pin states for UI (no DB)."""
         out: list[dict[str, Any]] = []

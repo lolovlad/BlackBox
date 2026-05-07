@@ -49,13 +49,57 @@ def main() -> int:
     except Exception as exc:
         print(f"GPIO reader pin scan failed: {exc}")
 
+    debug = os.getenv("GPIO_READER_DEBUG", "0") == "1"
+    last_debug: dict[int, dict] = {}
+    last_summary_at = 0.0
+
     try:
         while True:
             _write_heartbeat(heartbeat_path, pid=os.getpid())
             if stop_path.exists():
                 break
             collector.poll_once()  # single step to keep heartbeat loop responsive
-            _write_gpio_state(state_path, pins=collector.current_pin_values())
+            pins_state = collector.current_pin_values()
+            _write_gpio_state(state_path, pins=pins_state)
+
+            # Default INFO-like log per poll, similar to Modbus poll log.
+            ok = sum(1 for p in pins_state if p.get("value") is not None and not p.get("error"))
+            errs = sum(1 for p in pins_state if p.get("error"))
+            active = sum(1 for p in pins_state if str(p.get("state")) == "active")
+            sample = ", ".join(f"{p.get('name')}={p.get('value')}" for p in pins_state if p.get("value") is not None)
+            print(
+                f"GPIO poll: ok={ok} errors={errs} active={active} interval={collector.poll_interval_sec:.3f}s sample={{{{ {sample} }}}}"
+            )
+
+            if debug:
+                snap = collector.debug_pin_snapshot()
+                now = time.time()
+                # Summary every 5s
+                if now - last_summary_at >= 5.0:
+                    last_summary_at = now
+                    parts = []
+                    for p in snap:
+                        parts.append(
+                            f"{p.get('bcm_pin')}={p.get('value')} trig={p.get('trigger')} active={p.get('alarm_active')} pending={p.get('pending_sec')}"
+                        )
+                    print("GPIO snapshot: " + " | ".join(parts))
+                # Change logs
+                for p in snap:
+                    pin = int(p.get("bcm_pin"))
+                    prev = last_debug.get(pin)
+                    key = {
+                        "value": p.get("value"),
+                        "alarm_active": p.get("alarm_active"),
+                        "pending_sec": None if p.get("pending_sec") is None else round(float(p.get("pending_sec") or 0.0), 2),
+                        "error": p.get("error"),
+                    }
+                    if prev != key:
+                        print(
+                            f"GPIO read: bcm_pin={pin} name={p.get('name')} value={p.get('value')} "
+                            f"trigger={p.get('trigger')} hold_sec={p.get('hold_sec')} "
+                            f"pending_sec={p.get('pending_sec')} alarm_active={p.get('alarm_active')} error={p.get('error')}"
+                        )
+                        last_debug[pin] = key
             time.sleep(collector.poll_interval_sec)
     finally:
         collector.stop()
