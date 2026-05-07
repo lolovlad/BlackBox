@@ -15,7 +15,6 @@
             <thead>
             <tr>
                 <th>Время</th>
-                <th>Окончание</th>
                 <th>Пин (BCM)</th>
                 <th>Название</th>
                 <th>Состояние</th>
@@ -25,7 +24,6 @@
             {% for row in rows %}
                 <tr>
                     <td>{{ row.time }}</td>
-                    <td>{{ row.ended_at }}</td>
                     <td>{{ row.pin }}</td>
                     <td>{{ row.name }}</td>
                     <td>{{ row.state }}</td>

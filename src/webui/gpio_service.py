@@ -206,6 +206,13 @@ class GpioCollector:
                 # Do not crash the subprocess if a pin is busy/unavailable.
                 self._pin_errors[pin] = str(exc)
 
+        # Reconcile DB-active pins on startup: close if pin is not active now.
+        try:
+            self._reconcile_db_active_pins(datetime.now())
+        except Exception:
+            # Never crash on reconcile; GPIO reading must keep running.
+            pass
+
     @property
     def poll_interval_sec(self) -> float:
         return float(self._cfg.poll_interval_sec)
@@ -251,12 +258,76 @@ class GpioCollector:
             st = self._states.get(pin)
             err = self._pin_errors.get(pin)
             if st is None:
-                out.append({"bcm_pin": pin, "name": str(p.name), "value": None, "error": err or "unavailable"})
+                out.append(
+                    {
+                        "bcm_pin": pin,
+                        "name": str(p.name),
+                        "value": None,
+                        "state": None,
+                        "error": err or "unavailable",
+                    }
+                )
             else:
-                out.append({"bcm_pin": pin, "name": str(p.name), "value": int(st.last_value), "error": err})
+                is_active = bool(st.alarm_active)
+                out.append(
+                    {
+                        "bcm_pin": pin,
+                        "name": str(p.name),
+                        "value": int(st.last_value),
+                        "state": "active" if is_active else "inactive",
+                        "error": err,
+                    }
+                )
         return out
 
-    def _write_alarm(self, ts: datetime, pin_cfg: Any, value: int, *, state: str) -> None:
+    def _reconcile_db_active_pins(self, ts: datetime) -> None:
+        # Determine which pins are active "right now" by raw level (triggered).
+        triggered_now: set[tuple[int, str]] = set()
+        for p in self._pins_active:
+            pin = int(p.bcm_pin)
+            st = self._states.get(pin)
+            if st is None:
+                continue
+            trig = int(p.trigger_level)
+            if bool(p.invert):
+                trig = 0 if trig == 1 else 1
+            if int(st.last_value) == trig:
+                triggered_now.add((pin, str(p.name)))
+
+        # Find last known state per (pin,name) and close those which are active in DB but not triggered now.
+        session = self._session_factory()
+        try:
+            rows = (
+                session.query(AlarmRaspberry)
+                .order_by(AlarmRaspberry.created_at.desc())
+                .limit(5000)
+                .all()
+            )
+            last_by_key: dict[tuple[int, str], str] = {}
+            for r in rows:
+                key = (int(r.bcm_pin), str(r.name))
+                if key in last_by_key:
+                    continue
+                last_by_key[key] = str(getattr(r, "state", ""))
+
+            for key, last_state in last_by_key.items():
+                if last_state != "active":
+                    continue
+                if key in triggered_now:
+                    continue
+                pin, name = key
+                # Write a close event (inactive) on startup.
+                self._write_alarm(
+                    ts,
+                    type("PinCfg", (), {"bcm_pin": pin, "name": name, "trigger_level": 0, "hold_sec": 0.0})(),
+                    0,
+                    state="inactive",
+                    description="startup_reconcile",
+                )
+        finally:
+            session.close()
+
+    def _write_alarm(self, ts: datetime, pin_cfg: Any, value: int, *, state: str, description: str | None = None) -> None:
         session = self._session_factory()
         try:
             row = AlarmRaspberry(
@@ -267,7 +338,7 @@ class GpioCollector:
                 name=str(pin_cfg.name),
                 trigger_level=int(pin_cfg.trigger_level),
                 hold_sec=float(pin_cfg.hold_sec),
-                description=f"value={int(value)}",
+                description=str(description) if description is not None else f"value={int(value)}",
             )
             session.add(row)
             session.commit()

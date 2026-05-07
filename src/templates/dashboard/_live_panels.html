@@ -68,13 +68,13 @@
                     {% if item.value is none %}
                         <strong>n/a</strong>
                     {% else %}
-                        <strong>{{ "1" if item.is_on else "0" }}</strong>
+                        <strong>ACTIVE</strong>
                     {% endif %}
                 </li>
             {% endfor %}
         </ul>
     {% else %}
-        <p class="hint">GPIO-данные еще не поступали.</p>
+        <p class="hint">Активных GPIO-состояний нет.</p>
     {% endif %}
 </section>
 

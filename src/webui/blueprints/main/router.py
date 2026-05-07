@@ -980,11 +980,14 @@ def _build_live_dashboard_context(
                             "name": str(p.get("name", "")) or f"GPIO_{p.get('bcm_pin')}",
                             "is_on": bool(int(p.get("value", 0)) == 1) if p.get("value") is not None else False,
                             "value": p.get("value"),
+                            "state": p.get("state"),
                             "error": p.get("error"),
                         }
                         for p in raw_pins
                         if isinstance(p, dict)
                     ]
+                    # Show only active states like alert list
+                    gpio_items = [p for p in gpio_items if str(p.get("state")) == "active"]
                 raw_ts = payload.get("ts")
                 if isinstance(raw_ts, (int, float)):
                     gpio_time = format_in_configured_timezone(datetime.fromtimestamp(float(raw_ts)), DATETIME_UI_FORMAT)

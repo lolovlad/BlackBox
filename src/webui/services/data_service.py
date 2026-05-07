@@ -266,9 +266,6 @@ class DataService:
             out_rows = [
                 {
                     "time": format_in_configured_timezone(item.created_at, DATETIME_UI_FORMAT),
-                    "ended_at": format_in_configured_timezone(item.ended_at, DATETIME_UI_FORMAT)
-                    if item.ended_at is not None
-                    else "-",
                     "pin": int(item.bcm_pin),
                     "name": str(item.name),
                     "state": str(item.state),
