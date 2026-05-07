@@ -101,6 +101,31 @@ def build_rule_validation_sets(config: dict[str, Any]) -> tuple[set[str], set[st
     return field_names, error_labels
 
 
+def _try_load_gpio_variable_names(settings_path: Path | str) -> set[str]:
+    """GPIO variables are exposed as simple boolean names like GPIO_27."""
+    try:
+        p = Path(settings_path)
+        gpio_path = (p.parent / "gpio_inputs.json").resolve()
+        if not gpio_path.exists():
+            return set()
+        data = json.loads(gpio_path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            return set()
+        pins = data.get("pins", [])
+        if not isinstance(pins, list):
+            return set()
+        out: set[str] = set()
+        for item in pins:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("name") or "").strip()
+            if name:
+                out.add(name)
+        return out
+    except Exception:
+        return set()
+
+
 def validate_emergency_rule_expression(
     expr: str,
     *,
@@ -128,6 +153,8 @@ def validate_emergency_rule_expression(
         return False, f"Синтаксическая ошибка: {exc.msg}"
 
     field_names, error_labels = build_rule_validation_sets(cfg)
+    if settings_path is not None:
+        field_names |= _try_load_gpio_variable_names(settings_path)
 
     roots = _collect_reference_roots(tree)
     for root in roots:
@@ -242,6 +269,8 @@ def _flat_field_names_to_eval_names(flat: dict[str, Any]) -> dict[str, Any]:
 
 
 def _dummy_value_for_field(field_name: str, config: dict[str, Any]) -> Any:
+    if str(field_name).startswith("GPIO_"):
+        return False
     for field in config.get("fields", []):
         if not isinstance(field, dict) or str(field.get("name")) != field_name:
             continue

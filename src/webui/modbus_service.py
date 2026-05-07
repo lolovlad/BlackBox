@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import queue
 import struct
 import threading
@@ -26,6 +27,31 @@ SETTINGS_PATH = Path("settings/settings.json")
 
 # Системная авария при отсутствии данных Modbus (видна в таблице "Аварии").
 MODBUS_READ_ERROR_ALARM = "Ошибка чтения Modbus"
+
+
+def _load_gpio_rule_vars() -> dict[str, Any]:
+    """Expose GPIO active states as bool variables (e.g. GPIO_27=True)."""
+    try:
+        state_path = Path(os.getenv("GPIO_READER_STATE_PATH", "instance/gpio-control/state.json"))
+        if not state_path.exists():
+            return {}
+        payload = json.loads(state_path.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            return {}
+        pins = payload.get("pins", [])
+        if not isinstance(pins, list):
+            return {}
+        out: dict[str, Any] = {}
+        for p in pins:
+            if not isinstance(p, dict):
+                continue
+            name = str(p.get("name") or "").strip()
+            if not name:
+                continue
+            out[name] = bool(str(p.get("state")) == "active")
+        return out
+    except Exception:
+        return {}
 
 
 @dataclass
@@ -812,6 +838,11 @@ class ModbusCollector:
             session = self._session_factory()
             changed = False
             try:
+                if rules_snapshot:
+                    try:
+                        processed = {**processed, **_load_gpio_rule_vars()}
+                    except Exception:
+                        processed = dict(processed)
                 for condition_id, rule_expr in rules_snapshot:
                     ok, fired, err = evaluate_emergency_rule_expression(rule_expr, processed=processed)
                     if not ok:
