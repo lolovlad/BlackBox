@@ -49,9 +49,10 @@
                 tooltip: {
                     trigger: "axis",
                     confine: true,
-                    enterable: true,
+                    enterable: false,
                     axisPointer: { type: "cross", label: { backgroundColor: "#6a7985" } },
-                    extraCssText: "max-height:60vh; overflow:auto; max-width:min(520px, 90vw); white-space:normal; pointer-events:auto;",
+                    // pointer-events:none => tooltip doesn't block interaction with chart under it.
+                    extraCssText: "max-height:60vh; overflow:auto; max-width:min(520px, 90vw); white-space:normal; pointer-events:none;",
                     position(pos, params, dom, rect, size) {
                         // Keep tooltip inside viewport with a small padding.
                         const pad = 8;

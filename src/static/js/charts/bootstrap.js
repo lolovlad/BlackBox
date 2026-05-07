@@ -80,15 +80,29 @@
         state.chartEl.addEventListener(
             "wheel",
             (ev) => {
-                const t = ev.target;
-                if (!(t instanceof Element)) return;
-                if (ev.ctrlKey && t.closest(".echarts-tooltip")) {
-                    // Ctrl+wheel over tooltip should scroll it (not zoom the chart).
-                    // Capture-phase stop prevents ECharts dataZoom from consuming wheel.
-                    ev.stopPropagation();
-                }
+                if (!ev.ctrlKey) return;
+                const tooltip = document.querySelector(".echarts-tooltip");
+                if (!(tooltip instanceof HTMLElement)) return;
+                // Tooltip has pointer-events:none, so wheel target is the chart.
+                // We detect "mouse over tooltip" by coordinates.
+                const rect = tooltip.getBoundingClientRect();
+                const x = ev.clientX;
+                const y = ev.clientY;
+                const isOver =
+                    x >= rect.left &&
+                    x <= rect.right &&
+                    y >= rect.top &&
+                    y <= rect.bottom &&
+                    rect.width > 0 &&
+                    rect.height > 0;
+                if (!isOver) return;
+
+                // Ctrl+wheel over tooltip should scroll it (not zoom the chart).
+                tooltip.scrollTop += ev.deltaY;
+                ev.preventDefault();
+                ev.stopPropagation();
             },
-            { capture: true }
+            { capture: true, passive: false }
         );
     }
     ns.syncColPanels();
