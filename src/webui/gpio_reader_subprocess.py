@@ -72,17 +72,6 @@ def main() -> int:
             pins_state = collector.current_pin_values()
             _write_gpio_state(state_path, pins=pins_state)
 
-            # Default INFO-like log per poll, similar to Modbus poll log.
-            ok = sum(1 for p in pins_state if p.get("value") is not None and not p.get("error"))
-            errs = sum(1 for p in pins_state if p.get("error"))
-            active = sum(1 for p in pins_state if str(p.get("state")) == "active")
-            sample = ", ".join(
-                f"{p.get('name')}={p.get('raw_value')}" for p in pins_state if p.get("raw_value") is not None
-            )
-            _log(
-                f"GPIO poll: ok={ok} errors={errs} active={active} interval={collector.poll_interval_sec:.3f}s sample={{{{ {sample} }}}}"
-            )
-
             if debug:
                 snap = collector.debug_pin_snapshot()
                 now = time.time()

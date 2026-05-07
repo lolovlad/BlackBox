@@ -28,6 +28,7 @@
         pollTimer: null,
         lastTable: "analog",
         lastColumns: [],
+        wheelFixInstalled: false,
     };
 
     document.getElementById("btn-open-filters").addEventListener("click", () => ns.toggleFilters(state, true));
@@ -72,5 +73,23 @@
     window.addEventListener("resize", () => {
         if (state.chart) state.chart.resize();
     });
+
+    // Wheel UX: if tooltip is scrollable, wheel should scroll it (not zoom the chart).
+    if (!state.wheelFixInstalled && state.chartEl) {
+        state.wheelFixInstalled = true;
+        state.chartEl.addEventListener(
+            "wheel",
+            (ev) => {
+                const t = ev.target;
+                if (!(t instanceof Element)) return;
+                if (ev.ctrlKey && t.closest(".echarts-tooltip")) {
+                    // Ctrl+wheel over tooltip should scroll it (not zoom the chart).
+                    // Capture-phase stop prevents ECharts dataZoom from consuming wheel.
+                    ev.stopPropagation();
+                }
+            },
+            { capture: true }
+        );
+    }
     ns.syncColPanels();
 })();
