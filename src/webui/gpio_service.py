@@ -195,7 +195,8 @@ class GpioCollector:
         for p in self._pins_all:
             pin = int(p.bcm_pin)
             try:
-                self._backend.setup_pin(pin, pull=str(p.pull))
+                pull = getattr(p.pull, "value", p.pull)
+                self._backend.setup_pin(pin, pull=str(pull))
                 init_val = 1 if self._backend.read_pin(pin) else 0
                 self._last_raw[pin] = int(init_val)
                 self._states[pin] = PinState(last_value=init_val, pending_since=None, alarm_active=False)
