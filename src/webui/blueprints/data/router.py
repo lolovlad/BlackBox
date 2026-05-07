@@ -15,7 +15,7 @@ from flask import Blueprint, abort, current_app, jsonify, render_template, reque
 from flask_login import login_required
 from sqlalchemy import inspect
 
-from src.database import AlarmRaspberry, Alarms, Samples, Video, db
+from src.database import AlarmRaspberry, Alarms, Emergency, EmergencyConditions, Samples, Video, db
 from src.webui.data_labels import (
     all_analog_keys,
     all_discrete_keys,
@@ -393,6 +393,39 @@ def export_batch():
                     zf.write(str(gpio_path), arcname="gpio.csv")
                     gpio_path.unlink(missing_ok=True)
 
+                    # emergency.csv (rules events)
+                    em_tmp = tempfile.NamedTemporaryFile(
+                        prefix="emergency_", suffix=".csv", delete=False, mode="w", newline="", encoding="utf-8-sig"
+                    )
+                    em_path = Path(em_tmp.name)
+                    try:
+                        w = csv.writer(em_tmp, delimiter=";")
+                        w.writerow(["Дата_с", "Время_с", "Дата_по", "Время_по", "Правило", "Условие"])
+                        stmt = (
+                            session.query(Emergency, EmergencyConditions)
+                            .join(EmergencyConditions, Emergency.id_emergency_condition == EmergencyConditions.id)
+                            .filter(Emergency.datetime >= date_from, Emergency.datetime <= date_to)
+                            .filter(Emergency.is_deleted.is_(False))
+                            .order_by(Emergency.datetime.desc() if sort_desc else Emergency.datetime.asc())
+                        )
+                        for ev, cond in stmt.yield_per(1000):
+                            dt0 = ev.datetime
+                            dt1 = ev.ended_at or ev.datetime
+                            w.writerow(
+                                [
+                                    dt0.strftime("%d/%m/%Y"),
+                                    dt0.strftime("%H:%M:%S"),
+                                    dt1.strftime("%d/%m/%Y"),
+                                    dt1.strftime("%H:%M:%S"),
+                                    cond.name,
+                                    cond.condition,
+                                ]
+                            )
+                    finally:
+                        em_tmp.close()
+                    zf.write(str(em_path), arcname="emergency.csv")
+                    em_path.unlink(missing_ok=True)
+
                 else:
                     try:
                         from openpyxl import Workbook
@@ -466,6 +499,27 @@ def export_batch():
                                     item.bcm_pin,
                                     item.name,
                                     item.state,
+                                ]
+                            )
+
+                        ws = wb.create_sheet("Правила аварий")
+                        ws.append(["С", "По", "Правило", "Условие"])
+                        stmt = (
+                            session.query(Emergency, EmergencyConditions)
+                            .join(EmergencyConditions, Emergency.id_emergency_condition == EmergencyConditions.id)
+                            .filter(Emergency.datetime >= date_from, Emergency.datetime <= date_to)
+                            .filter(Emergency.is_deleted.is_(False))
+                            .order_by(Emergency.datetime.desc() if sort_desc else Emergency.datetime.asc())
+                        )
+                        for ev, cond in stmt.yield_per(1000):
+                            dt0 = ev.datetime
+                            dt1 = ev.ended_at or ev.datetime
+                            ws.append(
+                                [
+                                    f"{dt0.strftime('%d/%m/%Y')} {dt0.strftime('%H:%M:%S')}",
+                                    f"{dt1.strftime('%d/%m/%Y')} {dt1.strftime('%H:%M:%S')}",
+                                    cond.name,
+                                    cond.condition,
                                 ]
                             )
 
