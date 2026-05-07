@@ -44,6 +44,7 @@ class GpioReaderSupervisor:
                     "GPIO_READER_HEARTBEAT_PATH": str(self._heartbeat_path),
                     "GPIO_READER_STOP_PATH": str(self._stop_path),
                     "GPIO_SETTINGS_PATH": str(self._gpio_settings_path),
+                    "PYTHONUNBUFFERED": "1",
                 }
             )
             self._proc = subprocess.Popen(

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import time
 from pathlib import Path
 
@@ -24,6 +25,15 @@ def _write_gpio_state(path: Path, *, pins: list[dict]) -> None:
 
 
 def main() -> int:
+    try:
+        sys.stdout.reconfigure(line_buffering=True)
+        sys.stderr.reconfigure(line_buffering=True)
+    except Exception:
+        pass
+
+    def _log(msg: str) -> None:
+        print(msg, flush=True)
+
     heartbeat_path = Path(os.getenv("GPIO_READER_HEARTBEAT_PATH", "instance/gpio-control/heartbeat.json"))
     stop_path = Path(os.getenv("GPIO_READER_STOP_PATH", "instance/gpio-control/stop.flag"))
     settings_path = Path(os.getenv("GPIO_SETTINGS_PATH", "settings/gpio_inputs.json"))
@@ -36,18 +46,18 @@ def main() -> int:
     sf = sessionmaker(bind=engine, autoflush=False, autocommit=False, expire_on_commit=False)
 
     backend = build_gpio_backend()
-    print(f"GPIO reader backend={backend.__class__.__name__} settings={settings_path.resolve()}")
+    _log(f"GPIO reader backend={backend.__class__.__name__} settings={settings_path.resolve()}")
     collector = GpioCollector(sf, gpio_settings_path=settings_path.resolve(), backend=backend)
     try:
         pins = collector.current_pin_values()
         ok = sum(1 for p in pins if p.get("value") is not None)
         bad = sum(1 for p in pins if p.get("value") is None)
-        print(f"GPIO reader pins: ok={ok} unavailable={bad}")
+        _log(f"GPIO reader pins: ok={ok} unavailable={bad}")
         for p in pins:
             if p.get("value") is None:
-                print(f"GPIO pin unavailable: bcm_pin={p.get('bcm_pin')} name={p.get('name')} error={p.get('error')}")
+                _log(f"GPIO pin unavailable: bcm_pin={p.get('bcm_pin')} name={p.get('name')} error={p.get('error')}")
     except Exception as exc:
-        print(f"GPIO reader pin scan failed: {exc}")
+        _log(f"GPIO reader pin scan failed: {exc}")
 
     debug = os.getenv("GPIO_READER_DEBUG", "0") == "1"
     last_debug: dict[int, dict] = {}
@@ -67,7 +77,7 @@ def main() -> int:
             errs = sum(1 for p in pins_state if p.get("error"))
             active = sum(1 for p in pins_state if str(p.get("state")) == "active")
             sample = ", ".join(f"{p.get('name')}={p.get('value')}" for p in pins_state if p.get("value") is not None)
-            print(
+            _log(
                 f"GPIO poll: ok={ok} errors={errs} active={active} interval={collector.poll_interval_sec:.3f}s sample={{{{ {sample} }}}}"
             )
 
@@ -82,7 +92,7 @@ def main() -> int:
                         parts.append(
                             f"{p.get('bcm_pin')}={p.get('value')} trig={p.get('trigger')} active={p.get('alarm_active')} pending={p.get('pending_sec')}"
                         )
-                    print("GPIO snapshot: " + " | ".join(parts))
+                    _log("GPIO snapshot: " + " | ".join(parts))
                 # Change logs
                 for p in snap:
                     pin = int(p.get("bcm_pin"))
@@ -94,7 +104,7 @@ def main() -> int:
                         "error": p.get("error"),
                     }
                     if prev != key:
-                        print(
+                        _log(
                             f"GPIO read: bcm_pin={pin} name={p.get('name')} value={p.get('value')} "
                             f"trigger={p.get('trigger')} hold_sec={p.get('hold_sec')} "
                             f"pending_sec={p.get('pending_sec')} alarm_active={p.get('alarm_active')} error={p.get('error')}"
