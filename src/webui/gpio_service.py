@@ -189,6 +189,7 @@ class GpioCollector:
         self._pins_active: list[Any] = []
         self._pin_errors: dict[int, str] = {}
         self._states: dict[int, PinState] = {}
+        self._last_raw: dict[int, int] = {}
         self._engines: dict[int, HoldEngine] = {}
 
         for p in self._pins_all:
@@ -196,6 +197,7 @@ class GpioCollector:
             try:
                 self._backend.setup_pin(pin, pull=str(p.pull))
                 init_val = 1 if self._backend.read_pin(pin) else 0
+                self._last_raw[pin] = int(init_val)
                 self._states[pin] = PinState(last_value=init_val, pending_since=None, alarm_active=False)
                 trig = p.trigger_level
                 if p.invert:
@@ -239,6 +241,7 @@ class GpioCollector:
             except Exception as exc:
                 self._pin_errors[pin] = str(exc)
                 continue
+            self._last_raw[pin] = int(val)
             st = self._states[pin]
             st2, should_open, should_close = self._engines[pin].step(now_mono=now_mono, value=val, state=st)
             self._states[pin] = st2
@@ -290,12 +293,14 @@ class GpioCollector:
             pin = int(p.bcm_pin)
             st = self._states.get(pin)
             err = self._pin_errors.get(pin)
+            raw_val = self._last_raw.get(pin)
             if st is None:
                 out.append(
                     {
                         "bcm_pin": pin,
                         "name": str(p.name),
                         "value": None,
+                        "raw_value": raw_val,
                         "state": None,
                         "error": err or "unavailable",
                     }
@@ -307,6 +312,7 @@ class GpioCollector:
                         "bcm_pin": pin,
                         "name": str(p.name),
                         "value": int(st.last_value),
+                        "raw_value": raw_val if raw_val is not None else int(st.last_value),
                         "state": "active" if is_active else "inactive",
                         "error": err,
                     }
