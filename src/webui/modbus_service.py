@@ -450,6 +450,7 @@ class ModbusCollector:
         self._rules_lock = threading.Lock()
         self._rules_snapshot: list[tuple[int, str]] = []
         self._active_alarm_names: set[str] = set()
+        self._active_emergency_rule_ids: set[int] = set()
         self._modbus_data_unavailable = False
         # SQLite: один writer за раз из потоков опроса / emergency — иначе database is locked.
         self._db_write_lock = threading.Lock()
@@ -850,13 +851,16 @@ class ModbusCollector:
                         continue
                     if err:
                         logger.info("Emergency rule %s skipped: %s", condition_id, err)
-                    if not fired:
-                        continue
-                    changed = self._upsert_emergency_event(
-                        session=session,
-                        condition_id=condition_id,
-                        fired_at=created_at,
-                    ) or changed
+                    if fired:
+                        changed = self._upsert_emergency_event(
+                            session=session,
+                            condition_id=condition_id,
+                            fired_at=created_at,
+                        ) or changed
+                        self._active_emergency_rule_ids.add(int(condition_id))
+                    else:
+                        # Rule stopped firing: close window; next fire will create a new event.
+                        self._active_emergency_rule_ids.discard(int(condition_id))
                 if changed:
                     session.commit()
             except Exception:
@@ -866,6 +870,7 @@ class ModbusCollector:
                 session.close()
 
     def _upsert_emergency_event(self, *, session, condition_id: int, fired_at: datetime) -> bool:
+        is_new = int(condition_id) not in self._active_emergency_rule_ids
         stmt = (
             select(Emergency)
             .where(
@@ -876,7 +881,7 @@ class ModbusCollector:
             .limit(1)
         )
         last = session.execute(stmt).scalar_one_or_none()
-        if last is None:
+        if last is None or is_new:
             session.add(
                 Emergency(
                     datetime=fired_at,
@@ -885,21 +890,11 @@ class ModbusCollector:
                 )
             )
             return True
-        last_end = last.ended_at or last.datetime
         if fired_at < last.datetime:
             return False
-        if fired_at - last_end <= timedelta(minutes=10):
-            if last.ended_at is None or fired_at > last.ended_at:
-                last.ended_at = fired_at
-                return True
-            return False
-        session.add(
-            Emergency(
-                datetime=fired_at,
-                ended_at=fired_at,
-                id_emergency_condition=condition_id,
-            )
-        )
-        return True
+        if last.ended_at is None or fired_at > last.ended_at:
+            last.ended_at = fired_at
+            return True
+        return False
 
 
