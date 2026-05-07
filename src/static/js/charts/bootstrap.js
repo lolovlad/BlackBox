@@ -33,10 +33,13 @@
     document.getElementById("btn-open-filters").addEventListener("click", () => ns.toggleFilters(state, true));
     document.getElementById("btn-close-filters").addEventListener("click", () => ns.toggleFilters(state, false));
     state.overlay.addEventListener("click", () => ns.toggleFilters(state, false));
-    document.getElementById("btn-render-chart").addEventListener("click", () => {
+    const runBuild = () => {
         ns.toggleFilters(state, false);
         ns.fetchInit(state);
-    });
+    };
+    document.getElementById("btn-render-chart").addEventListener("click", runBuild);
+    const applyBtn = document.getElementById("btn-apply-filters");
+    if (applyBtn) applyBtn.addEventListener("click", runBuild);
 
     document.getElementById("btn-reset-filters").addEventListener("click", () => {
         ns.resetFilters(state);

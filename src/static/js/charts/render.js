@@ -48,7 +48,24 @@
             {
                 tooltip: {
                     trigger: "axis",
+                    confine: true,
                     axisPointer: { type: "cross", label: { backgroundColor: "#6a7985" } },
+                    extraCssText: "max-height:60vh; overflow:auto; max-width:min(520px, 90vw); white-space:normal;",
+                    position(pos, params, dom, rect, size) {
+                        // Keep tooltip inside viewport with a small padding.
+                        const pad = 8;
+                        const viewW = size.viewSize[0];
+                        const viewH = size.viewSize[1];
+                        const boxW = size.contentSize[0];
+                        const boxH = size.contentSize[1];
+                        let x = pos[0] + pad;
+                        let y = pos[1] + pad;
+                        if (x + boxW + pad > viewW) x = viewW - boxW - pad;
+                        if (y + boxH + pad > viewH) y = viewH - boxH - pad;
+                        if (x < pad) x = pad;
+                        if (y < pad) y = pad;
+                        return [x, y];
+                    },
                     formatter(params) {
                         if (!params || !params.length) return "";
                         const t = params[0].axisValue;

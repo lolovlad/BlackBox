@@ -20,12 +20,26 @@
     };
 
     ns.fetchInit = function fetchInit(state) {
+        const btnTop = document.getElementById("btn-render-chart");
+        const btnApply = document.getElementById("btn-apply-filters");
+        if (btnTop) btnTop.disabled = true;
+        if (btnApply) btnApply.disabled = true;
+        if (state.chartMeta) {
+            state.chartMeta.textContent = "Подождите. Идёт построение графиков…";
+        }
         const query = ns.buildQuery(state, false);
         fetch(`${state.initUrl}?${query.toString()}`)
             .then((r) => r.json())
             .then((payload) => {
                 ns.setFullData(state, payload);
                 ns.restartPolling(state);
+            })
+            .catch(() => {
+                ns.renderEmpty(state, "Не удалось построить график: ошибка загрузки данных.");
+            })
+            .finally(() => {
+                if (btnTop) btnTop.disabled = false;
+                if (btnApply) btnApply.disabled = false;
             });
     };
 

@@ -24,6 +24,9 @@ from src.webui.timezone_utils import now_in_configured_timezone_naive
 logger = logging.getLogger(__name__)
 SETTINGS_PATH = Path("settings/settings.json")
 
+# Системная авария при отсутствии данных Modbus (видна в таблице "Аварии").
+MODBUS_READ_ERROR_ALARM = "Ошибка чтения Modbus"
+
 
 @dataclass
 class RuntimeConfig:
@@ -547,9 +550,23 @@ class ModbusCollector:
                             )
                             last_error_log = now
 
-                # Persist timestamps already in configured APP_TIMEZONE.
-                created_at = now_in_configured_timezone_naive()
+                no_data = bool(requests) and cycle_read_errors >= len(requests)
                 processed = parse_fields(config, source_values)
+
+                # Системная авария: нет данных Modbus (все запросы в цикле завершились ошибкой).
+                active_raw = processed.get("active_alarms", [])
+                active_list: list[str] = [str(x) for x in active_raw] if isinstance(active_raw, list) else []
+                if no_data:
+                    if MODBUS_READ_ERROR_ALARM not in active_list:
+                        active_list.append(MODBUS_READ_ERROR_ALARM)
+                else:
+                    active_list = [x for x in active_list if x != MODBUS_READ_ERROR_ALARM]
+                processed["active_alarms"] = active_list
+
+                # Persist timestamps: prefer controller time if present, else app time.
+                app_created_at = now_in_configured_timezone_naive()
+                controller_created_at = try_parse_controller_datetime(processed)
+                created_at = controller_created_at or app_created_at
                 if self._alarms_enabled:
                     self._persist_alarm_snapshot(created_at=created_at, processed=processed)
                 self._append({"created_at": created_at, "sources": source_values, "processed": processed})
@@ -561,7 +578,6 @@ class ModbusCollector:
                     consecutive_failures += 1
                 else:
                     consecutive_failures = 0
-                no_data = bool(requests) and cycle_read_errors >= len(requests)
                 if no_data and not self._modbus_data_unavailable:
                     self._modbus_data_unavailable = True
                     self.flush_remaining()
