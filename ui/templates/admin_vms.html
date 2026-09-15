@@ -1,2 +1,50 @@
 {% extends "base.html" %}
-{% block content %}<section class="card"><h1>Админ · виртуальные машины</h1><p><a href="/admin/resources">Сканировать и подтвердить ресурсы</a></p>{% include "vm_table.html" %}<h2>Создать VM</h2><form id="create-vm" method="post"><label>Имя<input name="name" required></label><label>Протокол<select name="protocol"><option value="simulator">Simulator</option><option value="modbus_rtu">Modbus RTU</option></select></label><label>Preset ID<input name="preset_id" placeholder="optional"></label><label>Версия карты<input name="map_version" value="default-v1"></label><button type="submit">Создать</button></form><h2>Загрузить JSON-карту</h2><form id="map-upload" enctype="multipart/form-data"><label>Протокол<select name="protocol"><option value="simulator">Simulator</option><option value="modbus_rtu">Modbus RTU</option></select></label><label>Версия<input name="version" required></label><label>Preset<input name="preset_id"></label><label>JSON-файл<input type="file" name="file" accept="application/json" required></label><button type="submit">Опубликовать immutable map</button></form></section>{% endblock %}
+{% block title %}Админ ВМ · BlackBox{% endblock %}
+{% block content %}
+<section class="bb-card">
+  <h1 class="bb-page-title">Админ · виртуальные машины</h1>
+  <p class="bb-page-lead">
+    Создание ВМ и привязка уже опубликованной карты.
+    Загрузка JSON — на странице <a href="/admin/maps">Карты</a>.
+    Ресурсы: <a href="/admin/resources">сканировать и подтвердить</a>.
+  </p>
+  {% include "vm_table.html" %}
+</section>
+
+<section class="bb-card">
+  <h2 class="bb-section-title">Создать VM</h2>
+  <p class="bb-hint">Контейнер создаётся только при нажатии «Старт». Сначала выберите карту для протокола.</p>
+  <form id="create-vm" method="post" class="bb-form">
+    <label>Имя<input name="name" required></label>
+    <label>Протокол
+      <select name="protocol" id="create-protocol">
+        <option value="simulator">Simulator</option>
+        <option value="modbus_rtu">Modbus RTU</option>
+      </select>
+    </label>
+    <label>Preset ID<input name="preset_id" placeholder="optional"></label>
+    <label>Карта
+      <select name="map_version" id="create-map-version" required>
+        <option value="">— выберите карту —</option>
+        {% for m in maps %}
+        <option value="{{ m.version }}" data-protocol="{{ m.protocol }}">{{ m.version }}{% if m.preset_id %} · {{ m.preset_id }}{% endif %}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <p id="create-map-hint" class="bb-hint" hidden>
+      Для этого протокола нет карт. <a href="/admin/maps">Опубликуйте JSON-карту</a>.
+    </p>
+    {% if approved_resources %}
+    <fieldset>
+      <legend class="bb-section-title" style="margin-top:0">Подтверждённые ресурсы</legend>
+      <div class="bb-check-list">
+        {% for r in approved_resources %}
+        <label><input type="checkbox" name="resource_id" value="{{ r.resource_id }}"> {{ r.kind }} · {{ r.name }} <span class="bb-muted">({{ r.path or r.address }})</span></label>
+        {% endfor %}
+      </div>
+    </fieldset>
+    {% endif %}
+    <button type="submit" class="bb-btn">Создать</button>
+  </form>
+</section>
+{% endblock %}

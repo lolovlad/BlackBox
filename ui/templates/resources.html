@@ -1,2 +1,32 @@
 {% extends "base.html" %}
-{% block content %}<section class="card"><h1>Ресурсы устройств</h1><p class="muted">Найденные устройства сначала нужно явно подтвердить. Неподтверждённые ресурсы не могут попасть в allowlist виртуальной машины.</p><button type="button" data-resource-scan>Сканировать</button><span id="resource-message" role="status"></span><table><tr><th>Тип</th><th>Имя</th><th>Путь/адрес</th><th>Статус</th><th></th></tr>{% for r in resources %}<tr><td>{{ r.kind }}</td><td>{{ r.name }}</td><td>{{ r.path or r.address }}</td><td>{{ 'подтверждён' if r.approved else 'ожидает подтверждения' }}</td><td>{% if not r.approved %}<button type="button" data-resource-approve="{{ r.resource_id }}">Подтвердить</button>{% endif %}</td></tr>{% else %}<tr><td colspan="5">Ресурсы ещё не сканировались.</td></tr>{% endfor %}</table></section>{% endblock %}
+{% block title %}Ресурсы · BlackBox{% endblock %}
+{% block content %}
+<section class="bb-card">
+  <h1 class="bb-page-title">Ресурсы устройств</h1>
+  <p class="bb-page-lead">Найденные устройства сначала нужно явно подтвердить. Неподтверждённые ресурсы не могут попасть в allowlist виртуальной машины.</p>
+  <div class="bb-actions">
+    <button type="button" class="bb-btn" data-resource-scan><i class="bi bi-radar"></i> Сканировать</button>
+    <span id="resource-message" class="bb-muted" role="status"></span>
+  </div>
+  <div class="bb-table-wrap">
+    <table class="bb-table">
+      <thead>
+        <tr><th>Тип</th><th>Имя</th><th>Путь/адрес</th><th>Статус</th><th></th></tr>
+      </thead>
+      <tbody>
+      {% for r in resources %}
+        <tr>
+          <td>{{ r.kind }}</td>
+          <td>{{ r.name }}</td>
+          <td>{{ r.path or r.address }}</td>
+          <td>{% if r.approved %}<span class="bb-badge bb-badge-running">подтверждён</span>{% else %}<span class="bb-badge bb-badge-pending">ожидает</span>{% endif %}</td>
+          <td>{% if not r.approved %}<button type="button" class="bb-btn bb-btn-sm" data-resource-approve="{{ r.resource_id }}">Подтвердить</button>{% endif %}</td>
+        </tr>
+      {% else %}
+        <tr><td colspan="5" class="bb-muted">Ресурсы ещё не сканировались.</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endblock %}

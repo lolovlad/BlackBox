@@ -234,6 +234,31 @@ class HubRepository:
                 row = c.execute("SELECT document_json FROM map_versions WHERE version=? AND protocol=? ORDER BY created_at DESC LIMIT 1", (version, protocol)).fetchone()
         return None if row is None else json.loads(row[0])
 
+    def list_maps(self) -> list[dict[str, Any]]:
+        with self.connect() as c:
+            rows = c.execute(
+                "SELECT id,version,protocol,preset_id,checksum,created_at FROM map_versions ORDER BY created_at DESC"
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def map_record(self, version: str, protocol: str | None = None) -> dict[str, Any] | None:
+        with self.connect() as c:
+            if protocol is None:
+                row = c.execute(
+                    "SELECT id,version,protocol,preset_id,checksum,document_json,created_at FROM map_versions WHERE version=? ORDER BY created_at DESC LIMIT 1",
+                    (version,),
+                ).fetchone()
+            else:
+                row = c.execute(
+                    "SELECT id,version,protocol,preset_id,checksum,document_json,created_at FROM map_versions WHERE version=? AND protocol=? ORDER BY created_at DESC LIMIT 1",
+                    (version, protocol),
+                ).fetchone()
+        if row is None:
+            return None
+        payload = dict(row)
+        payload["document"] = json.loads(payload.pop("document_json"))
+        return payload
+
     def list_resources(self) -> list[dict[str, Any]]:
         with self.connect() as c:
             rows = c.execute("SELECT * FROM discovered_resources ORDER BY kind,name").fetchall()

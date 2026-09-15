@@ -1,14 +1,51 @@
 <!doctype html>
 <html lang="ru">
 <head>
-  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>{% block title %}BlackBox Hub{% endblock %}</title>
+  <link rel="stylesheet" href="/static/vendor/tailwind.min.css">
+  <link rel="stylesheet" href="/static/vendor/bootstrap-icons/bootstrap-icons.min.css">
   <link rel="stylesheet" href="/static/app.css">
-  <script src="https://unpkg.com/htmx.org@2.0.4"></script>
+  <script src="/static/vendor/htmx.min.js"></script>
+  <script defer src="/static/vendor/alpine.min.js"></script>
   <script defer src="/static/app.js"></script>
 </head>
-<body>
-<header><a href="/dashboard" class="brand">BlackBox</a>{% if user %}<nav><a href="/vms">ВМ</a>{% if user.role == 'admin' %}<a href="/admin/vms">Администрирование</a><a href="/admin/resources">Ресурсы</a><a href="/admin/logs">Логи</a>{% endif %}</nav><span class="user">{{ user.username }} ({{ user.role }})</span>{% endif %}</header>
-<main>{% block content %}{% endblock %}</main>
+<body class="bb-body" x-data="bbShell()" @bb-toast.window="pushToast($event.detail)">
+  {% if user %}
+  <header class="bb-header">
+    <div class="bb-header-inner">
+      <a href="/dashboard" class="bb-brand">
+        <span class="bb-brand-mark">B</span>
+        <span class="bb-brand-text">BlackBox</span>
+      </a>
+      <nav class="bb-nav" aria-label="Основное меню">
+        {% set path = request.url.path %}
+        <a href="/dashboard" class="bb-nav-link{% if path == '/dashboard' %} is-active{% endif %}"><i class="bi bi-speedometer2"></i> Дашборд</a>
+        <a href="/vms" class="bb-nav-link{% if path.startswith('/vms') %} is-active{% endif %}"><i class="bi bi-hdd-stack"></i> ВМ</a>
+        {% if user.role == 'admin' %}
+        <a href="/admin/vms" class="bb-nav-link{% if path.startswith('/admin/vms') %} is-active{% endif %}"><i class="bi bi-gear"></i> Админ ВМ</a>
+        <a href="/admin/maps" class="bb-nav-link{% if path.startswith('/admin/maps') %} is-active{% endif %}"><i class="bi bi-file-earmark-code"></i> Карты</a>
+        <a href="/admin/resources" class="bb-nav-link{% if path.startswith('/admin/resources') %} is-active{% endif %}"><i class="bi bi-hdd-network"></i> Ресурсы</a>
+        <a href="/admin/logs" class="bb-nav-link{% if path.startswith('/admin/logs') %} is-active{% endif %}"><i class="bi bi-journal-text"></i> Логи</a>
+        {% endif %}
+      </nav>
+      <div class="bb-header-meta">
+        <span class="bb-user">{{ user.username }} <span class="bb-role">{{ user.role }}</span></span>
+        <button type="button" class="bb-btn bb-btn-ghost" data-logout title="Выйти"><i class="bi bi-box-arrow-right"></i> Выйти</button>
+      </div>
+    </div>
+  </header>
+  {% endif %}
+
+  <div class="bb-toast-host" aria-live="polite">
+    <template x-for="t in toasts" :key="t.id">
+      <div class="bb-toast" :class="'bb-toast-' + t.kind" x-text="t.message"></div>
+    </template>
+  </div>
+
+  <main class="bb-main">
+    {% block content %}{% endblock %}
+  </main>
 </body>
 </html>

@@ -60,22 +60,33 @@ class DockerManager:
             path = resource.get("path") if isinstance(resource, dict) else None
             if path and str(path).startswith("/dev/"):
                 devices.append(f"{path}:{path}:rwm")
-        container = self.client.containers.run(
-            image,
-            detach=True,
-            name=f"bb-vm-{vm['id']}",
-            labels=labels,
-            environment=environment,
-            network=os.getenv("BB_WORKER_NETWORK", "blackbox_control"),
-            read_only=True,
-            tmpfs={"/tmp": "rw,noexec,nosuid,size=64m"},
-            cap_drop=["ALL"],
-            security_opt=["no-new-privileges:true"],
-            mem_limit=limits.get("memory", "256m"),
-            nano_cpus=int(limits.get("nano_cpus", 500_000_000)),
-            pids_limit=int(limits.get("pids", 128)),
-            devices=devices,
-        )
+        # create (not run) so Hub can record lifecycle=created and start() separately
+        create_kwargs: dict[str, Any] = {
+            "name": f"bb-vm-{vm['id']}",
+            "labels": labels,
+            "environment": environment,
+            "network": os.getenv("BB_WORKER_NETWORK", "blackbox_control"),
+            "read_only": True,
+            "tmpfs": {"/tmp": "rw,noexec,nosuid,size=64m"},
+            "cap_drop": ["ALL"],
+            "security_opt": ["no-new-privileges:true"],
+            "mem_limit": limits.get("memory", "256m"),
+            "nano_cpus": int(limits.get("nano_cpus", 500_000_000)),
+            "pids_limit": int(limits.get("pids", 128)),
+        }
+        if devices:
+            create_kwargs["devices"] = devices
+        try:
+            container = self.client.containers.create(image, **create_kwargs)
+        except Exception as exc:
+            message = str(exc)
+            if "already in use" in message.lower() or "conflict" in message.lower():
+                raise RuntimeError(
+                    f"Container name bb-vm-{vm['id']} already exists; remove the orphan or delete the VM first"
+                ) from exc
+            raise
+        if log is not None:
+            log(f"created container {getattr(container, 'id', None)} for vm {vm['id']}")
         return {"container_id": getattr(container, "id", None), "lifecycle": VmLifecycle.CREATED.value}
 
     def _container(self, vm: dict[str, Any]):

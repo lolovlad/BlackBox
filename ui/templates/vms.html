@@ -1,2 +1,9 @@
 {% extends "base.html" %}
-{% block content %}<section class="card"><h1>Виртуальные машины</h1>{% include "vm_table.html" %}</section>{% endblock %}
+{% block title %}ВМ · BlackBox{% endblock %}
+{% block content %}
+<section class="bb-card">
+  <h1 class="bb-page-title">Виртуальные машины</h1>
+  <p class="bb-page-lead">Список ВМ и их текущее состояние.</p>
+  {% include "vm_table.html" %}
+</section>
+{% endblock %}

@@ -1,4 +1,14 @@
 {% extends "base.html" %}
 {% block title %}Вход · BlackBox{% endblock %}
-{% block content %}<section class="card narrow"><h1>Вход в BlackBox Hub</h1>{% if error %}<p class="error">{{ error }}</p>{% endif %}<form method="post"><label>Логин<input name="username" autocomplete="username" required></label><label>Пароль<input type="password" name="password" autocomplete="current-password" required></label><button type="submit">Войти</button></form></section>{% endblock %}
-
+{% block content %}
+<section class="bb-card narrow">
+  <h1 class="bb-page-title">Вход в BlackBox Hub</h1>
+  <p class="bb-page-lead">Управление виртуальными машинами и картами чтения.</p>
+  {% if error %}<p class="bb-error">{{ error }}</p>{% endif %}
+  <form method="post" class="bb-form">
+    <label>Логин<input name="username" autocomplete="username" required></label>
+    <label>Пароль<input type="password" name="password" autocomplete="current-password" required></label>
+    <button type="submit" class="bb-btn">Войти</button>
+  </form>
+</section>
+{% endblock %}

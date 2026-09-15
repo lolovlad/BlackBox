@@ -1,2 +1,21 @@
 {% extends "base.html" %}
-{% block content %}<section class="card"><h1>Dashboard</h1><p>Live status, tags и logs подключаются через <code>/ws/v1/events</code>.</p><p id="live-status" class="muted">Ожидание live-событий…</p><pre id="live-tags" class="live-tags"></pre><div id="live"><h2>Виртуальные машины</h2>{% include "vm_table.html" %}</div></section>{% endblock %}
+{% block title %}Дашборд · BlackBox{% endblock %}
+{% block content %}
+<section class="bb-card">
+  <h1 class="bb-page-title">Дашборд</h1>
+  <p class="bb-page-lead">Live-статус, tags и события через <code>/ws/v1/events</code>.</p>
+  {% set running = vms | selectattr('lifecycle', 'equalto', 'running') | list %}
+  {% set failed = vms | selectattr('lifecycle', 'equalto', 'failed') | list %}
+  <div class="bb-stat-row">
+    <div class="bb-stat"><span class="bb-stat-label">Всего ВМ</span><span class="bb-stat-value">{{ vms|length }}</span></div>
+    <div class="bb-stat"><span class="bb-stat-label">Running</span><span class="bb-stat-value">{{ running|length }}</span></div>
+    <div class="bb-stat"><span class="bb-stat-label">Failed</span><span class="bb-stat-value">{{ failed|length }}</span></div>
+  </div>
+  <p id="live-status" class="bb-muted">Ожидание live-событий…</p>
+  <pre id="live-tags" class="bb-live-tags"></pre>
+  <div id="live">
+    <h2 class="bb-section-title">Виртуальные машины</h2>
+    {% include "vm_table.html" %}
+  </div>
+</section>
+{% endblock %}

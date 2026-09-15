@@ -529,9 +529,14 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
 
     @app.get("/api/v1/maps")
     async def list_maps(account=Depends(user)):
-        with repo.connect() as c:
-            rows = c.execute("SELECT id,version,protocol,preset_id,checksum,created_at FROM map_versions ORDER BY created_at DESC").fetchall()
-        return {"items": [dict(row) for row in rows]}
+        return {"items": repo.list_maps()}
+
+    @app.get("/api/v1/maps/{version}")
+    async def get_map(version: str, protocol: str | None = None, account=Depends(user)):
+        record = repo.map_record(version, protocol)
+        if record is None:
+            raise HTTPException(404, detail={"code": "map_not_found", "message": "Map version not found"})
+        return record
 
     @app.get("/api/v1/users")
     async def list_users(account=Depends(admin)):
@@ -715,6 +720,20 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
         set_auth_cookies(out, access, refresh, secrets.token_urlsafe(24), secure=cfg.cookie_secure)
         return out
 
+    def _require_admin_html(request: Request):
+        try:
+            account = current_user(request, repo, cfg)
+            if account["role"] != "admin":
+                raise HTTPException(403)
+            return account
+        except HTTPException as exc:
+            return RedirectResponse("/login" if exc.status_code == 401 else "/dashboard", status_code=303)
+
+    def _ensure_default_maps() -> None:
+        for protocol in (VmProtocol.SIMULATOR, VmProtocol.MODBUS_RTU):
+            if protocol_spec(protocol).enabled:
+                _default_map(repo, protocol, "default-v1")
+
     @app.get("/dashboard", response_class=HTMLResponse)
     async def dashboard(request: Request):
         try:
@@ -748,45 +767,56 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
 
     @app.get("/admin/vms", response_class=HTMLResponse)
     async def admin_vms_page(request: Request):
-        try:
-            account = current_user(request, repo, cfg)
-            if account["role"] != "admin":
-                raise HTTPException(403)
-        except HTTPException as exc:
-            return RedirectResponse("/login" if exc.status_code == 401 else "/dashboard", status_code=303)
-        return templates.TemplateResponse(request=request, name="admin_vms.html", context={"user": account, "vms": repo.list_vms()})
+        account = _require_admin_html(request)
+        if isinstance(account, RedirectResponse):
+            return account
+        _ensure_default_maps()
+        approved = [r for r in repo.list_resources() if r.get("approved")]
+        return templates.TemplateResponse(
+            request=request,
+            name="admin_vms.html",
+            context={"user": account, "vms": repo.list_vms(), "maps": repo.list_maps(), "approved_resources": approved},
+        )
 
     @app.get("/admin/vms/{vm_id}/edit", response_class=HTMLResponse)
     async def edit_vm_page(vm_id: str, request: Request):
-        try:
-            account = current_user(request, repo, cfg)
-            if account["role"] != "admin":
-                raise HTTPException(403)
-        except HTTPException as exc:
-            return RedirectResponse("/login" if exc.status_code == 401 else "/dashboard", status_code=303)
+        account = _require_admin_html(request)
+        if isinstance(account, RedirectResponse):
+            return account
         vm = repo.get_vm(vm_id)
         if vm is None:
             return RedirectResponse("/admin/vms", status_code=303)
-        return templates.TemplateResponse(request=request, name="vm_edit.html", context={"user": account, "vm": vm})
+        _ensure_default_maps()
+        return templates.TemplateResponse(
+            request=request,
+            name="vm_edit.html",
+            context={"user": account, "vm": vm, "maps": repo.list_maps()},
+        )
+
+    @app.get("/admin/maps", response_class=HTMLResponse)
+    async def admin_maps_page(request: Request):
+        account = _require_admin_html(request)
+        if isinstance(account, RedirectResponse):
+            return account
+        _ensure_default_maps()
+        return templates.TemplateResponse(
+            request=request,
+            name="maps.html",
+            context={"user": account, "maps": repo.list_maps()},
+        )
 
     @app.get("/admin/resources", response_class=HTMLResponse)
     async def resources_page(request: Request):
-        try:
-            account = current_user(request, repo, cfg)
-            if account["role"] != "admin":
-                raise HTTPException(403)
-        except HTTPException as exc:
-            return RedirectResponse("/login" if exc.status_code == 401 else "/dashboard", status_code=303)
+        account = _require_admin_html(request)
+        if isinstance(account, RedirectResponse):
+            return account
         return templates.TemplateResponse(request=request, name="resources.html", context={"user": account, "resources": repo.list_resources()})
 
     @app.get("/admin/logs", response_class=HTMLResponse)
     async def admin_logs_page(request: Request):
-        try:
-            account = current_user(request, repo, cfg)
-            if account["role"] != "admin":
-                raise HTTPException(403)
-        except HTTPException as exc:
-            return RedirectResponse("/login" if exc.status_code == 401 else "/dashboard", status_code=303)
+        account = _require_admin_html(request)
+        if isinstance(account, RedirectResponse):
+            return account
         log_items = []
         for vm in repo.list_vms():
             try:

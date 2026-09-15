@@ -14,11 +14,12 @@ from services.hub.config import HubConfig
 
 
 class FakeContainer:
-    def __init__(self, name: str):
+    def __init__(self, name: str, *, environment: dict | None = None):
         self.id = f"container-{name}"
         self.name = name
         self.running = False
-        self.attrs = {"State": {"Status": "created", "Health": {"Status": "healthy"}, "Error": ""}}
+        env_list = [f"{key}={value}" for key, value in (environment or {}).items()]
+        self.attrs = {"State": {"Status": "created", "Health": {"Status": "healthy"}, "Error": ""}, "Config": {"Env": env_list}}
 
     def reload(self):
         return None
@@ -45,9 +46,14 @@ class FakeContainers:
     def __init__(self):
         self.items = {}
 
+    def create(self, image, name=None, **kwargs):
+        item = FakeContainer(name or f"anon-{len(self.items)}", environment=kwargs.get("environment"))
+        self.items[item.name] = item
+        return item
+
     def run(self, image, name, **kwargs):
-        item = FakeContainer(name)
-        self.items[name] = item
+        item = self.create(image, name=name, **kwargs)
+        item.start()
         return item
 
     def get(self, key):
@@ -113,6 +119,7 @@ def test_html_pages_render_with_current_starlette(tmp_path: Path):
             f"/vms/{vm['id']}",
             "/admin/vms",
             f"/admin/vms/{vm['id']}/edit",
+            "/admin/maps",
             "/admin/resources",
             "/admin/logs",
         ]
@@ -198,6 +205,21 @@ def test_map_version_is_immutable(tmp_path: Path):
         assert client.post("/api/v1/maps", json={"protocol": "simulator", "version": "immutable-v1", "document": first}, headers={"X-CSRF-Token": csrf}).status_code == 200
         conflict = client.post("/api/v1/maps", json={"protocol": "simulator", "version": "immutable-v1", "document": second}, headers={"X-CSRF-Token": csrf})
         assert conflict.status_code == 409 and conflict.json()["code"] == "map_immutable"
+
+
+def test_get_map_document_by_version(tmp_path: Path):
+    with _client(tmp_path) as client:
+        assert client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin-password"}).status_code == 200
+        csrf = client.cookies.get("bb_csrf")
+        document = {"requests": [{"name": "sim", "fc": 3, "address": 0, "count": 1}], "fields": [{"name": "value", "type": "uint16", "source": "sim", "address": 0}]}
+        assert client.post("/api/v1/maps", json={"protocol": "simulator", "version": "read-v1", "document": document}, headers={"X-CSRF-Token": csrf}).status_code == 200
+        fetched = client.get("/api/v1/maps/read-v1", params={"protocol": "simulator"})
+        assert fetched.status_code == 200
+        body = fetched.json()
+        assert body["version"] == "read-v1"
+        assert body["protocol"] == "simulator"
+        assert body["document"]["fields"][0]["name"] == "value"
+        assert client.get("/api/v1/maps/missing-v1").status_code == 404
 
 
 def test_refresh_rotation_and_logout(tmp_path: Path):

@@ -1,1 +1,39 @@
-<table><tr><th>Имя</th><th>Протокол</th><th>Карта</th><th>Состояние</th>{% if user.role == 'admin' %}<th>Операции</th>{% endif %}</tr>{% for vm in vms %}<tr><td><a href="/vms/{{ vm.id }}">{{ vm.name }}</a></td><td>{{ vm.protocol }}</td><td>{{ vm.map_version }}</td><td>{{ vm.lifecycle }}</td>{% if user.role == 'admin' %}<td><button data-vm-action="start" data-vm-id="{{ vm.id }}">Start</button> <button data-vm-action="stop" data-vm-id="{{ vm.id }}">Stop</button> <button data-vm-action="restart" data-vm-id="{{ vm.id }}">Restart</button> <button data-vm-action="apply-map" data-vm-id="{{ vm.id }}">Apply map</button> <a href="/admin/vms/{{ vm.id }}/edit">Изменить</a></td>{% endif %}</tr>{% else %}<tr><td colspan="5">VM пока нет.</td></tr>{% endfor %}</table>
+<div class="bb-table-wrap">
+<table class="bb-table">
+  <thead>
+    <tr>
+      <th>Имя</th>
+      <th>Протокол</th>
+      <th>Карта</th>
+      <th>Состояние</th>
+      {% if user.role == 'admin' %}<th>Операции</th>{% endif %}
+    </tr>
+  </thead>
+  <tbody>
+  {% for vm in vms %}
+    <tr>
+      <td>
+        <a href="/vms/{{ vm.id }}">{{ vm.name }}</a>
+        {% if vm.last_error %}<span class="bb-error-inline" title="{{ vm.last_error }}">{{ vm.last_error }}</span>{% endif %}
+      </td>
+      <td>{{ vm.protocol }}</td>
+      <td>{{ vm.map_version }}</td>
+      <td><span class="bb-badge bb-badge-{{ vm.lifecycle }}">{{ vm.lifecycle }}</span></td>
+      {% if user.role == 'admin' %}
+      <td>
+        <div class="bb-actions">
+          <button type="button" class="bb-btn bb-btn-sm" data-vm-action="start" data-vm-id="{{ vm.id }}" {% if vm.lifecycle == 'running' or vm.lifecycle == 'starting' %}disabled{% endif %}>Старт</button>
+          <button type="button" class="bb-btn bb-btn-sm bb-btn-secondary" data-vm-action="stop" data-vm-id="{{ vm.id }}" {% if vm.lifecycle == 'stopped' or vm.lifecycle == 'pending' %}disabled{% endif %}>Стоп</button>
+          <button type="button" class="bb-btn bb-btn-sm bb-btn-secondary" data-vm-action="restart" data-vm-id="{{ vm.id }}">Рестарт</button>
+          <button type="button" class="bb-btn bb-btn-sm bb-btn-secondary" data-vm-action="apply-map" data-vm-id="{{ vm.id }}">Apply map</button>
+          <a class="bb-btn bb-btn-sm bb-btn-secondary" href="/admin/vms/{{ vm.id }}/edit">Изменить</a>
+        </div>
+      </td>
+      {% endif %}
+    </tr>
+  {% else %}
+    <tr><td colspan="{% if user.role == 'admin' %}5{% else %}4{% endif %}" class="bb-muted">VM пока нет.</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>

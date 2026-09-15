@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+{% block title %}Карты · BlackBox{% endblock %}
+{% block content %}
+<section class="bb-card" x-data="bbMapsPage()">
+  <h1 class="bb-page-title">Карты чтения JSON</h1>
+  <p class="bb-page-lead">Публикация immutable map-версий отдельно от создания ВМ. После публикации карту можно выбрать при создании или изменении ВМ.</p>
+
+  <div class="bb-grid-2">
+    <div>
+      <h2 class="bb-section-title">Опубликованные карты</h2>
+      <div class="bb-table-wrap">
+        <table class="bb-table">
+          <thead>
+            <tr><th>Версия</th><th>Протокол</th><th>Preset</th><th>Checksum</th><th>Создана</th></tr>
+          </thead>
+          <tbody>
+          {% for m in maps %}
+            <tr>
+              <td>
+                <button type="button" class="bb-btn bb-btn-sm bb-btn-secondary"
+                  @click="selected='{{ m.version }}::{{ m.protocol }}'; loadSelected()">
+                  {{ m.version }}
+                </button>
+              </td>
+              <td>{{ m.protocol }}</td>
+              <td>{{ m.preset_id or '—' }}</td>
+              <td><code>{{ m.checksum[:12] }}…</code></td>
+              <td class="bb-muted">{{ m.created_at }}</td>
+            </tr>
+          {% else %}
+            <tr><td colspan="5" class="bb-muted">Карт пока нет. Загрузите JSON ниже.</td></tr>
+          {% endfor %}
+          </tbody>
+        </table>
+      </div>
+
+      <h2 class="bb-section-title">Загрузить JSON-карту</h2>
+      <form id="map-upload" class="bb-form" enctype="multipart/form-data">
+        <label>Протокол
+          <select name="protocol">
+            <option value="simulator">Simulator</option>
+            <option value="modbus_rtu">Modbus RTU</option>
+          </select>
+        </label>
+        <label>Версия<input name="version" required placeholder="например device-v3"></label>
+        <label>Preset<input name="preset_id" placeholder="optional"></label>
+        <label>JSON-файл<input type="file" name="file" accept="application/json,.json" required></label>
+        <button type="submit" class="bb-btn">Опубликовать immutable map</button>
+      </form>
+    </div>
+
+    <div>
+      <h2 class="bb-section-title">Просмотр JSON</h2>
+      <label class="bb-form">
+        Выбранная карта
+        <select x-model="selected" @change="loadSelected()">
+          <option value="">— выберите —</option>
+          {% for m in maps %}
+          <option value="{{ m.version }}::{{ m.protocol }}">{{ m.version }} · {{ m.protocol }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <p class="bb-hint" x-show="loading">Загрузка…</p>
+      <pre class="bb-json-view bb-live-tags" x-text="documentText || 'Выберите карту, чтобы увидеть JSON.'"></pre>
+    </div>
+  </div>
+</section>
+{% endblock %}

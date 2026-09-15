@@ -1,3 +1,23 @@
 {% extends "base.html" %}
-{% block content %}<section class="card"><h1>{{ vm.name }}</h1><dl><dt>VM ID</dt><dd>{{ vm.id }}</dd><dt>Протокол</dt><dd>{{ vm.protocol }}</dd><dt>Карта</dt><dd>{{ vm.map_version }} (revision {{ vm.config_revision }})</dd><dt>Состояние</dt><dd>{{ vm.lifecycle }}</dd></dl><div id="live"><p id="live-status">Ожидание live-событий…</p><h2>Последние tags</h2><pre id="live-tags" class="live-tags"></pre></div><h2>Последние логи</h2><pre class="log-tail">{% for line in lines %}{{ line }}
-{% else %}Логов пока нет.{% endfor %}</pre></section>{% endblock %}
+{% block title %}{{ vm.name }} · BlackBox{% endblock %}
+{% block content %}
+<section class="bb-card">
+  <h1 class="bb-page-title">{{ vm.name }}</h1>
+  <p class="bb-page-lead">Детали ВМ, live tags и хвост логов контейнера.</p>
+  <dl class="bb-meta-list">
+    <dt>VM ID</dt><dd>{{ vm.id }}</dd>
+    <dt>Протокол</dt><dd>{{ vm.protocol }}</dd>
+    <dt>Карта</dt><dd>{{ vm.map_version }} (revision {{ vm.config_revision }})</dd>
+    <dt>Состояние</dt><dd><span class="bb-badge bb-badge-{{ vm.lifecycle }}">{{ vm.lifecycle }}</span></dd>
+    {% if vm.last_error %}<dt>Ошибка</dt><dd class="bb-error">{{ vm.last_error }}</dd>{% endif %}
+  </dl>
+  <div id="live">
+    <p id="live-status" class="bb-muted">Ожидание live-событий…</p>
+    <h2 class="bb-section-title">Последние tags</h2>
+    <pre id="live-tags" class="bb-live-tags"></pre>
+  </div>
+  <h2 class="bb-section-title">Последние логи</h2>
+  <pre class="bb-log-tail">{% for line in lines %}{{ line }}
+{% else %}Логов пока нет.{% endfor %}</pre>
+</section>
+{% endblock %}

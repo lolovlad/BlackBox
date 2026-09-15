@@ -1,2 +1,26 @@
 {% extends "base.html" %}
-{% block content %}<section class="card"><h1>Изменить VM: {{ vm.name }}</h1><form id="edit-vm" data-vm-id="{{ vm.id }}"><label>Имя<input name="name" value="{{ vm.name }}" required></label><label>Описание<textarea name="description">{{ vm.description }}</textarea></label><label>Версия карты<input name="map_version" value="{{ vm.map_version }}" required></label><button type="submit">Сохранить</button></form><p><a href="/admin/vms">Назад к VM</a></p></section>{% endblock %}
+{% block title %}Изменить VM · BlackBox{% endblock %}
+{% block content %}
+<section class="bb-card">
+  <h1 class="bb-page-title">Изменить VM: {{ vm.name }}</h1>
+  <p class="bb-page-lead">Сохранение меняет метаданные. «Применить карту» отдельно отправляет apply-map running worker.</p>
+  <form id="edit-vm" class="bb-form" data-vm-id="{{ vm.id }}">
+    <label>Имя<input name="name" value="{{ vm.name }}" required></label>
+    <label>Описание<textarea name="description" rows="3">{{ vm.description }}</textarea></label>
+    <label>Карта
+      <select name="map_version" required>
+        {% for m in maps %}
+          {% if m.protocol == vm.protocol %}
+          <option value="{{ m.version }}" {% if m.version == vm.map_version %}selected{% endif %}>{{ m.version }}{% if m.preset_id %} · {{ m.preset_id }}{% endif %}</option>
+          {% endif %}
+        {% endfor %}
+      </select>
+    </label>
+    <div class="bb-actions">
+      <button type="submit" class="bb-btn">Сохранить</button>
+      <button type="button" class="bb-btn bb-btn-secondary" data-apply-map="{{ vm.id }}">Применить карту</button>
+      <a class="bb-btn bb-btn-secondary" href="/admin/vms">Назад</a>
+    </div>
+  </form>
+</section>
+{% endblock %}
