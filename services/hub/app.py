@@ -698,13 +698,18 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
 
     @app.get("/login", response_class=HTMLResponse)
     async def login_page(request: Request):
-        return templates.TemplateResponse("login.html", {"request": request, "error": None})
+        return templates.TemplateResponse(request=request, name="login.html", context={"error": None})
 
     @app.post("/login", response_class=HTMLResponse)
     async def login_form(request: Request, username: str = Form(...), password: str = Form(...)):
         account = repo.authenticate(username.strip(), password)
         if account is None:
-            return templates.TemplateResponse("login.html", {"request": request, "error": "Неверный логин или пароль"}, status_code=401)
+            return templates.TemplateResponse(
+                request=request,
+                name="login.html",
+                context={"error": "Неверный логин или пароль"},
+                status_code=401,
+            )
         access, refresh, _ = issue_tokens(repo, cfg, account)
         out = RedirectResponse("/dashboard", status_code=303)
         set_auth_cookies(out, access, refresh, secrets.token_urlsafe(24), secure=cfg.cookie_secure)
@@ -716,7 +721,7 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
             account = current_user(request, repo, cfg)
         except HTTPException:
             return RedirectResponse("/login", status_code=303)
-        return templates.TemplateResponse("dashboard.html", {"request": request, "user": account, "vms": repo.list_vms()})
+        return templates.TemplateResponse(request=request, name="dashboard.html", context={"user": account, "vms": repo.list_vms()})
 
     @app.get("/vms", response_class=HTMLResponse)
     async def vms_page(request: Request):
@@ -724,7 +729,7 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
             account = current_user(request, repo, cfg)
         except HTTPException:
             return RedirectResponse("/login", status_code=303)
-        return templates.TemplateResponse("vms.html", {"request": request, "user": account, "vms": repo.list_vms()})
+        return templates.TemplateResponse(request=request, name="vms.html", context={"user": account, "vms": repo.list_vms()})
 
     @app.get("/vms/{vm_id}", response_class=HTMLResponse)
     async def vm_page(vm_id: str, request: Request):
@@ -739,7 +744,7 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
             lines = docker_manager.logs(vm, tail=200) if vm.get("container_id") else []
         except Exception:
             lines = []
-        return templates.TemplateResponse("vm_detail.html", {"request": request, "user": account, "vm": vm, "lines": lines})
+        return templates.TemplateResponse(request=request, name="vm_detail.html", context={"user": account, "vm": vm, "lines": lines})
 
     @app.get("/admin/vms", response_class=HTMLResponse)
     async def admin_vms_page(request: Request):
@@ -749,7 +754,7 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
                 raise HTTPException(403)
         except HTTPException as exc:
             return RedirectResponse("/login" if exc.status_code == 401 else "/dashboard", status_code=303)
-        return templates.TemplateResponse("admin_vms.html", {"request": request, "user": account, "vms": repo.list_vms()})
+        return templates.TemplateResponse(request=request, name="admin_vms.html", context={"user": account, "vms": repo.list_vms()})
 
     @app.get("/admin/vms/{vm_id}/edit", response_class=HTMLResponse)
     async def edit_vm_page(vm_id: str, request: Request):
@@ -762,7 +767,7 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
         vm = repo.get_vm(vm_id)
         if vm is None:
             return RedirectResponse("/admin/vms", status_code=303)
-        return templates.TemplateResponse("vm_edit.html", {"request": request, "user": account, "vm": vm})
+        return templates.TemplateResponse(request=request, name="vm_edit.html", context={"user": account, "vm": vm})
 
     @app.get("/admin/resources", response_class=HTMLResponse)
     async def resources_page(request: Request):
@@ -772,7 +777,7 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
                 raise HTTPException(403)
         except HTTPException as exc:
             return RedirectResponse("/login" if exc.status_code == 401 else "/dashboard", status_code=303)
-        return templates.TemplateResponse("resources.html", {"request": request, "user": account, "resources": repo.list_resources()})
+        return templates.TemplateResponse(request=request, name="resources.html", context={"user": account, "resources": repo.list_resources()})
 
     @app.get("/admin/logs", response_class=HTMLResponse)
     async def admin_logs_page(request: Request):
@@ -789,7 +794,7 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
                 log_items.append({"vm": vm, "lines": lines, "error": None})
             except Exception as exc:
                 log_items.append({"vm": vm, "lines": [], "error": str(exc)})
-        return templates.TemplateResponse("logs.html", {"request": request, "user": account, "logs": log_items})
+        return templates.TemplateResponse(request=request, name="logs.html", context={"user": account, "logs": log_items})
 
     return app
 

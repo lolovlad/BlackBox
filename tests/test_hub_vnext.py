@@ -94,6 +94,34 @@ def test_hub_login_crud_and_role_guard(tmp_path: Path):
         assert client.get(f"/api/v1/vms/{vm_id}/logs").json()["lines"]
 
 
+def test_html_pages_render_with_current_starlette(tmp_path: Path):
+    """The Starlette TemplateResponse request/name order must stay explicit."""
+    with _client(tmp_path) as client:
+        assert client.get("/login").status_code == 200
+        form_login = client.post("/login", data={"username": "admin", "password": "admin-password"}, follow_redirects=False)
+        assert form_login.status_code == 303
+        csrf = client.cookies.get("bb_csrf")
+        vm = client.post(
+            "/api/v1/vms",
+            json={"name": "page-sim", "protocol": "simulator", "map_version": "default-v1"},
+            headers={"X-CSRF-Token": csrf},
+        ).json()
+
+        pages = [
+            "/dashboard",
+            "/vms",
+            f"/vms/{vm['id']}",
+            "/admin/vms",
+            f"/admin/vms/{vm['id']}/edit",
+            "/admin/resources",
+            "/admin/logs",
+        ]
+        for path in pages:
+            response = client.get(path)
+            assert response.status_code == 200, (path, response.text)
+            assert "<html" in response.text.lower()
+
+
 def test_batch_is_idempotent_and_parser_is_used(tmp_path: Path):
     with _client(tmp_path) as client:
         login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin-password"})
