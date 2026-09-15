@@ -1,0 +1,2 @@
+{% extends "base.html" %}
+{% block content %}<section class="card"><h1>Dashboard</h1><p>Live status, tags и logs подключаются через <code>/ws/v1/events</code>.</p><p id="live-status" class="muted">Ожидание live-событий…</p><pre id="live-tags" class="live-tags"></pre><div id="live"><h2>Виртуальные машины</h2>{% include "vm_table.html" %}</div></section>{% endblock %}

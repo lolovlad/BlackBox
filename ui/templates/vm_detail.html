@@ -1,0 +1,3 @@
+{% extends "base.html" %}
+{% block content %}<section class="card"><h1>{{ vm.name }}</h1><dl><dt>VM ID</dt><dd>{{ vm.id }}</dd><dt>Протокол</dt><dd>{{ vm.protocol }}</dd><dt>Карта</dt><dd>{{ vm.map_version }} (revision {{ vm.config_revision }})</dd><dt>Состояние</dt><dd>{{ vm.lifecycle }}</dd></dl><div id="live"><p id="live-status">Ожидание live-событий…</p><h2>Последние tags</h2><pre id="live-tags" class="live-tags"></pre></div><h2>Последние логи</h2><pre class="log-tail">{% for line in lines %}{{ line }}
+{% else %}Логов пока нет.{% endfor %}</pre></section>{% endblock %}

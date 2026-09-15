@@ -1,0 +1,2 @@
+{% extends "base.html" %}
+{% block content %}<section class="card"><h1>Изменить VM: {{ vm.name }}</h1><form id="edit-vm" data-vm-id="{{ vm.id }}"><label>Имя<input name="name" value="{{ vm.name }}" required></label><label>Описание<textarea name="description">{{ vm.description }}</textarea></label><label>Версия карты<input name="map_version" value="{{ vm.map_version }}" required></label><button type="submit">Сохранить</button></form><p><a href="/admin/vms">Назад к VM</a></p></section>{% endblock %}

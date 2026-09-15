@@ -1,0 +1,96 @@
+name: blackbox
+
+services:
+  docker-socket-proxy:
+    image: tecnativa/docker-socket-proxy:0.3.0
+    environment:
+      CONTAINERS: "1"
+      IMAGES: "1"
+      INFO: "1"
+      NETWORKS: "1"
+      POST: "1"
+      PING: "1"
+      VERSION: "1"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks: [bb-control]
+    restart: unless-stopped
+
+  hub:
+    profiles: ["dev", "prod"]
+    build:
+      context: .
+      dockerfile: services/hub/Dockerfile
+    environment:
+      BB_HUB_DB_PATH: /data/meta/hub.db
+      BB_DATA_ROOT: /data
+      BB_DOCKER_ENABLED: "1"
+      BB_JWT_SECRET: ${BB_JWT_SECRET:-change-me-change-me-change-me-change-me}
+      BB_BOOTSTRAP_ADMIN_USERNAME: ${BB_BOOTSTRAP_ADMIN_USERNAME:-admin}
+      BB_BOOTSTRAP_ADMIN_PASSWORD: ${BB_BOOTSTRAP_ADMIN_PASSWORD:-admin}
+      DOCKER_HOST: tcp://docker-socket-proxy:2375
+      BB_WORKER_NETWORK: blackbox_control
+    ports:
+      - "${BB_HUB_PORT:-8080}:8080"
+    depends_on:
+      docker-socket-proxy:
+        condition: service_started
+    networks: [bb-control]
+    volumes:
+      - blackbox-data:/data
+      - ./ui:/app/ui:ro
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/healthz')"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+  worker-simulator-image:
+    profiles: ["build"]
+    image: blackbox/worker-simulator:dev
+    build:
+      context: .
+      dockerfile: workers/simulator/Dockerfile
+
+  worker-modbus-rtu-image:
+    profiles: ["build"]
+    image: blackbox/worker-modbus-rtu:dev
+    build:
+      context: .
+      dockerfile: workers/modbus-rtu/Dockerfile
+
+  legacy-web:
+    profiles: ["legacy"]
+    build:
+      context: .
+      dockerfile: deploy/legacy.Dockerfile
+    command:
+      - sh
+      - -c
+      - >-
+        mkdir -p /data/meta &&
+        uv run flask db --directory legacy/migrations upgrade &&
+        uv run uvicorn src.web_app:app --host 0.0.0.0 --port 5000
+        --interface wsgi --log-level info --access-log
+    environment:
+      BLACKBOX_DB_PATH: /data/meta/blackbox.db
+      DISABLE_MODBUS_COLLECTOR: "1"
+      FLASK_APP: src.web_app:app
+      HOST: 0.0.0.0
+      PORT: "5000"
+      SECRET_KEY: ${SECRET_KEY:-change-me}
+    ports:
+      - "${BB_HTTP_PORT:-5000}:5000"
+    volumes:
+      - .:/app
+      - ./deploy/legacy.env:/app/.env:ro
+      - blackbox-data:/data
+    restart: unless-stopped
+
+networks:
+  bb-control:
+    name: blackbox_control
+
+volumes:
+  blackbox-data:

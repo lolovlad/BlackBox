@@ -1,18 +1,11 @@
-"""Compatibility namespace for the legacy Modbus reader.
+"""
+Получение данных по Modbus (minimalmodbus).
 
-The reader implementation is now physically stored in
-``legacy/modbus_acquire``.  This adapter is intentionally limited to keeping
-the old import path working during the vNext migration.
+Отделено от пакета blackbox: для веб-приложения (Flask) подключайте только
+`modbus_acquire` + minimalmodbus. Запись в файлы/аварийная логика остаётся в blackbox.
 """
 
-from pathlib import Path
-
-_LEGACY_PACKAGE = (
-    Path(__file__).resolve().parent.parent / "legacy" / "modbus_acquire"
-)
-__path__ = [str(_LEGACY_PACKAGE)]
-
-from .instrument import (  # noqa: E402
+from .instrument import (
     BYTEORDER_ALIASES,
     ModbusFieldSpec,
     ModbusReaderConfig,
@@ -20,7 +13,7 @@ from .instrument import (  # noqa: E402
     build_instrument,
     read_all_data,
 )
-from .deif import (  # noqa: E402
+from .deif import (
     ALARM_BITS,
     STATUS_BITS,
     ANALOG_CSV_COLUMNS,

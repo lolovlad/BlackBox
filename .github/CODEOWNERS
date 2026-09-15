@@ -1,0 +1,6 @@
+# Legacy changes are restricted to reviewed lab bug fixes during migration.
+/legacy/ @lolovlad
+/src/ @lolovlad
+/blackbox/ @lolovlad
+/modbus_acquire/ @lolovlad
+

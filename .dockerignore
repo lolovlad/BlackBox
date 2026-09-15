@@ -1,0 +1,13 @@
+.git
+.idea
+.pytest_cache
+.uv-cache
+.uv-venv
+.venv
+__pycache__
+*.pyc
+.env
+instance
+settings
+tmp_diag*
+

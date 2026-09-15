@@ -1,0 +1,22 @@
+name: Legacy boundary
+
+on:
+  pull_request:
+    paths:
+      - "legacy/**"
+
+jobs:
+  require-bugfix-label:
+    name: Require legacy-bugfix label
+    runs-on: ubuntu-latest
+    steps:
+      - name: Reject unclassified legacy changes
+        if: ${{ !contains(github.event.pull_request.labels.*.name, 'legacy-bugfix') }}
+        run: |
+          echo "Changes under legacy/ are allowed only for lab bug fixes."
+          echo "Add the legacy-bugfix label after review."
+          exit 1
+      - name: Confirm reviewed legacy bug fix
+        if: ${{ contains(github.event.pull_request.labels.*.name, 'legacy-bugfix') }}
+        run: echo "Legacy change is explicitly classified as a bug fix."
+

@@ -1,0 +1,122 @@
+#!/usr/bin/env sh
+set -eu
+
+PROJECT_ROOT="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+COMPOSE_FILE="$PROJECT_ROOT/deploy/compose.yaml"
+PROFILE="${BB_PROFILE:-dev}"
+
+compose() {
+  docker compose --project-directory "$PROJECT_ROOT" \
+    --file "$COMPOSE_FILE" --profile "$PROFILE" "$@"
+}
+
+compose_profiles() {
+  docker compose --project-directory "$PROJECT_ROOT" \
+    --file "$COMPOSE_FILE" --profile dev --profile build "$@"
+}
+
+usage() {
+  cat <<'EOF'
+Usage: ./bbctl <command>
+
+Commands:
+  up       Build and start the current lab profile
+  down     Stop the current lab profile
+  update   Pull the repository, rebuild, start and smoke-test
+  smoke    Run the Hub login/VM/Parquet/WebSocket acceptance smoke test
+  logs     Follow service logs
+  ps       Show Compose service state
+  help     Show this help
+
+Environment:
+  BB_PROFILE    Compose profile (default: dev)
+  BB_HUB_PORT   Hub HTTP port (default: 8080)
+EOF
+}
+
+require_docker() {
+  if ! command -v docker >/dev/null 2>&1; then
+    echo "ERROR: docker is required" >&2
+    exit 1
+  fi
+  docker compose version >/dev/null
+}
+
+remove_dynamic_workers() {
+  worker_ids="$(docker ps -aq --filter 'label=bb.vm_id')"
+  if [ -n "$worker_ids" ]; then
+    echo "Removing dynamic BlackBox workers so they are recreated from the current images..."
+    # The filter is deliberately restricted to the label assigned by Hub.
+    # Named volumes (including blackbox-data) are not touched.
+    docker rm -f $worker_ids >/dev/null
+  fi
+}
+
+smoke() {
+  if [ "$PROFILE" = "legacy" ]; then
+    port="${BB_HTTP_PORT:-5000}"
+    if curl --fail --silent "http://127.0.0.1:${port}/" >/dev/null 2>&1; then
+      echo "Legacy smoke check passed: http://127.0.0.1:${port}/"
+      return 0
+    fi
+    echo "ERROR: legacy web endpoint is not ready on port ${port}" >&2
+    return 1
+  fi
+  port="${BB_HUB_PORT:-8080}"
+  attempt=0
+  while [ "$attempt" -lt 30 ]; do
+    if curl --fail --silent "http://127.0.0.1:${port}/healthz" >/dev/null 2>&1; then
+      compose exec -T hub /app/.venv/bin/python -m services.hub.smoke --url "http://127.0.0.1:8080" --data-root /data
+      return 0
+    fi
+    attempt=$((attempt + 1))
+    sleep 1
+  done
+  echo "ERROR: Hub did not become ready on port ${port}" >&2
+  return 1
+}
+
+command="${1:-help}"
+case "$command" in
+  help|-h|--help)
+    usage
+    ;;
+  up)
+    require_docker
+    compose_profiles build
+    compose up --detach --build
+    ;;
+  down)
+    require_docker
+    compose stop
+    remove_dynamic_workers
+    compose down
+    ;;
+  update)
+    require_docker
+    git -C "$PROJECT_ROOT" pull --ff-only
+    compose_profiles build --pull
+    compose stop
+    remove_dynamic_workers
+    compose down
+    compose up --detach --remove-orphans
+    smoke
+    ;;
+  smoke)
+    require_docker
+    smoke
+    ;;
+  logs)
+    require_docker
+    compose logs --follow
+    ;;
+  ps)
+    require_docker
+    compose ps
+    ;;
+  *)
+    echo "ERROR: unknown command: $command" >&2
+    usage >&2
+    exit 2
+    ;;
+esac

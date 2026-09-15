@@ -1,0 +1,14 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>{% block title %}BlackBox Hub{% endblock %}</title>
+  <link rel="stylesheet" href="/static/app.css">
+  <script src="https://unpkg.com/htmx.org@2.0.4"></script>
+  <script defer src="/static/app.js"></script>
+</head>
+<body>
+<header><a href="/dashboard" class="brand">BlackBox</a>{% if user %}<nav><a href="/vms">ВМ</a>{% if user.role == 'admin' %}<a href="/admin/vms">Администрирование</a><a href="/admin/resources">Ресурсы</a><a href="/admin/logs">Логи</a>{% endif %}</nav><span class="user">{{ user.username }} ({{ user.role }})</span>{% endif %}</header>
+<main>{% block content %}{% endblock %}</main>
+</body>
+</html>

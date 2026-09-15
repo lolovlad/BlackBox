@@ -1,0 +1,87 @@
+#!/usr/bin/env sh
+set -eu
+
+# Запуск веб-приложения на переднем плане (логи в этот терминал).
+# Остановка: Ctrl+C
+#
+# Перед первым запуском нужен .env:
+#   sh legacy/scripts/linux/create_env.sh
+#
+# Для автозапуска при загрузке устройства используйте systemd отдельно
+# (см. legacy/DEPLOY_ON_DEVICE_RU.md и legacy/scripts/linux/install_systemd_service.sh).
+
+PROJECT_ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/../../.." && pwd)"
+cd "$PROJECT_ROOT"
+
+# Под systemd PATH часто не содержит каталог, куда поставили uv (типично ~/.local/bin).
+HOME="${HOME:-$(getent passwd "$(id -un)" 2>/dev/null | cut -d: -f6)}"
+HOME="${HOME:-/root}"
+export PATH="${PROJECT_ROOT}/.local/bin:${HOME}/.local/bin:/usr/local/bin:/usr/local/sbin:${PATH:-/usr/bin:/bin}"
+
+ENV_FILE="$PROJECT_ROOT/.env"
+
+if [ ! -f "$ENV_FILE" ]; then
+  echo "ERROR: нет файла .env: $ENV_FILE"
+  echo "Создайте его командой:  sh legacy/scripts/linux/create_env.sh"
+  exit 1
+fi
+
+set -a
+# shellcheck source=/dev/null
+. "$ENV_FILE"
+set +a
+
+UV_BIN="${UV_BINARY:-}"
+if [ -z "$UV_BIN" ]; then
+  if command -v uv >/dev/null 2>&1; then
+    UV_BIN="$(command -v uv)"
+  elif [ -x /usr/local/bin/uv ]; then
+    UV_BIN=/usr/local/bin/uv
+  elif [ -x "${HOME}/.local/bin/uv" ]; then
+    UV_BIN="${HOME}/.local/bin/uv"
+  elif [ -x "${PROJECT_ROOT}/.local/bin/uv" ]; then
+    UV_BIN="${PROJECT_ROOT}/.local/bin/uv"
+  fi
+fi
+
+if [ -z "$UV_BIN" ] || [ ! -x "$UV_BIN" ]; then
+  echo "ERROR: uv не найден в PATH и в типичных каталогах."
+  echo "Установите uv (часто: /root/.local/bin или /usr/local/bin) или задайте UV_BINARY."
+  echo "Инструкция: https://docs.astral.sh/uv/getting-started/installation/"
+  echo "Либо задайте полный путь: в /etc/default/blackbox добавьте строку UV_BINARY=/полный/путь/к/uv"
+  exit 1
+fi
+
+mkdir -p "$PROJECT_ROOT/instance" "$PROJECT_ROOT/settings"
+
+export BLACKBOX_DB_PATH="${BLACKBOX_DB_PATH:-$PROJECT_ROOT/instance/blackbox.db}"
+export SECRET_KEY="${SECRET_KEY:-change-me}"
+export HOST="${HOST:-0.0.0.0}"
+export PORT="${PORT:-5000}"
+export FLASK_APP="${FLASK_APP:-src.web_app:app}"
+
+if [ ! -f "$PROJECT_ROOT/settings/settings.json" ]; then
+  printf '%s\n' '{"requests":[{"name":"hr","fc":3,"address":0,"count":1}],"fields":[{"name":"r0","type":"uint16","source":"hr","address":0}]}' \
+    > "$PROJECT_ROOT/settings/settings.json"
+fi
+
+_venv="$PROJECT_ROOT/.venv"
+_venvp="$_venv/bin/python3"
+if [ -d "$_venv" ]; then
+  if ! [ -x "$_venv" ]; then
+    echo "ERROR: нет прав на каталог .venv. От root:"
+    echo "  sudo chown -R \"$(id -un)\":\"$(id -gn)\" \"$_venv\""
+    echo "  или: sudo rm -rf \"$_venv\" && перезапуск службы"
+    exit 1
+  fi
+  if [ -e "$_venvp" ] && ! [ -x "$_venvp" ]; then
+    echo "ERROR: $_venvp недоступен для $(id -un). От root:"
+    echo "  sudo chown -R \"$(id -un)\":\"$(id -gn)\" \"$_venv\""
+    exit 1
+  fi
+fi
+
+"$UV_BIN" sync --frozen --no-dev
+"$UV_BIN" run flask db --directory legacy/migrations upgrade
+
+exec "$UV_BIN" run uvicorn src.web_app:app --host "$HOST" --port "$PORT" --interface wsgi --log-level info --access-log
