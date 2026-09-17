@@ -11,13 +11,16 @@
   <script defer src="/static/vendor/alpine.min.js"></script>
   <script defer src="/static/app.js"></script>
 </head>
-<body class="bb-body" x-data="bbShell()" @bb-toast.window="pushToast($event.detail)">
+<body class="bb-body {% block body_class %}{% endblock %}" x-data="bbShell()" @bb-toast.window="pushToast($event.detail)">
   {% if user %}
   <header class="bb-header">
     <div class="bb-header-inner">
       <a href="/dashboard" class="bb-brand">
         <span class="bb-brand-mark">B</span>
-        <span class="bb-brand-text">BlackBox</span>
+        <span class="bb-brand-copy">
+          <span class="bb-brand-text">BlackBox</span>
+          <span class="bb-brand-meta">{{ app_vendor }} · v{{ app_version }}</span>
+        </span>
       </a>
       <nav class="bb-nav" aria-label="Основное меню">
         {% set path = request.url.path %}

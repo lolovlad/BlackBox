@@ -1,41 +1,142 @@
 {% extends "base.html" %}
 {% block title %}Карты · BlackBox{% endblock %}
 {% block content %}
-<section class="bb-card" x-data="bbMapsPage()" data-default-map="{% if maps %}{{ maps[0].version }}::{{ maps[0].protocol }}{% endif %}" x-init="if (!selected && $root.dataset.defaultMap) { selected = $root.dataset.defaultMap; loadSelected(); }">
-  <h1 class="bb-page-title">Карты чтения JSON</h1>
-  <p class="bb-page-lead">Публикация immutable map-версий отдельно от создания ВМ. После публикации карту можно выбрать при создании или изменении ВМ.</p>
-
-  <div class="bb-grid-2">
+<script type="application/json" id="bb-maps-payload">{{ maps | tojson }}</script>
+<section class="bb-maps-page" x-data="bbMapsPage()" x-init="hydrate()" @keydown.escape.window="onEscape()">
+  <div class="bb-maps-hero">
     <div>
-      <h2 class="bb-section-title">Опубликованные карты</h2>
-      <div class="bb-table-wrap">
-        <table class="bb-table">
-          <thead>
-            <tr><th>Версия</th><th>Протокол</th><th>Preset</th><th>Checksum</th><th>Создана</th></tr>
-          </thead>
-          <tbody>
-          {% for m in maps %}
-            <tr>
-              <td>
-                <button type="button" class="bb-btn bb-btn-sm bb-btn-secondary"
-                  @click="selected='{{ m.version }}::{{ m.protocol }}'; loadSelected()">
-                  {{ m.version }}
+      <p class="bb-login-kicker">{{ app_vendor }} · BlackBox {{ app_version }}</p>
+      <h1 class="bb-page-title">Карты чтения</h1>
+      <p class="bb-page-lead">Опубликованные JSON-версии неизменяемы. Откройте карту, чтобы просмотреть или сохранить правки как новую версию.</p>
+    </div>
+    <div class="bb-maps-hero-actions">
+      <button type="button" class="bb-btn bb-btn-secondary" @click="createBlank()"><i class="bi bi-plus-lg"></i> Новая карта</button>
+      <button type="button" class="bb-btn" @click="publishOpen = true"><i class="bi bi-upload"></i> Загрузить JSON</button>
+    </div>
+  </div>
+
+  <div class="bb-maps-toolbar">
+    <label class="bb-maps-search">
+      <i class="bi bi-search"></i>
+      <input type="search" x-model="query" placeholder="Поиск по версии, протоколу или preset">
+    </label>
+    <div class="bb-maps-filters" role="tablist">
+      <button type="button" class="bb-chip" :class="{ 'is-active': filter === 'all' }" @click="filter = 'all'">Все</button>
+      <button type="button" class="bb-chip" :class="{ 'is-active': filter === 'simulator' }" @click="filter = 'simulator'">Simulator</button>
+      <button type="button" class="bb-chip" :class="{ 'is-active': filter === 'modbus_rtu' }" @click="filter = 'modbus_rtu'">Modbus RTU</button>
+      <button type="button" class="bb-chip" :class="{ 'is-active': filter === 'modbus_tcp' }" @click="filter = 'modbus_tcp'">Modbus TCP</button>
+    </div>
+  </div>
+
+  <template x-for="family in families" :key="family.key">
+    <section class="bb-map-family">
+      <header class="bb-map-family-head">
+        <h2 x-text="protocolLabel(family.protocol)"></h2>
+        <span x-text="family.preset_id || 'без preset'"></span>
+        <span class="bb-map-count" x-text="family.items.length + (family.items.length === 1 ? ' версия' : ' версий')"></span>
+      </header>
+      <div class="bb-map-grid">
+        <template x-for="(map, index) in family.items" :key="map.version + '::' + map.protocol">
+          <button type="button" class="bb-map-card" @click="openMap(map)">
+            <div class="bb-map-card-top">
+              <strong x-text="map.version"></strong>
+              <span class="bb-map-pill" x-show="index === 0">актуальная</span>
+            </div>
+            <p class="bb-map-card-meta">
+              <span x-text="protocolLabel(map.protocol)"></span>
+              <span x-text="formatStamp(map.created_at)"></span>
+            </p>
+            <code class="bb-map-checksum" x-text="shortChecksum(map.checksum)"></code>
+          </button>
+        </template>
+      </div>
+    </section>
+  </template>
+  <p class="bb-hint" x-show="families.length === 0">Карт по этому фильтру нет. Загрузите JSON или создайте новую карту.</p>
+
+  <div class="bb-studio" x-show="studioOpen" x-cloak>
+    <div class="bb-studio-backdrop" @click="closeStudio()"></div>
+    <div class="bb-studio-panel" role="dialog" aria-modal="true" aria-labelledby="bb-studio-title" @click.stop>
+      <header class="bb-studio-head">
+        <div>
+          <p class="bb-login-kicker">Просмотр и редактирование</p>
+          <h2 id="bb-studio-title" x-text="currentMap ? currentMap.version : 'Новая карта'"></h2>
+          <p class="bb-studio-sub">
+            <span x-text="currentMap ? protocolLabel(currentMap.protocol) : protocolLabel(draftProtocol)"></span>
+            <span x-show="currentMap && currentMap.preset_id" x-text="currentMap && currentMap.preset_id"></span>
+            <span x-show="dirty" class="bb-map-pill bb-map-pill-warn">есть правки</span>
+          </p>
+        </div>
+        <div class="bb-studio-head-actions">
+          <button type="button" class="bb-btn bb-btn-secondary bb-btn-sm" @click="copyJson()" :disabled="!documentText"><i class="bi bi-clipboard"></i> Копировать</button>
+          <button type="button" class="bb-btn bb-btn-secondary bb-btn-sm" @click="downloadJson()" :disabled="!documentText"><i class="bi bi-download"></i> Скачать</button>
+          <button type="button" class="bb-btn bb-btn-ghost bb-btn-sm" @click="closeStudio()" aria-label="Закрыть"><i class="bi bi-x-lg"></i></button>
+        </div>
+      </header>
+
+      <div class="bb-studio-body">
+        <aside class="bb-studio-versions">
+          <h3>Версии</h3>
+          <p class="bb-hint">Каждая публикация — отдельная immutable-версия. ВМ выбирает конкретную строку.</p>
+          <ol>
+            <template x-for="(map, index) in familyVersions" :key="map.version + '::' + map.protocol">
+              <li>
+                <button type="button" class="bb-version-item" :class="{ 'is-active': isSelected(map) }" @click="openMap(map)">
+                  <span class="bb-version-dot" :class="{ 'is-latest': index === 0 }"></span>
+                  <span>
+                    <strong x-text="map.version"></strong>
+                    <small x-text="formatStamp(map.created_at)"></small>
+                  </span>
                 </button>
-              </td>
-              <td>{{ m.protocol }}</td>
-              <td>{{ m.preset_id or '—' }}</td>
-              <td><code>{{ m.checksum[:12] }}…</code></td>
-              <td class="bb-muted">{{ m.created_at }}</td>
-            </tr>
-          {% else %}
-            <tr><td colspan="5" class="bb-muted">Карт пока нет. Загрузите JSON ниже.</td></tr>
-          {% endfor %}
-          </tbody>
-        </table>
+              </li>
+            </template>
+          </ol>
+          <p class="bb-hint" x-show="familyVersions.length === 0">После публикации здесь появится история версий этой линейки.</p>
+        </aside>
+        <div class="bb-studio-editor">
+          <p class="bb-hint" x-show="loading">Загрузка JSON…</p>
+          <label class="bb-studio-json-label">JSON карты
+            <textarea class="bb-json-editor" spellcheck="false" x-model="documentText" :readonly="loading"></textarea>
+          </label>
+        </div>
       </div>
 
-      <h2 class="bb-section-title">Загрузить JSON-карту</h2>
-      <form id="map-upload" class="bb-form" enctype="multipart/form-data">
+      <footer class="bb-studio-foot">
+        <p class="bb-hint">Опубликованную версию нельзя перезаписать. Правки сохраняются только как новая версия.</p>
+        <div class="bb-studio-publish">
+          <label>Протокол
+            <select x-model="draftProtocol" :disabled="!!currentMap">
+              <option value="simulator">Simulator</option>
+              <option value="modbus_rtu">Modbus RTU</option>
+              <option value="modbus_tcp">Modbus TCP</option>
+            </select>
+          </label>
+          <label>Preset
+            <input x-model="draftPreset" placeholder="необязательно">
+          </label>
+          <label>Новая версия
+            <input x-model="publishVersion" required placeholder="device-v2">
+          </label>
+          <button type="button" class="bb-btn" @click="publishFromEditor()" :disabled="saving || !documentText">
+            <span x-show="!saving">Опубликовать версию</span>
+            <span x-show="saving">Публикация…</span>
+          </button>
+        </div>
+      </footer>
+    </div>
+  </div>
+
+  <div class="bb-studio bb-publish-modal" x-show="publishOpen" x-cloak>
+    <div class="bb-studio-backdrop" @click="publishOpen = false"></div>
+    <div class="bb-publish-panel" role="dialog" aria-modal="true" aria-labelledby="bb-publish-title" @click.stop>
+      <header class="bb-studio-head">
+        <div>
+          <h2 id="bb-publish-title">Загрузить JSON-карту</h2>
+          <p class="bb-studio-sub">Файл будет опубликован как новая immutable-версия.</p>
+        </div>
+        <button type="button" class="bb-btn bb-btn-ghost bb-btn-sm" @click="publishOpen = false" aria-label="Закрыть"><i class="bi bi-x-lg"></i></button>
+      </header>
+      <form id="map-upload" class="bb-form bb-publish-form" enctype="multipart/form-data">
         <label>Протокол
           <select name="protocol">
             <option value="simulator">Simulator</option>
@@ -43,26 +144,14 @@
             <option value="modbus_tcp">Modbus TCP</option>
           </select>
         </label>
-        <label>Версия<input name="version" required placeholder="например device-v3"></label>
-        <label>Preset<input name="preset_id" placeholder="optional"></label>
+        <label>Версия<input name="version" required placeholder="например deif-gempac-v2"></label>
+        <label>Preset<input name="preset_id" placeholder="необязательно"></label>
         <label>JSON-файл<input type="file" name="file" accept="application/json,.json" required></label>
-        <button type="submit" class="bb-btn">Опубликовать immutable map</button>
+        <div class="bb-actions">
+          <button type="button" class="bb-btn bb-btn-secondary" @click="publishOpen = false">Отмена</button>
+          <button type="submit" class="bb-btn">Опубликовать</button>
+        </div>
       </form>
-    </div>
-
-    <div>
-      <h2 class="bb-section-title">Просмотр JSON</h2>
-      <label class="bb-form">
-        Выбранная карта
-        <select x-model="selected" @change="loadSelected()">
-          <option value="">— выберите —</option>
-          {% for m in maps %}
-          <option value="{{ m.version }}::{{ m.protocol }}">{{ m.version }} · {{ m.protocol }}</option>
-          {% endfor %}
-        </select>
-      </label>
-      <p class="bb-hint" x-show="loading">Загрузка…</p>
-      <pre class="bb-json-view bb-live-tags" x-text="documentText || 'Выберите карту, чтобы увидеть JSON.'"></pre>
     </div>
   </div>
 </section>

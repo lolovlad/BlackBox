@@ -32,6 +32,9 @@ from .state import EventBus
 from .storage import ParquetStore, StorageUnavailable
 from .vm_config import normalize_runtime_config
 
+HUB_VERSION = "2.0.0"
+HUB_VENDOR = "AGK"
+
 
 class LoginRequest(BaseModel):
     username: str
@@ -294,6 +297,8 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
     store = ParquetStore(cfg.data_root / "telemetry", min_free_bytes=cfg.telemetry_min_free_bytes, quota_bytes=cfg.telemetry_quota_bytes)
     docker_manager = DockerManager(docker_client, enabled=cfg.docker_enabled)
     templates = Jinja2Templates(directory=str(Path(__file__).resolve().parents[2] / "ui" / "templates"))
+    templates.env.globals["app_version"] = HUB_VERSION
+    templates.env.globals["app_vendor"] = HUB_VENDOR
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -530,7 +535,7 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
         except StorageUnavailable:
             pass
 
-    app = FastAPI(title="BlackBox Hub", version="1.0.0", lifespan=lifespan)
+    app = FastAPI(title="BlackBox Hub", version=HUB_VERSION, lifespan=lifespan)
     app.mount("/static", StaticFiles(directory=str(Path(__file__).resolve().parents[2] / "ui" / "static")), name="static")
 
     @app.exception_handler(RequestValidationError)
@@ -1082,7 +1087,7 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
 
     @app.get("/login", response_class=HTMLResponse)
     async def login_page(request: Request):
-        return templates.TemplateResponse(request=request, name="login.html", context={"error": None})
+        return templates.TemplateResponse(request=request, name="login.html", context={"error": None, "user": None})
 
     @app.post("/login", response_class=HTMLResponse)
     async def login_form(request: Request, username: str = Form(...), password: str = Form(...)):
@@ -1091,7 +1096,7 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
             return templates.TemplateResponse(
                 request=request,
                 name="login.html",
-                context={"error": "Неверный логин или пароль"},
+                context={"error": "Неверный логин или пароль", "user": None},
                 status_code=401,
             )
         access, refresh, _ = issue_tokens(repo, cfg, account)

@@ -152,6 +152,10 @@ def test_html_pages_render_with_current_starlette(tmp_path: Path):
     """The Starlette TemplateResponse request/name order must stay explicit."""
     with _client(tmp_path) as client:
         assert client.get("/login").status_code == 200
+        login_html = client.get("/login").text
+        assert "AGK" in login_html
+        assert "2.0.0" in login_html
+        assert "bb-login" in login_html
         form_login = client.post("/login", data={"username": "admin", "password": "admin-password"}, follow_redirects=False)
         assert form_login.status_code == 303
         csrf = client.cookies.get("bb_csrf")
@@ -175,6 +179,8 @@ def test_html_pages_render_with_current_starlette(tmp_path: Path):
             response = client.get(path)
             assert response.status_code == 200, (path, response.text)
             assert "<html" in response.text.lower()
+            assert "AGK" in response.text
+            assert "2.0.0" in response.text
 
 
 def test_batch_is_idempotent_and_parser_is_used(tmp_path: Path):
@@ -286,6 +292,38 @@ def test_get_map_document_by_version(tmp_path: Path):
         assert body["protocol"] == "simulator"
         assert body["document"]["fields"][0]["name"] == "value"
         assert client.get("/api/v1/maps/missing-v1").status_code == 404
+
+
+def test_maps_page_opens_version_studio(tmp_path: Path):
+    with _client(tmp_path) as client:
+        client.post("/login", data={"username": "admin", "password": "admin-password"})
+        html = client.get("/admin/maps").text
+        assert "bb-maps-page" in html
+        assert "bb-studio" in html
+        assert "Просмотр и редактирование" in html
+        assert "Опубликовать версию" in html
+        start = html.find('id="bb-maps-payload">')
+        end = html.find("</script>", start)
+        payload = html[start + len('id="bb-maps-payload">') : end]
+        maps = json.loads(payload)
+        assert maps
+        assert {item["version"] for item in maps}
+
+
+def test_map_edits_publish_as_a_new_immutable_version(tmp_path: Path):
+    with _client(tmp_path) as client:
+        assert client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin-password"}).status_code == 200
+        csrf = client.cookies.get("bb_csrf")
+        original = {"requests": [{"name": "sim", "fc": 3, "address": 0, "count": 1}], "fields": [{"name": "value", "type": "uint16", "source": "sim", "address": 0}]}
+        edited = {"requests": [{"name": "sim", "fc": 3, "address": 0, "count": 2}], "fields": [{"name": "value", "type": "uint16", "source": "sim", "address": 0}]}
+        assert client.post("/api/v1/maps", json={"protocol": "simulator", "version": "edit-v1", "document": original}, headers={"X-CSRF-Token": csrf}).status_code == 200
+        created = client.post("/api/v1/maps", json={"protocol": "simulator", "version": "edit-v2", "document": edited}, headers={"X-CSRF-Token": csrf})
+        assert created.status_code == 200
+        assert created.json()["version"] == "edit-v2"
+        first = client.get("/api/v1/maps/edit-v1", params={"protocol": "simulator"}).json()
+        second = client.get("/api/v1/maps/edit-v2", params={"protocol": "simulator"}).json()
+        assert first["document"]["requests"][0]["count"] == 1
+        assert second["document"]["requests"][0]["count"] == 2
 
 
 def test_refresh_rotation_and_logout(tmp_path: Path):

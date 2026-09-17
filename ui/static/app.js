@@ -179,21 +179,132 @@
   }
 
   window.bbMapsPage = function bbMapsPage() {
+    const labels = { simulator: 'Simulator', modbus_rtu: 'Modbus RTU', modbus_tcp: 'Modbus TCP' };
+
+    function nextVersion(version) {
+      const match = String(version || '').match(/^(.*?)(\d+)$/);
+      if (!match) return (version || 'map') + '-v2';
+      return match[1] + String(Number(match[2]) + 1);
+    }
+
+    function blankDocument(protocol) {
+      if (protocol === 'simulator') {
+        return {
+          requests: [{ name: 'sim', fc: 3, address: 0, count: 1 }],
+          fields: [{ name: 'value', type: 'uint16', source: 'sim', address: 0 }],
+        };
+      }
+      return {
+        requests: [{ name: 'holding', fc: 3, address: 0, count: 1 }],
+        fields: [{ name: 'register_0', type: 'uint16', source: 'holding', address: 0 }],
+      };
+    }
+
     return {
-      selected: '',
-      documentText: '',
+      maps: [],
+      query: '',
+      filter: 'all',
+      studioOpen: false,
+      publishOpen: false,
       loading: false,
-      async loadSelected() {
-        if (!this.selected) {
-          this.documentText = '';
+      saving: false,
+      selectedKey: '',
+      documentText: '',
+      originalText: '',
+      publishVersion: '',
+      draftProtocol: 'modbus_tcp',
+      draftPreset: '',
+      get dirty() {
+        return this.documentText !== this.originalText;
+      },
+      get currentMap() {
+        const key = this.selectedKey;
+        return this.maps.find(function (map) { return map.version + '::' + map.protocol === key; }) || null;
+      },
+      hydrate() {
+        const node = document.getElementById('bb-maps-payload');
+        try {
+          this.maps = node ? JSON.parse(node.textContent || '[]') : [];
+        } catch (_e) {
+          this.maps = [];
+        }
+      },
+      protocolLabel(protocol) {
+        return labels[protocol] || protocol;
+      },
+      shortChecksum(value) {
+        return value ? String(value).slice(0, 12) + '…' : '—';
+      },
+      formatStamp(value) {
+        if (!value) return '—';
+        const date = new Date(value);
+        if (Number.isNaN(date.getTime())) return value;
+        return date.toLocaleString('ru-RU', { dateStyle: 'short', timeStyle: 'short' });
+      },
+      isSelected(map) {
+        return this.selectedKey === map.version + '::' + map.protocol;
+      },
+      get families() {
+        const needle = this.query.trim().toLowerCase();
+        const groups = {};
+        const order = [];
+        this.maps.forEach(function (map) {
+          if (this.filter !== 'all' && map.protocol !== this.filter) return;
+          const haystack = [map.version, map.protocol, map.preset_id || ''].join(' ').toLowerCase();
+          if (needle && haystack.indexOf(needle) === -1) return;
+          const key = map.protocol + '::' + (map.preset_id || '');
+          if (!groups[key]) {
+            groups[key] = { key: key, protocol: map.protocol, preset_id: map.preset_id, items: [] };
+            order.push(key);
+          }
+          groups[key].items.push(map);
+        }.bind(this));
+        return order.map(function (key) {
+          const family = groups[key];
+          family.items.sort(function (a, b) { return String(b.created_at || '').localeCompare(String(a.created_at || '')); });
+          return family;
+        });
+      },
+      get familyVersions() {
+        const current = this.currentMap;
+        const protocol = current ? current.protocol : this.draftProtocol;
+        const preset = current ? (current.preset_id || '') : (this.draftPreset || '');
+        return this.maps.filter(function (map) {
+          return map.protocol === protocol && (map.preset_id || '') === preset;
+        }).sort(function (a, b) { return String(b.created_at || '').localeCompare(String(a.created_at || '')); });
+      },
+      onEscape() {
+        if (this.publishOpen) {
+          this.publishOpen = false;
           return;
         }
-        const parts = this.selected.split('::');
-        const version = parts[0];
-        const protocol = parts[1] || '';
+        if (this.studioOpen) this.closeStudio();
+      },
+      closeStudio() {
+        if (this.dirty && !window.confirm('Есть несохранённые правки JSON. Закрыть окно?')) return;
+        this.studioOpen = false;
+      },
+      createBlank() {
+        this.selectedKey = '';
+        this.draftProtocol = this.filter === 'all' ? 'modbus_tcp' : this.filter;
+        this.draftPreset = '';
+        this.publishVersion = 'custom-v1';
+        this.documentText = JSON.stringify(blankDocument(this.draftProtocol), null, 2);
+        this.originalText = this.documentText;
+        this.studioOpen = true;
+      },
+      async openMap(map) {
+        if (this.dirty && this.studioOpen && !this.isSelected(map) && !window.confirm('Есть несохранённые правки JSON. Открыть другую версию?')) {
+          return;
+        }
+        this.selectedKey = map.version + '::' + map.protocol;
+        this.draftProtocol = map.protocol;
+        this.draftPreset = map.preset_id || '';
+        this.publishVersion = nextVersion(map.version);
+        this.studioOpen = true;
         this.loading = true;
         try {
-          const url = '/api/v1/maps/' + encodeURIComponent(version) + (protocol ? ('?protocol=' + encodeURIComponent(protocol)) : '');
+          const url = '/api/v1/maps/' + encodeURIComponent(map.version) + '?protocol=' + encodeURIComponent(map.protocol);
           const response = await fetch(url, { headers: headers() });
           if (!response.ok) {
             let detail = 'Не удалось загрузить карту';
@@ -202,11 +313,80 @@
           }
           const body = await response.json();
           this.documentText = JSON.stringify(body.document || body, null, 2);
+          this.originalText = this.documentText;
         } catch (error) {
           toast(error.message, 'error');
           this.documentText = '';
+          this.originalText = '';
         } finally {
           this.loading = false;
+        }
+      },
+      async copyJson() {
+        try {
+          await navigator.clipboard.writeText(this.documentText);
+          toast('JSON скопирован', 'ok');
+        } catch (_e) {
+          toast('Не удалось скопировать JSON', 'error');
+        }
+      },
+      downloadJson() {
+        const name = (this.currentMap ? this.currentMap.version : this.publishVersion || 'map') + '.json';
+        const blob = new Blob([this.documentText], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = name;
+        link.click();
+        URL.revokeObjectURL(url);
+      },
+      async publishFromEditor() {
+        let parsed;
+        try {
+          parsed = JSON.parse(this.documentText);
+        } catch (_e) {
+          toast('JSON некорректен. Исправьте документ перед публикацией.', 'error');
+          return;
+        }
+        if (!this.publishVersion.trim()) {
+          toast('Укажите имя новой версии.', 'error');
+          return;
+        }
+        if (this.currentMap && this.publishVersion.trim() === this.currentMap.version && this.dirty) {
+          toast('Версия ' + this.currentMap.version + ' неизменяема. Укажите новое имя версии.', 'error');
+          return;
+        }
+        this.saving = true;
+        try {
+          const created = await mutate('/api/v1/maps', {
+            method: 'POST',
+            headers: headers({ 'Content-Type': 'application/json' }),
+            body: JSON.stringify({
+              protocol: this.draftProtocol,
+              version: this.publishVersion.trim(),
+              preset_id: this.draftPreset.trim() || null,
+              document: parsed,
+            }),
+          });
+          const record = {
+            id: created.map_id || created.id,
+            version: created.version,
+            protocol: created.protocol,
+            preset_id: created.preset_id,
+            checksum: created.checksum,
+            created_at: new Date().toISOString(),
+          };
+          this.maps = [record].concat(this.maps.filter(function (map) {
+            return !(map.version === record.version && map.protocol === record.protocol);
+          }));
+          this.selectedKey = record.version + '::' + record.protocol;
+          this.originalText = this.documentText;
+          this.publishVersion = nextVersion(record.version);
+          toast('Опубликована версия ' + record.version, 'ok');
+        } catch (error) {
+          toast(error.message, 'error');
+        } finally {
+          this.saving = false;
         }
       },
     };

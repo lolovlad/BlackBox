@@ -1,14 +1,38 @@
 {% extends "base.html" %}
 {% block title %}Вход · BlackBox{% endblock %}
+{% block body_class %}bb-login-body{% endblock %}
 {% block content %}
-<section class="bb-card narrow">
-  <h1 class="bb-page-title">Вход в BlackBox Hub</h1>
-  <p class="bb-page-lead">Управление виртуальными машинами и картами чтения.</p>
-  {% if error %}<p class="bb-error">{{ error }}</p>{% endif %}
-  <form method="post" class="bb-form">
-    <label>Логин<input name="username" autocomplete="username" required></label>
-    <label>Пароль<input type="password" name="password" autocomplete="current-password" required></label>
-    <button type="submit" class="bb-btn">Войти</button>
-  </form>
+<section class="bb-login" aria-label="Вход в BlackBox Hub">
+  <div class="bb-login-brand">
+    <div class="bb-login-brand-inner">
+      <p class="bb-login-vendor">{{ app_vendor }}</p>
+      <h1>BlackBox</h1>
+      <p class="bb-login-tagline">Управление виртуальными машинами, картами чтения и телеметрией.</p>
+      <span class="bb-login-version">Версия {{ app_version }}</span>
+    </div>
+  </div>
+  <div class="bb-login-panel">
+    <form method="post" class="bb-login-form" x-data="{ showPassword: false }">
+      <p class="bb-login-kicker">BlackBox Hub</p>
+      <h2>Вход в систему</h2>
+      <p class="bb-login-lead">Введите учётную запись администратора или оператора.</p>
+      {% if error %}<p class="bb-error bb-login-error" role="alert">{{ error }}</p>{% endif %}
+      <label>
+        Логин
+        <input name="username" autocomplete="username" required autofocus>
+      </label>
+      <label>
+        Пароль
+        <span class="bb-login-password">
+          <input type="password" :type="showPassword ? 'text' : 'password'" name="password" autocomplete="current-password" required>
+          <button type="button" class="bb-login-eye" @click="showPassword = !showPassword" :aria-label="showPassword ? 'Скрыть пароль' : 'Показать пароль'">
+            <i class="bi" :class="showPassword ? 'bi-eye-slash' : 'bi-eye'"></i>
+          </button>
+        </span>
+      </label>
+      <button type="submit" class="bb-btn bb-login-submit">Войти</button>
+    </form>
+    <p class="bb-login-foot">{{ app_vendor }} · BlackBox {{ app_version }}</p>
+  </div>
 </section>
 {% endblock %}
