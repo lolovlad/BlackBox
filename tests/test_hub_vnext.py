@@ -156,6 +156,62 @@ def test_modbus_vm_persists_reader_and_storage_settings(tmp_path: Path, monkeypa
         assert vm["storage_resource_id"] == "storage:data"
 
 
+def test_modbus_tcp_vm_persists_host_and_port(tmp_path: Path):
+    with _client(tmp_path) as client:
+        assert client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin-password"}).status_code == 200
+        csrf = client.cookies.get("bb_csrf")
+        version = _publish_map(client, csrf, protocol="modbus_tcp", version="tcp-v1", document=SIM_DOCUMENT)
+        created = client.post(
+            "/api/v1/vms",
+            headers={"X-CSRF-Token": csrf},
+            json={
+                "name": "tcp-loopback",
+                "protocol": "modbus_tcp",
+                "map_version": version,
+                "config": {"reader": {"host": "127.0.0.1", "tcp_port": 1502, "unit_id": 4}},
+            },
+        )
+        assert created.status_code == 200, created.text
+        vm = created.json()
+        assert vm["config"]["reader"]["host"] == "127.0.0.1"
+        assert vm["config"]["reader"]["tcp_port"] == 1502
+        assert vm["config"]["reader"]["unit_id"] == 4
+        assert vm["storage_resource_id"] == "storage:data"
+        remote = client.post(
+            "/api/v1/vms",
+            headers={"X-CSRF-Token": csrf},
+            json={
+                "name": "tcp-remote",
+                "protocol": "modbus_tcp",
+                "map_version": version,
+                "config": {"reader": {"host": "192.168.1.10", "tcp_port": 502}},
+            },
+        )
+        assert remote.status_code == 409
+        assert remote.json()["code"] == "read_resource_required"
+
+
+def test_admin_vm_form_has_protocol_specific_settings(tmp_path: Path):
+    with _client(tmp_path) as client:
+        client.post("/login", data={"username": "admin", "password": "admin-password"})
+        html = client.get("/admin/vms").text
+        assert 'data-protocol-panel="simulator"' in html
+        assert 'data-protocol-panel="modbus_rtu"' in html
+        assert 'data-protocol-panel="modbus_tcp"' in html
+        assert 'data-protocol-panel="can"' in html
+        assert 'name="serial_resource_id"' in html
+        assert 'name="host"' in html
+        assert 'name="tcp_port"' in html
+        assert 'name="can_bitrate"' in html
+        assert 'name="storage_resource_id"' in html
+        assert 'name="min_free_mb"' in html
+        assert 'bb-field-hint' in html
+        assert 'Как настроить ВМ' in html
+        assert 'bb-protocol-pick' in html
+        assert 'name="preset_id"' not in html
+        assert 'name="read_resource_id"' not in html
+
+
 def test_exclusive_read_resource_conflict_is_rejected_on_second_start(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("BB_DISCOVERY_SERIAL_PATHS", "/dev/ttyUSB0")
     with _client(tmp_path) as client:
@@ -184,7 +240,7 @@ def test_html_pages_render_with_current_starlette(tmp_path: Path):
         assert client.get("/login").status_code == 200
         login_html = client.get("/login").text
         assert "AGK" in login_html
-        assert "2.0.4" in login_html
+        assert "2.0.6" in login_html
         assert "bb-login" in login_html
         app_js = login_html.find("/static/app.js")
         alpine_js = login_html.find("/static/vendor/alpine.min.js")
@@ -214,7 +270,7 @@ def test_html_pages_render_with_current_starlette(tmp_path: Path):
             assert response.status_code == 200, (path, response.text)
             assert "<html" in response.text.lower()
             assert "AGK" in response.text
-            assert "2.0.4" in response.text
+            assert "2.0.6" in response.text
             if path in {"/dashboard", "/vms", "/admin/vms", f"/vms/{vm['id']}", f"/admin/vms/{vm['id']}/edit"}:
                 assert 'data-vm-action="delete"' in response.text
                 assert "Удалить" in response.text

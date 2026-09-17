@@ -22,6 +22,7 @@
       <button type="button" class="bb-chip" :class="{ 'is-active': filter === 'simulator' }" @click="filter = 'simulator'">Simulator</button>
       <button type="button" class="bb-chip" :class="{ 'is-active': filter === 'modbus_rtu' }" @click="filter = 'modbus_rtu'">Modbus RTU</button>
       <button type="button" class="bb-chip" :class="{ 'is-active': filter === 'modbus_tcp' }" @click="filter = 'modbus_tcp'">Modbus TCP</button>
+      <button type="button" class="bb-chip" :class="{ 'is-active': filter === 'can' }" @click="filter = 'can'">CAN</button>
     </div>
   </div>
 
@@ -84,6 +85,7 @@
             <option value="simulator">Simulator</option>
             <option value="modbus_rtu">Modbus RTU</option>
             <option value="modbus_tcp">Modbus TCP</option>
+            <option value="can">CAN</option>
           </select>
         </label>
         <label>Preset

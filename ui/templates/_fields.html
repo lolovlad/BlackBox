@@ -1,0 +1,17 @@
+{% macro field(title, hint='', icon='') %}
+<label class="bb-field">
+  <span class="bb-field-head">{% if icon %}<i class="bi {{ icon }}" aria-hidden="true"></i>{% endif %}<span>{{ title }}</span></span>
+  {{ caller() }}
+  {% if hint %}<span class="bb-field-hint">{{ hint }}</span>{% endif %}
+</label>
+{% endmacro %}
+
+{% macro check(title, hint='') %}
+<label class="bb-check">
+  {{ caller() }}
+  <span class="bb-check-copy">
+    <span class="bb-field-head">{{ title }}</span>
+    {% if hint %}<span class="bb-field-hint">{{ hint }}</span>{% endif %}
+  </span>
+</label>
+{% endmacro %}

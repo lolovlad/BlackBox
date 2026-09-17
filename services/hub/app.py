@@ -32,7 +32,7 @@ from .state import EventBus
 from .storage import ParquetStore, StorageUnavailable, purge_vm_directories
 from .vm_config import normalize_runtime_config
 
-HUB_VERSION = "2.0.4"
+HUB_VERSION = "2.0.6"
 HUB_VENDOR = "AGK"
 
 
@@ -260,13 +260,27 @@ def _validate_reader_allowlist(repo: HubRepository, protocol: str, runtime_confi
     if protocol == VmProtocol.MODBUS_RTU.value:
         port = str(reader.get("port", ""))
         if not any(item_id in {f"serial:{port}", f"serial:COM{port}"} or item_id.endswith(port) for item_id in read_ids):
-            raise HTTPException(409, detail={"code": "read_resource_required", "message": "Approve and select the serial resource used by Modbus RTU"})
+            raise HTTPException(409, detail={"code": "read_resource_required", "message": "Сначала подтвердите serial-порт в «Ресурсах» и выберите его для этой ВМ"})
     elif protocol == VmProtocol.MODBUS_TCP.value:
         endpoint = f"{reader.get('host', '127.0.0.1')}:{reader.get('tcp_port', 502)}"
         # Loopback is useful for a simulator/fake instrument in the lab; remote
         # endpoints must still be explicitly discovered and approved.
         if str(reader.get("host", "127.0.0.1")) not in {"127.0.0.1", "localhost", "::1"} and not any(item_id in {f"tcp:{endpoint}", f"tcp://{endpoint}"} for item_id in read_ids):
-            raise HTTPException(409, detail={"code": "read_resource_required", "message": "Discover and approve the Modbus TCP endpoint before use"})
+            raise HTTPException(409, detail={"code": "read_resource_required", "message": "Сначала найдите и подтвердите TCP-адрес прибора в «Ресурсах»"})
+    elif protocol == VmProtocol.CAN.value:
+        iface = str(reader.get("can_interface") or reader.get("interface") or "")
+        if not any(item_id in {f"can:{iface}"} or str(item_id).endswith(iface) for item_id in read_ids if iface):
+            raise HTTPException(409, detail={"code": "read_resource_required", "message": "Сначала подтвердите CAN-интерфейс в «Ресурсах» и выберите его для этой ВМ"})
+
+
+def _approved_resource_groups(repo: HubRepository) -> dict[str, list[dict[str, Any]]]:
+    approved = [item for item in repo.list_resources() if item.get("approved")]
+    return {
+        "serial_resources": [item for item in approved if item.get("kind") == ResourceKind.SERIAL.value],
+        "tcp_resources": [item for item in approved if item.get("kind") == ResourceKind.TCP.value],
+        "can_resources": [item for item in approved if item.get("kind") == ResourceKind.CAN.value],
+        "storage_resources": [item for item in approved if item.get("kind") == ResourceKind.STORAGE.value],
+    }
 
 
 def _resource_ids(resources: list[dict[str, Any]] | None) -> list[str]:
@@ -1183,13 +1197,22 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
         account = _require_admin_html(request)
         if isinstance(account, RedirectResponse):
             return account
-        approved = [r for r in repo.list_resources() if r.get("approved")]
-        read_resources = [r for r in approved if r.get("kind") != ResourceKind.STORAGE.value]
-        storage_resources = [r for r in approved if r.get("kind") == ResourceKind.STORAGE.value]
+        groups = _approved_resource_groups(repo)
         return templates.TemplateResponse(
             request=request,
             name="admin_vms.html",
-            context={"user": account, "vms": repo.list_vms(), "maps": repo.list_maps(), "approved_resources": read_resources, "storage_resources": storage_resources},
+            context={
+                "user": account,
+                "vms": repo.list_vms(),
+                "maps": repo.list_maps(),
+                "active_protocol": "simulator",
+                "reader": {},
+                "storage": {},
+                "buffer": {},
+                "selected_read_ids": [],
+                "current_storage_id": "",
+                **groups,
+            },
         )
 
     @app.get("/admin/vms/{vm_id}/edit", response_class=HTMLResponse)
@@ -1200,6 +1223,12 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
         vm = repo.get_vm(vm_id)
         if vm is None:
             return RedirectResponse("/admin/vms", status_code=303)
+        groups = _approved_resource_groups(repo)
+        read_ids = [
+            str(item.get("resource_id"))
+            for item in (vm.get("read_resources") or vm.get("resources") or [])
+            if isinstance(item, dict) and item.get("resource_id")
+        ]
         return templates.TemplateResponse(
             request=request,
             name="vm_edit.html",
@@ -1207,8 +1236,13 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
                 "user": account,
                 "vm": vm,
                 "maps": repo.list_maps(),
-                "read_resources": [r for r in repo.list_resources() if r.get("approved") and r.get("kind") != ResourceKind.STORAGE.value],
-                "storage_resources": [r for r in repo.list_resources() if r.get("approved") and r.get("kind") == ResourceKind.STORAGE.value],
+                "active_protocol": vm["protocol"],
+                "reader": (vm.get("config") or {}).get("reader") or {},
+                "storage": (vm.get("config") or {}).get("storage") or {},
+                "buffer": (vm.get("config") or {}).get("buffer") or {},
+                "selected_read_ids": read_ids,
+                "current_storage_id": vm.get("storage_resource_id") or "",
+                **groups,
             },
         )
 

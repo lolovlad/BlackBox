@@ -47,18 +47,23 @@
     };
   };
 
+  function createProtocolValue() {
+    const checked = document.querySelector('#create-vm [name="protocol"]:checked');
+    return checked ? checked.value : 'simulator';
+  }
+
   function syncCreateMapOptions() {
-    const protocol = document.getElementById('create-protocol');
+    const protocol = createProtocolValue();
     const select = document.getElementById('create-map-version');
     const hint = document.getElementById('create-map-hint');
-    if (!protocol || !select) return;
+    if (!select) return;
     let visible = 0;
     Array.from(select.options).forEach(function (opt, index) {
       if (index === 0) {
         opt.hidden = false;
         return;
       }
-      const match = opt.dataset.protocol === protocol.value;
+      const match = opt.dataset.protocol === protocol;
       opt.hidden = !match;
       if (match) visible += 1;
     });
@@ -66,17 +71,82 @@
     if (hint) hint.hidden = visible > 0;
   }
 
-  function syncReaderOptions(protocol) {
-    document.querySelectorAll('[data-serial-only]').forEach(function (el) {
-      el.hidden = protocol !== 'modbus_rtu';
-      const input = el.querySelector('input,select');
-      if (input) input.disabled = protocol !== 'modbus_rtu';
+  function syncProtocolPanels(protocol) {
+    document.querySelectorAll('[data-protocol-panel]').forEach(function (panel) {
+      const active = panel.dataset.protocolPanel === protocol;
+      panel.hidden = !active;
+      panel.querySelectorAll('input,select,textarea').forEach(function (input) {
+        input.disabled = !active;
+      });
     });
-    document.querySelectorAll('[data-tcp-only]').forEach(function (el) {
-      el.hidden = protocol !== 'modbus_tcp';
-      const input = el.querySelector('input,select');
-      if (input) input.disabled = protocol !== 'modbus_tcp';
-    });
+  }
+
+  function enabledField(form, name) {
+    return form.querySelector('[name="' + name + '"]:enabled');
+  }
+
+  function selectedOption(field) {
+    return field && field.selectedOptions && field.selectedOptions[0] ? field.selectedOptions[0] : null;
+  }
+
+  function syncSerialPort(form) {
+    const select = enabledField(form, 'serial_resource_id');
+    const port = enabledField(form, 'port');
+    const option = selectedOption(select);
+    if (port && option && option.dataset.path) port.value = option.dataset.path;
+  }
+
+  function syncTcpEndpoint(form) {
+    const select = enabledField(form, 'tcp_resource_id');
+    const option = selectedOption(select);
+    if (!option || !option.value) return;
+    const address = option.dataset.address || '';
+    const idx = address.lastIndexOf(':');
+    const host = enabledField(form, 'host');
+    const tcpPort = enabledField(form, 'tcp_port');
+    if (idx > 0) {
+      if (host) host.value = address.slice(0, idx);
+      if (tcpPort) tcpPort.value = address.slice(idx + 1);
+    } else if (host && address) {
+      host.value = address;
+    }
+  }
+
+  function syncCanInterface(form) {
+    const select = enabledField(form, 'can_resource_id');
+    const iface = enabledField(form, 'can_interface');
+    const option = selectedOption(select);
+    if (iface && option && option.dataset.interface) iface.value = option.dataset.interface;
+  }
+
+  function bindProtocolForm(form, protocol) {
+    if (!form) return;
+    syncProtocolPanels(protocol);
+    syncSerialPort(form);
+    syncTcpEndpoint(form);
+    syncCanInterface(form);
+    const serial = form.querySelector('[name="serial_resource_id"]');
+    if (serial) serial.addEventListener('change', function () { syncSerialPort(form); });
+    const tcp = form.querySelector('[name="tcp_resource_id"]');
+    if (tcp) tcp.addEventListener('change', function () { syncTcpEndpoint(form); });
+    const can = form.querySelector('[name="can_resource_id"]');
+    if (can) can.addEventListener('change', function () { syncCanInterface(form); });
+  }
+
+  function readResourcesFromForm(form, protocol) {
+    if (protocol === 'modbus_rtu') {
+      const value = enabledField(form, 'serial_resource_id')?.value;
+      return value ? [{ resource_id: value }] : [];
+    }
+    if (protocol === 'modbus_tcp') {
+      const value = enabledField(form, 'tcp_resource_id')?.value;
+      return value ? [{ resource_id: value }] : [];
+    }
+    if (protocol === 'can') {
+      const value = enabledField(form, 'can_resource_id')?.value;
+      return value ? [{ resource_id: value }] : [];
+    }
+    return [];
   }
 
   async function loadMapPreview(select, target, status) {
@@ -109,21 +179,21 @@
   }
 
   function runtimeConfigFromForm(form) {
-    const get = function (name) { return form.querySelector('[name="' + name + '"]'); };
+    const get = function (name) { return enabledField(form, name); };
     const protocol = form.querySelector('[name="protocol"]')?.value || form.dataset.vmProtocol || 'simulator';
     const reader = {
       enabled: get('enabled') ? get('enabled').checked : true,
-      close_port_after_each_call: get('close_port_after_each_call') ? get('close_port_after_each_call').checked : true,
-      clear_buffers_before_each_transaction: get('clear_buffers_before_each_transaction') ? get('clear_buffers_before_each_transaction').checked : true,
       poll_interval_sec: numberOr(get('poll_interval_sec')?.value, 0.12),
-      timeout_sec: numberOr(get('timeout_sec')?.value, 0.35),
-      retries: numberOr(get('retries')?.value, 3),
-      retry_delay_sec: numberOr(get('retry_delay_sec')?.value, 0.2),
-      address_offset: numberOr(get('address_offset')?.value, 1),
     };
     if (protocol === 'modbus_rtu') {
       Object.assign(reader, {
-        port: get('port')?.value || '/dev/ttyAMA0',
+        close_port_after_each_call: get('close_port_after_each_call') ? get('close_port_after_each_call').checked : true,
+        clear_buffers_before_each_transaction: get('clear_buffers_before_each_transaction') ? get('clear_buffers_before_each_transaction').checked : true,
+        timeout_sec: numberOr(get('timeout_sec')?.value, 0.35),
+        retries: numberOr(get('retries')?.value, 3),
+        retry_delay_sec: numberOr(get('retry_delay_sec')?.value, 0.2),
+        address_offset: numberOr(get('address_offset')?.value, 1),
+        port: get('port')?.value || selectedOption(get('serial_resource_id'))?.dataset.path || '',
         slave_id: numberOr(get('slave_id')?.value, 1),
         baudrate: numberOr(get('baudrate')?.value, 9600),
         bytesize: numberOr(get('bytesize')?.value, 8),
@@ -134,33 +204,50 @@
     }
     if (protocol === 'modbus_tcp') {
       Object.assign(reader, {
-        host: get('host')?.value || '127.0.0.1',
+        timeout_sec: numberOr(get('timeout_sec')?.value, 0.35),
+        retries: numberOr(get('retries')?.value, 3),
+        retry_delay_sec: numberOr(get('retry_delay_sec')?.value, 0.2),
+        address_offset: numberOr(get('address_offset')?.value, 1),
+        host: (get('host')?.value || '').trim(),
         tcp_port: numberOr(get('tcp_port')?.value, 502),
         unit_id: numberOr(get('unit_id')?.value, 1),
+      });
+    }
+    if (protocol === 'can') {
+      Object.assign(reader, {
+        can_interface: get('can_interface')?.value || selectedOption(get('can_resource_id'))?.dataset.interface || '',
+        can_bitrate: numberOr(get('can_bitrate')?.value, 250000),
       });
     }
     return {
       reader: reader,
       storage: {
-        target_resource_id: get('storage_resource_id')?.value || 'storage:data',
-        flush_seconds: numberOr(get('flush_seconds')?.value, 5),
-        min_free_bytes: numberOr(get('min_free_bytes')?.value, 67108864),
-        quota_bytes: get('quota_bytes')?.value ? numberOr(get('quota_bytes').value, null) : null,
-        telemetry_subdir: get('telemetry_subdir')?.value || 'telemetry',
+        target_resource_id: form.querySelector('[name="storage_resource_id"]')?.value || 'storage:data',
+        flush_seconds: numberOr(form.querySelector('[name="flush_seconds"]')?.value, 5),
+        min_free_bytes: Math.round(numberOr(form.querySelector('[name="min_free_mb"]')?.value, 64) * 1048576),
+        quota_bytes: form.querySelector('[name="quota_mb"]')?.value ? Math.round(numberOr(form.querySelector('[name="quota_mb"]').value, 0) * 1048576) : null,
+        telemetry_subdir: form.querySelector('[name="telemetry_subdir"]')?.value || 'telemetry',
       },
       buffer: {
-        ram_rows: numberOr(get('ram_rows')?.value, 60),
-        max_queue: numberOr(get('max_queue')?.value, 2048),
+        ram_rows: numberOr(form.querySelector('[name="ram_rows"]')?.value, 60),
+        max_queue: numberOr(form.querySelector('[name="max_queue"]')?.value, 2048),
       },
     };
   }
 
-  const createProtocol = document.getElementById('create-protocol');
-  if (createProtocol) {
-    createProtocol.addEventListener('change', syncCreateMapOptions);
-    createProtocol.addEventListener('change', function () { syncReaderOptions(createProtocol.value); });
+  const createForm = document.getElementById('create-vm');
+  if (createForm) {
+    createForm.addEventListener('change', function (event) {
+      if (event.target && event.target.name === 'protocol') {
+        syncCreateMapOptions();
+        syncProtocolPanels(event.target.value);
+        syncSerialPort(createForm);
+        syncTcpEndpoint(createForm);
+        syncCanInterface(createForm);
+      }
+    });
     syncCreateMapOptions();
-    syncReaderOptions(createProtocol.value);
+    bindProtocolForm(createForm, createProtocolValue());
   }
   const createMapSelect = document.getElementById('create-map-version');
   if (createMapSelect) {
@@ -175,11 +262,12 @@
   if (editMapSelect) {
     editMapSelect.addEventListener('change', function () { loadMapPreview(editMapSelect, document.getElementById('edit-map-preview'), document.getElementById('edit-map-preview-status')); });
     loadMapPreview(editMapSelect, document.getElementById('edit-map-preview'), document.getElementById('edit-map-preview-status'));
-    syncReaderOptions(document.getElementById('edit-vm')?.dataset.vmProtocol || '');
   }
+  const editForm = document.getElementById('edit-vm');
+  if (editForm) bindProtocolForm(editForm, editForm.dataset.vmProtocol || 'simulator');
 
   window.bbMapsPage = function bbMapsPage() {
-    const labels = { simulator: 'Simulator', modbus_rtu: 'Modbus RTU', modbus_tcp: 'Modbus TCP' };
+    const labels = { simulator: 'Simulator', modbus_rtu: 'Modbus RTU', modbus_tcp: 'Modbus TCP', can: 'CAN' };
 
     function nextVersion(version) {
       const match = String(version || '').match(/^(.*?)(\d+)$/);
@@ -482,20 +570,29 @@
     create.addEventListener('submit', async function (event) {
       event.preventDefault();
       const form = new FormData(create);
-      const resources = Array.from(create.querySelectorAll('input[name="read_resource_id"]:checked')).map(function (el) {
-        return { resource_id: el.value };
-      });
+      const protocol = form.get('protocol');
       const payload = {
         name: form.get('name'),
-        protocol: form.get('protocol'),
-        preset_id: form.get('preset_id') || null,
+        protocol: protocol,
         map_version: form.get('map_version'),
-        read_resources: resources,
+        read_resources: readResourcesFromForm(create, protocol),
         storage_resource_id: form.get('storage_resource_id') || 'storage:data',
         config: runtimeConfigFromForm(create),
       };
       if (!payload.map_version) {
         toast('Выберите карту', 'error');
+        return;
+      }
+      if (protocol === 'modbus_rtu' && !payload.read_resources.length) {
+        toast('Выберите serial-порт', 'error');
+        return;
+      }
+      if (protocol === 'modbus_tcp' && (!payload.config.reader.host || !payload.config.reader.tcp_port)) {
+        toast('Укажите IP и порт', 'error');
+        return;
+      }
+      if (protocol === 'can' && !payload.config.reader.can_interface) {
+        toast('Выберите CAN-интерфейс', 'error');
         return;
       }
       try {
@@ -517,6 +614,7 @@
     edit.addEventListener('submit', async function (event) {
       event.preventDefault();
       const form = new FormData(edit);
+      const protocol = edit.dataset.vmProtocol || '';
       try {
         await mutate('/api/v1/vms/' + edit.dataset.vmId, {
           method: 'PATCH',
@@ -525,7 +623,7 @@
             name: form.get('name'),
             description: form.get('description'),
             map_version: form.get('map_version'),
-            read_resources: Array.from(edit.querySelectorAll('input[name="read_resource_id"]:checked')).map(function (el) { return { resource_id: el.value }; }),
+            read_resources: readResourcesFromForm(edit, protocol),
             storage_resource_id: form.get('storage_resource_id') || 'storage:data',
             config: runtimeConfigFromForm(edit),
           }),

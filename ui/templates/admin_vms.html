@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_fields.html" import field %}
 {% block title %}Админ ВМ · BlackBox{% endblock %}
 {% block content %}
 <section class="bb-card">
@@ -6,85 +7,79 @@
   {% include "vm_table.html" %}
 </section>
 
-<section class="bb-card">
-  <h2 class="bb-section-title">Создать VM</h2>
-  <form id="create-vm" method="post" class="bb-form">
-    <div class="bb-settings-grid">
-      <label>Имя<input name="name" required></label>
-      <label>Протокол
-        <select name="protocol" id="create-protocol">
-          <option value="simulator">Simulator</option>
-          <option value="modbus_rtu">Modbus RTU</option>
-          <option value="modbus_tcp">Modbus TCP</option>
-        </select>
-      </label>
-      <label>Preset ID<input name="preset_id"></label>
-      <label>Карта чтения
+<section class="bb-card bb-vm-builder">
+  <h2 class="bb-page-title">Создать VM</h2>
+  <details class="bb-setup-guide" open>
+    <summary><i class="bi bi-info-circle"></i> Как настроить ВМ</summary>
+    <ol>
+      <li>Выберите протокол — справа появятся только его поля. Serial и TCP больше не смешиваются.</li>
+      <li>Для RTU укажите физический serial-порт из «Ресурсов». Для TCP — IP и порт прибора. Для CAN — интерфейс и битрейт.</li>
+      <li>Выберите карту чтения этого же протокола.</li>
+      <li>Хранение общее: диск и каталог telemetry. Остальное можно не трогать — стоят рабочие значения по умолчанию.</li>
+    </ol>
+  </details>
+  <form id="create-vm" method="post" class="bb-form bb-vm-form">
+    <section class="bb-vm-step">
+      <h3 class="bb-vm-step-title"><span class="bb-step-num">1</span> Основные</h3>
+      <div class="bb-settings-grid">
+        {% call field('Имя', 'Короткое имя ВМ, как она будет видна в списке.', 'bi-tag') %}
+        <input name="name" required placeholder="rtu-stand-1">
+        {% endcall %}
+        {% call field('Карта чтения', 'JSON-карта регистров этого протокола. Сначала загрузите её в «Карты».', 'bi-file-earmark-code') %}
         <select name="map_version" id="create-map-version" required>
           <option value="">— выберите карту —</option>
           {% for m in maps %}
           <option value="{{ m.version }}" data-protocol="{{ m.protocol }}">{{ m.version }}{% if m.preset_id %} · {{ m.preset_id }}{% endif %}</option>
           {% endfor %}
         </select>
-      </label>
-    </div>
-    <p id="create-map-hint" class="bb-muted" hidden>Нет карт для этого протокола.</p>
-    <div class="bb-config-columns">
-      <fieldset data-reader-settings>
-        <legend>Источник чтения</legend>
-        <div class="bb-settings-grid">
-          <label class="bb-checkbox-label"><input name="enabled" type="checkbox" checked> Включить чтение</label>
-          <label class="bb-checkbox-label"><input name="close_port_after_each_call" type="checkbox" checked> Закрывать serial после транзакции</label>
-          <label class="bb-checkbox-label"><input name="clear_buffers_before_each_transaction" type="checkbox" checked> Очищать serial-буферы</label>
-          <label>Опрос, секунд<input name="poll_interval_sec" type="number" value="0.12" min="0.01" step="0.01"></label>
-          <label>Timeout, секунд<input name="timeout_sec" type="number" value="0.35" min="0.01" step="0.01"></label>
-          <label>Повторы<input name="retries" type="number" value="3" min="1" max="20"></label>
-          <label>Пауза между повторами, секунд<input name="retry_delay_sec" type="number" value="0.2" min="0" step="0.01"></label>
-          <label>Смещение адреса<input name="address_offset" type="number" value="1" min="0"></label>
-          <label data-serial-only>Serial-порт<input name="port" value="/dev/ttyAMA0"></label>
-          <label data-serial-only>Slave ID<input name="slave_id" type="number" value="1" min="1" max="247"></label>
-          <label data-serial-only>Baudrate<input name="baudrate" type="number" value="9600" step="1"></label>
-          <label data-serial-only>Биты данных<input name="bytesize" type="number" value="8" min="5" max="8"></label>
-          <label data-serial-only>Parity<select name="parity"><option>N</option><option>E</option><option>O</option></select></label>
-          <label data-serial-only>Stop bits<input name="stopbits" type="number" value="1" min="1" max="2" step="1"></label>
-          <label data-serial-only>Режим<select name="mode"><option value="rtu">RTU</option><option value="ascii">ASCII</option></select></label>
-          <label data-tcp-only>IP / host<input name="host" value="127.0.0.1"></label>
-          <label data-tcp-only>TCP-порт<input name="tcp_port" type="number" value="502" min="1" max="65535"></label>
-          <label data-tcp-only>Unit ID<input name="unit_id" type="number" value="1" min="0" max="247"></label>
-        </div>
-      </fieldset>
-      <fieldset>
-        <legend>Хранение</legend>
-        <div class="bb-settings-grid">
-          <label>Носитель
-            <select name="storage_resource_id">
-              {% for r in storage_resources %}<option value="{{ r.resource_id }}">{{ r.name }} · {{ r.path }}</option>{% endfor %}
-            </select>
-          </label>
-          <label>Каталог telemetry<input name="telemetry_subdir" value="telemetry" pattern="[A-Za-z0-9_./-]+"></label>
-          <label>RAM-буфер, строк<input name="ram_rows" type="number" value="60" min="1" max="1000000"></label>
-          <label>Очередь ingest, batch<input name="max_queue" type="number" value="2048" min="1" max="1000000"></label>
-          <label>Flush, секунд<input name="flush_seconds" type="number" value="5" min="0.1" step="0.1"></label>
-          <label>Минимум свободного места, байт<input name="min_free_bytes" type="number" value="67108864" min="0"></label>
-          <label>Квота telemetry, байт<input name="quota_bytes" type="number" min="1"></label>
-        </div>
-      </fieldset>
-    </div>
-    {% if approved_resources %}
-    <fieldset>
-      <legend>Устройства чтения</legend>
-      <div class="bb-check-list">
-        {% for r in approved_resources %}
-        <label><input type="checkbox" name="read_resource_id" value="{{ r.resource_id }}"> {{ r.kind }} · {{ r.name }} <span class="bb-muted">({{ r.path or r.address }})</span></label>
-        {% endfor %}
+        {% endcall %}
       </div>
-    </fieldset>
-    {% else %}<p class="bb-muted">Нет устройств чтения.</p>{% endif %}
-    <div class="bb-map-preview-panel">
-      <div><strong>Карта</strong><span id="create-map-preview-status" class="bb-muted"></span></div>
-      <pre id="create-map-preview" class="bb-json-view"></pre>
+      <p id="create-map-hint" class="bb-muted" hidden>Нет карт для этого протокола.</p>
+      <p class="bb-field-head bb-protocol-label"><i class="bi bi-diagram-3"></i> Протокол</p>
+      <div class="bb-protocol-picks" role="radiogroup" aria-label="Протокол">
+        <label class="bb-protocol-pick">
+          <input type="radio" name="protocol" value="simulator" checked>
+          <i class="bi bi-cpu"></i>
+          <strong>Simulator</strong>
+          <small>Тест без прибора</small>
+        </label>
+        <label class="bb-protocol-pick">
+          <input type="radio" name="protocol" value="modbus_rtu">
+          <i class="bi bi-usb-plug"></i>
+          <strong>Modbus RTU</strong>
+          <small>Физический serial</small>
+        </label>
+        <label class="bb-protocol-pick">
+          <input type="radio" name="protocol" value="modbus_tcp">
+          <i class="bi bi-ethernet"></i>
+          <strong>Modbus TCP</strong>
+          <small>IP и порт</small>
+        </label>
+        <label class="bb-protocol-pick">
+          <input type="radio" name="protocol" value="can">
+          <i class="bi bi-broadcast"></i>
+          <strong>CAN</strong>
+          <small>Интерфейс и битрейт</small>
+        </label>
+      </div>
+    </section>
+
+    <div class="bb-config-columns">
+      <section class="bb-vm-step">
+        <h3 class="bb-vm-step-title"><span class="bb-step-num">2</span> Подключение</h3>
+        {% include "vm_reader_settings.html" %}
+      </section>
+      <section class="bb-vm-step">
+        <h3 class="bb-vm-step-title"><span class="bb-step-num">3</span> Хранение</h3>
+        {% include "vm_storage_settings.html" %}
+      </section>
     </div>
-    <button type="submit" class="bb-btn">Создать VM</button>
+
+    <details class="bb-map-preview-panel">
+      <summary><i class="bi bi-braces"></i> Просмотр карты <span id="create-map-preview-status" class="bb-muted"></span></summary>
+      <pre id="create-map-preview" class="bb-json-view"></pre>
+    </details>
+    <button type="submit" class="bb-btn"><i class="bi bi-plus-lg"></i> Создать VM</button>
   </form>
 </section>
 {% endblock %}

@@ -1,0 +1,43 @@
+{% from "_fields.html" import field %}
+{% set storage = storage|default({}) %}
+{% set buffer = buffer|default({}) %}
+{% set storage_resources = storage_resources|default([]) %}
+{% set current_storage_id = current_storage_id|default('') %}
+{% set min_free_mb = ((storage.get('min_free_bytes', 67108864) or 67108864) / 1048576)|round|int %}
+{% set quota_mb = ((storage.get('quota_bytes') or 0) / 1048576)|round|int if storage.get('quota_bytes') else '' %}
+<fieldset class="bb-storage-panel">
+  <legend><i class="bi bi-device-hdd"></i> Хранение</legend>
+  <p class="bb-panel-lead">Общее для всех протоколов. Сюда пишется телеметрия ВМ.</p>
+  <div class="bb-settings-grid">
+    {% call field('Носитель', 'Куда писать файлы. По умолчанию внутренний диск Hub.', 'bi-hdd') %}
+    <select name="storage_resource_id">
+      {% for r in storage_resources %}
+      <option value="{{ r.resource_id }}" {% if r.resource_id == current_storage_id or r.resource_id == storage.get('target_resource_id') %}selected{% endif %}>{{ r.name }} · {{ r.path }}</option>
+      {% endfor %}
+    </select>
+    {% endcall %}
+    {% call field('Каталог telemetry', 'Подкаталог на носителе. По умолчанию telemetry.', 'bi-folder') %}
+    <input name="telemetry_subdir" value="{{ storage.get('telemetry_subdir', 'telemetry') }}" pattern="[A-Za-z0-9_./-]+">
+    {% endcall %}
+  </div>
+  <details class="bb-advanced">
+    <summary>Дополнительно</summary>
+    <div class="bb-settings-grid">
+      {% call field('RAM-буфер, строк', 'Сколько точек копить в памяти перед записью. По умолчанию 60.', 'bi-memory') %}
+      <input name="ram_rows" type="number" value="{{ buffer.get('ram_rows', 60) }}" min="1" max="1000000">
+      {% endcall %}
+      {% call field('Очередь ingest', 'Максимум пакетов в очереди Hub. По умолчанию 2048.', 'bi-collection') %}
+      <input name="max_queue" type="number" value="{{ buffer.get('max_queue', 2048) }}" min="1" max="1000000">
+      {% endcall %}
+      {% call field('Flush, секунд', 'Принудительная запись на диск. По умолчанию 5 с.', 'bi-save') %}
+      <input name="flush_seconds" type="number" value="{{ storage.get('flush_seconds', 5) }}" min="0.1" step="0.1">
+      {% endcall %}
+      {% call field('Мин. свободное место, МБ', 'Ниже этого порога запись останавливается. По умолчанию 64 МБ.', 'bi-battery-half') %}
+      <input name="min_free_mb" type="number" value="{{ min_free_mb }}" min="0">
+      {% endcall %}
+      {% call field('Квота telemetry, МБ', 'Пусто — без лимита. Иначе запись остановится при превышении.', 'bi-pie-chart') %}
+      <input name="quota_mb" type="number" value="{{ quota_mb }}" min="1" placeholder="без лимита">
+      {% endcall %}
+    </div>
+  </details>
+</fieldset>

@@ -36,6 +36,16 @@ def test_legacy_reader_settings_are_normalized_per_vm():
     assert config["storage"]["target_resource_id"] == "storage:ssd"
 
 
+def test_can_reader_settings_are_normalized_per_vm():
+    config = normalize_runtime_config(
+        {"can_interface": "can1", "bitrate": 500000, "poll_interval_sec": 0.5},
+        protocol="can",
+    )
+    assert config["reader"]["can_interface"] == "can1"
+    assert config["reader"]["can_bitrate"] == 500000
+    assert config["reader"]["poll_interval_sec"] == 0.5
+
+
 def test_legacy_storage_flags_are_retained_and_unsafe_subdir_rejected():
     config = normalize_runtime_config(
         {

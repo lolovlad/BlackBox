@@ -41,6 +41,10 @@ class ReaderSettings(BaseModel):
     tcp_port: int = Field(default=502, ge=1, le=65535)
     unit_id: int = Field(default=1, ge=0, le=247)
 
+    # CAN settings.
+    can_interface: str = Field(default="can0", min_length=1, max_length=32)
+    can_bitrate: int = Field(default=250000, ge=10_000, le=1_000_000)
+
     @field_validator("parity")
     @classmethod
     def normalize_parity(cls, value: str) -> str:
@@ -173,6 +177,8 @@ def normalize_runtime_config(config: dict[str, Any] | None, *, protocol: str | N
         "host": ("host", "ip", "ip_address", "address"),
         "tcp_port": ("tcp_port", "port_tcp", "modbus_tcp_port"),
         "unit_id": ("unit_id", "tcp_unit_id"),
+        "can_interface": ("can_interface", "interface", "can_if"),
+        "can_bitrate": ("can_bitrate", "bitrate", "can_bitrate_bps"),
         "legacy_parser_settings_path": ("parser_settings_path", "PARSER_SETTINGS_PATH"),
         "legacy_app_timezone": ("app_timezone", "APP_TIMEZONE"),
     }

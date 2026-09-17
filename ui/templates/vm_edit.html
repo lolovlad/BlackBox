@@ -1,82 +1,45 @@
 {% extends "base.html" %}
+{% from "_fields.html" import field %}
 {% block title %}Изменить VM · BlackBox{% endblock %}
 {% block content %}
-<section class="bb-card">
+<section class="bb-card bb-vm-builder">
   <h1 class="bb-page-title">Изменить VM: {{ vm.name }}</h1>
-  {% set reader = vm.config.get('reader', {}) %}
-  {% set storage = vm.config.get('storage', {}) %}
-  {% set buffer = vm.config.get('buffer', {}) %}
-  <form id="edit-vm" class="bb-form" data-vm-id="{{ vm.id }}" data-vm-protocol="{{ vm.protocol }}">
-    <div class="bb-settings-grid">
-      <label>Имя<input name="name" value="{{ vm.name }}" required></label>
-      <label>Описание<textarea name="description" rows="2">{{ vm.description }}</textarea></label>
-      <label>Карта чтения
+  <form id="edit-vm" class="bb-form bb-vm-form" data-vm-id="{{ vm.id }}" data-vm-protocol="{{ vm.protocol }}">
+    <section class="bb-vm-step">
+      <h3 class="bb-vm-step-title"><span class="bb-step-num">1</span> Основные</h3>
+      <div class="bb-settings-grid">
+        {% call field('Имя', 'Как ВМ отображается в списке.', 'bi-tag') %}
+        <input name="name" value="{{ vm.name }}" required>
+        {% endcall %}
+        {% call field('Описание', 'Необязательная заметка для стенда.', 'bi-text-left') %}
+        <textarea name="description" rows="2">{{ vm.description }}</textarea>
+        {% endcall %}
+        {% call field('Карта чтения', 'Версия карты этого протокола.', 'bi-file-earmark-code') %}
         <select name="map_version" id="edit-map-version" required>
           {% for m in maps %}
             {% if m.protocol == vm.protocol %}<option value="{{ m.version }}" {% if m.version == vm.map_version %}selected{% endif %}>{{ m.version }}{% if m.preset_id %} · {{ m.preset_id }}{% endif %}</option>{% endif %}
           {% endfor %}
         </select>
-      </label>
-    </div>
-    <div class="bb-config-columns">
-      <fieldset>
-        <legend>Источник чтения</legend>
-        <div class="bb-settings-grid">
-          <label class="bb-checkbox-label"><input name="enabled" type="checkbox" {% if reader.get('enabled', True) %}checked{% endif %}> Включить чтение</label>
-          <label class="bb-checkbox-label"><input name="close_port_after_each_call" type="checkbox" {% if reader.get('close_port_after_each_call', True) %}checked{% endif %}> Закрывать serial после транзакции</label>
-          <label class="bb-checkbox-label"><input name="clear_buffers_before_each_transaction" type="checkbox" {% if reader.get('clear_buffers_before_each_transaction', True) %}checked{% endif %}> Очищать serial-буферы</label>
-          <label>Опрос, секунд<input name="poll_interval_sec" type="number" value="{{ reader.get('poll_interval_sec', 0.12) }}" min="0.01" step="0.01"></label>
-          <label>Timeout, секунд<input name="timeout_sec" type="number" value="{{ reader.get('timeout_sec', 0.35) }}" min="0.01" step="0.01"></label>
-          <label>Повторы<input name="retries" type="number" value="{{ reader.get('retries', 3) }}" min="1" max="20"></label>
-          <label>Пауза между повторами, секунд<input name="retry_delay_sec" type="number" value="{{ reader.get('retry_delay_sec', 0.2) }}" min="0" step="0.01"></label>
-          <label>Смещение адреса<input name="address_offset" type="number" value="{{ reader.get('address_offset', 1) }}" min="0"></label>
-          <label data-serial-only>Serial-порт<input name="port" value="{{ reader.get('port', '/dev/ttyAMA0') }}"></label>
-          <label data-serial-only>Slave ID<input name="slave_id" type="number" value="{{ reader.get('slave_id', 1) }}" min="1" max="247"></label>
-          <label data-serial-only>Baudrate<input name="baudrate" type="number" value="{{ reader.get('baudrate', 9600) }}"></label>
-          <label data-serial-only>Биты данных<input name="bytesize" type="number" value="{{ reader.get('bytesize', 8) }}" min="5" max="8"></label>
-          <label data-serial-only>Parity<select name="parity"><option {% if reader.get('parity','N') == 'N' %}selected{% endif %}>N</option><option {% if reader.get('parity') == 'E' %}selected{% endif %}>E</option><option {% if reader.get('parity') == 'O' %}selected{% endif %}>O</option></select></label>
-          <label data-serial-only>Stop bits<input name="stopbits" type="number" value="{{ reader.get('stopbits', 1) }}" min="1" max="2" step="1"></label>
-          <label data-serial-only>Режим<select name="mode"><option value="rtu" {% if reader.get('mode','rtu') == 'rtu' %}selected{% endif %}>RTU</option><option value="ascii" {% if reader.get('mode') == 'ascii' %}selected{% endif %}>ASCII</option></select></label>
-          <label data-tcp-only>IP / host<input name="host" value="{{ reader.get('host', '127.0.0.1') }}"></label>
-          <label data-tcp-only>TCP-порт<input name="tcp_port" type="number" value="{{ reader.get('tcp_port', 502) }}" min="1" max="65535"></label>
-          <label data-tcp-only>Unit ID<input name="unit_id" type="number" value="{{ reader.get('unit_id', 1) }}" min="0" max="247"></label>
-        </div>
-      </fieldset>
-      <fieldset>
-        <legend>Хранение</legend>
-        <div class="bb-settings-grid">
-          <label>Носитель
-            <select name="storage_resource_id">
-              {% for r in storage_resources %}<option value="{{ r.resource_id }}" {% if r.resource_id == vm.storage_resource_id or r.resource_id == storage.get('target_resource_id') %}selected{% endif %}>{{ r.name }} · {{ r.path }}</option>{% endfor %}
-            </select>
-          </label>
-          <label>Каталог telemetry<input name="telemetry_subdir" value="{{ storage.get('telemetry_subdir', 'telemetry') }}" pattern="[A-Za-z0-9_./-]+"></label>
-          <label>RAM-буфер, строк<input name="ram_rows" type="number" value="{{ buffer.get('ram_rows', 60) }}" min="1" max="1000000"></label>
-          <label>Очередь ingest, batch<input name="max_queue" type="number" value="{{ buffer.get('max_queue', 2048) }}" min="1" max="1000000"></label>
-          <label>Flush, секунд<input name="flush_seconds" type="number" value="{{ storage.get('flush_seconds', 5) }}" min="0.1" step="0.1"></label>
-          <label>Минимум свободного места, байт<input name="min_free_bytes" type="number" value="{{ storage.get('min_free_bytes', 67108864) }}" min="0"></label>
-          <label>Квота telemetry, байт<input name="quota_bytes" type="number" value="{{ storage.get('quota_bytes', '') or '' }}" min="1"></label>
-        </div>
-      </fieldset>
-    </div>
-    {% if read_resources %}
-    <fieldset>
-        <legend>Устройства чтения</legend>
-      <div class="bb-check-list">
-        {% for r in read_resources %}
-        {% set selected = (vm.read_resources or vm.resources) | selectattr('resource_id', 'equalto', r.resource_id) | list %}
-        <label><input type="checkbox" name="read_resource_id" value="{{ r.resource_id }}" {% if selected %}checked{% endif %}> {{ r.kind }} · {{ r.name }} <span class="bb-muted">({{ r.path or r.address }})</span></label>
-        {% endfor %}
+        {% endcall %}
       </div>
-    </fieldset>
-    {% endif %}
-    <div class="bb-map-preview-panel">
-      <div><strong>Карта</strong><span id="edit-map-preview-status" class="bb-muted"></span></div>
-      <pre id="edit-map-preview" class="bb-json-view"></pre>
+    </section>
+    <div class="bb-config-columns">
+      <section class="bb-vm-step">
+        <h3 class="bb-vm-step-title"><span class="bb-step-num">2</span> Подключение</h3>
+        {% include "vm_reader_settings.html" %}
+      </section>
+      <section class="bb-vm-step">
+        <h3 class="bb-vm-step-title"><span class="bb-step-num">3</span> Хранение</h3>
+        {% include "vm_storage_settings.html" %}
+      </section>
     </div>
+    <details class="bb-map-preview-panel">
+      <summary><i class="bi bi-braces"></i> Просмотр карты <span id="edit-map-preview-status" class="bb-muted"></span></summary>
+      <pre id="edit-map-preview" class="bb-json-view"></pre>
+    </details>
     <div class="bb-actions">
-      <button type="submit" class="bb-btn">Сохранить</button>
-      <button type="button" class="bb-btn bb-btn-secondary" data-apply-map="{{ vm.id }}">Применить карту</button>
+      <button type="submit" class="bb-btn"><i class="bi bi-check-lg"></i> Сохранить</button>
+      <button type="button" class="bb-btn bb-btn-secondary" data-apply-map="{{ vm.id }}"><i class="bi bi-arrow-repeat"></i> Применить карту</button>
       <button type="button" class="bb-btn bb-btn-danger" data-vm-action="delete" data-vm-id="{{ vm.id }}" data-vm-name="{{ vm.name }}" data-redirect-after="/admin/vms">Удалить</button>
       <a class="bb-btn bb-btn-secondary" href="/admin/vms">Назад</a>
     </div>
