@@ -8,7 +8,7 @@ from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
 from typing import Iterable
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from bb_platform.contracts import TagSample
 
@@ -115,3 +115,47 @@ class ParquetStore:
                         self._buffers[key][0:0] = samples
                 raise
         return total
+
+    def discard_vm(self, vm_id: str) -> None:
+        """Drop unflushed rows for a VM so delete does not rewrite its files."""
+        key_id = str(vm_id)
+        with self._lock:
+            for key in [item for item in self._buffers if item[0] == key_id]:
+                self._buffers.pop(key, None)
+
+
+def purge_vm_directories(vm_id: str, roots: Iterable[Path], *, extra_subdirs: Iterable[str] = ()) -> list[str]:
+    """Delete only ``vm_id=<uuid>`` partitions under approved storage roots."""
+    UUID(str(vm_id))
+    partition = f"vm_id={vm_id}"
+    subdirs = {"telemetry", "alarms", "backup", "logs", *(str(item) for item in extra_subdirs if item)}
+    deleted: list[str] = []
+    seen: set[str] = set()
+    for raw_root in roots:
+        try:
+            base = Path(raw_root).resolve()
+        except OSError:
+            continue
+        if not base.exists() or not base.is_dir():
+            continue
+        candidates = [base / partition]
+        for sub in subdirs:
+            text = str(sub).replace("\\", "/").strip().strip("/")
+            parts = Path(text).parts
+            if not text or ".." in parts or Path(text).is_absolute():
+                continue
+            candidates.append(base / text / partition)
+        for candidate in candidates:
+            try:
+                resolved = candidate.resolve()
+                resolved.relative_to(base)
+            except (ValueError, OSError):
+                continue
+            key = str(resolved)
+            if key in seen:
+                continue
+            seen.add(key)
+            if resolved.is_dir() and resolved.name == partition:
+                shutil.rmtree(resolved)
+                deleted.append(key)
+    return deleted

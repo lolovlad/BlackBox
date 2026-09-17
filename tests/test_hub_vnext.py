@@ -36,6 +36,8 @@ class FakeContainer:
         self.start()
 
     def remove(self, force=True):
+        self.running = False
+        self.removed = True
         self.attrs["State"]["Status"] = "dead"
 
     def logs(self, stream=False, timestamps=True, tail=200):
@@ -58,7 +60,7 @@ class FakeContainers:
 
     def get(self, key):
         for item in self.items.values():
-            if key in {item.id, item.name}:
+            if key in {item.id, item.name} and not getattr(item, "removed", False):
                 return item
         raise KeyError(key)
 
@@ -79,6 +81,31 @@ def _client(tmp_path: Path) -> TestClient:
     return TestClient(create_app(cfg, docker_client=FakeDocker()))
 
 
+SIM_DOCUMENT = {
+    "requests": [{"name": "sim", "fc": 3, "address": 0, "count": 3}],
+    "fields": [
+        {"name": "counter", "type": "uint16", "source": "sim", "address": 0},
+        {"name": "digital_1", "type": "bool", "source": "sim", "address": 1},
+        {"name": "analog_1", "type": "expr", "expr": "counter * 0.5", "round": True},
+    ],
+}
+
+
+def _publish_map(client: TestClient, csrf: str, *, protocol: str = "simulator", version: str = "default-v1", document: dict | None = None) -> str:
+    body: dict = {"protocol": protocol, "version": version, "document": document or SIM_DOCUMENT}
+    if protocol != "simulator" and document is None:
+        payload = json.loads((Path(__file__).resolve().parent.parent / "presets" / "maps" / protocol / "deif-gempac-v1.json").read_text(encoding="utf-8"))
+        protocol = payload.pop("protocol", protocol)
+        version = payload.pop("version", version)
+        preset_id = payload.pop("preset_id", None)
+        body = {"protocol": protocol, "version": version, "document": payload}
+        if preset_id:
+            body["preset_id"] = preset_id
+    response = client.post("/api/v1/maps", json=body, headers={"X-CSRF-Token": csrf})
+    assert response.status_code == 200, response.text
+    return version
+
+
 def test_hub_login_crud_and_role_guard(tmp_path: Path):
     with _client(tmp_path) as client:
         assert client.get("/healthz").json()["status"] == "ok"
@@ -86,6 +113,7 @@ def test_hub_login_crud_and_role_guard(tmp_path: Path):
         assert login.status_code == 200
         assert client.get("/api/v1/auth/me").json()["role"] == "admin"
         csrf = client.cookies.get("bb_csrf")
+        _publish_map(client, csrf)
         created = client.post(
             "/api/v1/vms",
             json={"name": "sim-1", "protocol": "simulator", "map_version": "default-v1"},
@@ -108,6 +136,7 @@ def test_modbus_vm_persists_reader_and_storage_settings(tmp_path: Path, monkeypa
         scanned = client.post("/api/v1/resources/scan", headers={"X-CSRF-Token": csrf})
         assert any(item["resource_id"] == "serial:/dev/ttyUSB0" for item in scanned.json()["items"])
         assert client.post("/api/v1/resources/serial:/dev/ttyUSB0/approve", headers={"X-CSRF-Token": csrf}).status_code == 200
+        _publish_map(client, csrf, protocol="modbus_rtu")
         response = client.post(
             "/api/v1/vms",
             headers={"X-CSRF-Token": csrf},
@@ -134,6 +163,7 @@ def test_exclusive_read_resource_conflict_is_rejected_on_second_start(tmp_path: 
         csrf = client.cookies.get("bb_csrf")
         client.post("/api/v1/resources/scan", headers={"X-CSRF-Token": csrf})
         client.post("/api/v1/resources/serial:/dev/ttyUSB0/approve", headers={"X-CSRF-Token": csrf})
+        _publish_map(client, csrf, protocol="modbus_rtu")
         payload = {
             "protocol": "modbus_rtu",
             "map_version": "deif-gempac-v1",
@@ -154,7 +184,7 @@ def test_html_pages_render_with_current_starlette(tmp_path: Path):
         assert client.get("/login").status_code == 200
         login_html = client.get("/login").text
         assert "AGK" in login_html
-        assert "2.0.1" in login_html
+        assert "2.0.3" in login_html
         assert "bb-login" in login_html
         app_js = login_html.find("/static/app.js")
         alpine_js = login_html.find("/static/vendor/alpine.min.js")
@@ -162,6 +192,7 @@ def test_html_pages_render_with_current_starlette(tmp_path: Path):
         form_login = client.post("/login", data={"username": "admin", "password": "admin-password"}, follow_redirects=False)
         assert form_login.status_code == 303
         csrf = client.cookies.get("bb_csrf")
+        _publish_map(client, csrf)
         vm = client.post(
             "/api/v1/vms",
             json={"name": "page-sim", "protocol": "simulator", "map_version": "default-v1"},
@@ -183,7 +214,70 @@ def test_html_pages_render_with_current_starlette(tmp_path: Path):
             assert response.status_code == 200, (path, response.text)
             assert "<html" in response.text.lower()
             assert "AGK" in response.text
-            assert "2.0.1" in response.text
+            assert "2.0.3" in response.text
+            if path in {"/dashboard", "/vms", "/admin/vms", f"/vms/{vm['id']}", f"/admin/vms/{vm['id']}/edit"}:
+                assert 'data-vm-action="delete"' in response.text
+                assert "Удалить" in response.text
+
+
+def test_admin_deletes_vm_container_and_related_files(tmp_path: Path):
+    with _client(tmp_path) as client:
+        assert client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin-password"}).status_code == 200
+        csrf = client.cookies.get("bb_csrf")
+        _publish_map(client, csrf)
+        keep = client.post(
+            "/api/v1/vms",
+            json={"name": "keep-sim", "protocol": "simulator", "map_version": "default-v1"},
+            headers={"X-CSRF-Token": csrf},
+        ).json()
+        victim = client.post(
+            "/api/v1/vms",
+            json={"name": "drop-sim", "protocol": "simulator", "map_version": "default-v1", "config": {"buffer": {"ram_rows": 1}}},
+            headers={"X-CSRF-Token": csrf},
+        ).json()
+        started = client.post(f"/api/v1/vms/{victim['id']}/start", headers={"X-CSRF-Token": csrf})
+        assert started.status_code == 200, started.text
+        telemetry = tmp_path / "data" / "telemetry" / f"vm_id={victim['id']}" / "date=2026-09-18"
+        telemetry.mkdir(parents=True)
+        (telemetry / "part-test.parquet").write_bytes(b"data")
+        logs = tmp_path / "data" / "logs" / f"vm_id={victim['id']}"
+        logs.mkdir(parents=True)
+        (logs / "worker.log").write_text("line\n", encoding="utf-8")
+        keep_dir = tmp_path / "data" / "telemetry" / f"vm_id={keep['id']}"
+        keep_dir.mkdir(parents=True)
+        (keep_dir / "keep.parquet").write_bytes(b"keep")
+        js = (Path(__file__).resolve().parent.parent / "ui" / "static" / "app.js").read_text(encoding="utf-8")
+        assert "все связанные с этой ВМ файлы" in js
+        deleted = client.delete(f"/api/v1/vms/{victim['id']}", headers={"X-CSRF-Token": csrf})
+        assert deleted.status_code == 200, deleted.text
+        body = deleted.json()
+        assert body["ok"] is True
+        assert any(f"vm_id={victim['id']}" in path for path in body["deleted_paths"])
+        assert client.get(f"/api/v1/vms/{victim['id']}").status_code == 404
+        remaining = client.get("/api/v1/vms").json()["items"]
+        assert [item["name"] for item in remaining] == ["keep-sim"]
+        assert not (tmp_path / "data" / "telemetry" / f"vm_id={victim['id']}").exists()
+        assert not logs.exists()
+        assert (keep_dir / "keep.parquet").read_bytes() == b"keep"
+        app = client._transport.app  # type: ignore[attr-defined]
+        assert victim["id"] not in app.state.worker_tokens
+        with app.state.repo.connect() as connection:
+            assert connection.execute("SELECT 1 FROM ingest_batches WHERE vm_id=?", (victim["id"],)).fetchone() is None
+            assert connection.execute("SELECT 1 FROM lifecycle_events WHERE vm_id=?", (victim["id"],)).fetchone() is None
+            assert connection.execute("SELECT 1 FROM resource_leases WHERE vm_id=?", (victim["id"],)).fetchone() is None
+        try:
+            app.state.docker.client.containers.get(f"bb-vm-{victim['id']}")
+            raise AssertionError("container should be removed")
+        except KeyError:
+            pass
+        never_started = client.post(
+            "/api/v1/vms",
+            json={"name": "never-sim", "protocol": "simulator", "map_version": "default-v1"},
+            headers={"X-CSRF-Token": csrf},
+        ).json()
+        assert client.delete(f"/api/v1/vms/{never_started['id']}", headers={"X-CSRF-Token": csrf}).status_code == 200
+        missing = client.delete("/api/v1/vms/00000000-0000-0000-0000-000000000000", headers={"X-CSRF-Token": csrf})
+        assert missing.status_code == 404
 
 
 def test_batch_is_idempotent_and_parser_is_used(tmp_path: Path):
@@ -191,6 +285,7 @@ def test_batch_is_idempotent_and_parser_is_used(tmp_path: Path):
         login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin-password"})
         assert login.status_code == 200
         csrf = client.cookies.get("bb_csrf")
+        _publish_map(client, csrf)
         vm = client.post("/api/v1/vms", json={"name": "sim-1", "protocol": "simulator", "map_version": "default-v1"}, headers={"X-CSRF-Token": csrf}).json()
         client.post(f"/api/v1/vms/{vm['id']}/start", headers={"X-CSRF-Token": csrf})
         # The internal endpoint is exercised through the ASGI application's
@@ -209,6 +304,7 @@ def test_batch_idempotency_is_scoped_to_vm_and_sequence(tmp_path: Path):
     with _client(tmp_path) as client:
         client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin-password"})
         csrf = client.cookies.get("bb_csrf")
+        _publish_map(client, csrf)
         first = client.post("/api/v1/vms", json={"name": "batch-a", "protocol": "simulator", "map_version": "default-v1"}, headers={"X-CSRF-Token": csrf}).json()
         second = client.post("/api/v1/vms", json={"name": "batch-b", "protocol": "simulator", "map_version": "default-v1"}, headers={"X-CSRF-Token": csrf}).json()
         app = client._transport.app  # type: ignore[attr-defined]
@@ -230,6 +326,7 @@ def test_user_is_read_only_and_websocket_gets_snapshot(tmp_path: Path):
         app = admin._transport.app  # type: ignore[attr-defined]
         app.state.repo.create_user("reader", "reader-password", "user")
         csrf = admin.cookies.get("bb_csrf")
+        _publish_map(admin, csrf)
         vm = admin.post("/api/v1/vms", json={"name": "readonly-sim", "protocol": "simulator", "map_version": "default-v1"}, headers={"X-CSRF-Token": csrf}).json()
 
         # Reuse one lifespan and replace the browser cookies with a reader's
@@ -240,6 +337,7 @@ def test_user_is_read_only_and_websocket_gets_snapshot(tmp_path: Path):
         assert admin.post("/api/v1/auth/login", json={"username": "reader", "password": "reader-password"}).status_code == 200
         assert admin.get("/api/v1/auth/me").json()["role"] == "user"
         assert admin.post(f"/api/v1/vms/{vm['id']}/start", headers={"X-CSRF-Token": admin.cookies.get("bb_csrf")}).status_code == 403
+        assert admin.delete(f"/api/v1/vms/{vm['id']}", headers={"X-CSRF-Token": admin.cookies.get("bb_csrf")}).status_code == 403
         assert admin.get("/api/v1/vms").status_code == 200
         with admin.websocket_connect("/ws/v1/events") as websocket:
             snapshot = websocket.receive_json()
@@ -297,19 +395,32 @@ def test_get_map_document_by_version(tmp_path: Path):
         assert client.get("/api/v1/maps/missing-v1").status_code == 404
 
 
+def test_hub_does_not_seed_default_maps(tmp_path: Path):
+    with _client(tmp_path) as client:
+        assert client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin-password"}).status_code == 200
+        assert client.get("/api/v1/maps").json()["items"] == []
+        missing = client.post(
+            "/api/v1/vms",
+            json={"name": "no-map", "protocol": "simulator", "map_version": "default-v1"},
+            headers={"X-CSRF-Token": client.cookies.get("bb_csrf")},
+        )
+        assert missing.status_code == 422
+        assert missing.json()["code"] == "map_not_found"
+
+
 def test_maps_page_opens_version_studio(tmp_path: Path):
     with _client(tmp_path) as client:
         client.post("/login", data={"username": "admin", "password": "admin-password"})
         html = client.get("/admin/maps").text
         assert "bb-maps-page" in html
         assert "bb-studio" in html
+        assert "Новая версия" in html
         assert "Опубликовать версию" in html
         start = html.find('id="bb-maps-payload">')
         end = html.find("</script>", start)
         payload = html[start + len('id="bb-maps-payload">') : end]
         maps = json.loads(payload)
-        assert maps
-        assert {item["version"] for item in maps}
+        assert maps == []
 
 
 def test_map_edits_publish_as_a_new_immutable_version(tmp_path: Path):

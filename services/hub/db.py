@@ -311,6 +311,9 @@ class HubRepository:
 
     def delete_vm(self, vm_id: str) -> bool:
         with self.connect() as c:
+            c.execute("DELETE FROM resource_leases WHERE vm_id=?", (vm_id,))
+            c.execute("DELETE FROM ingest_batches WHERE vm_id=?", (vm_id,))
+            c.execute("DELETE FROM lifecycle_events WHERE vm_id=?", (vm_id,))
             cur = c.execute("DELETE FROM virtual_machines WHERE id=?", (vm_id,))
         return cur.rowcount > 0
 

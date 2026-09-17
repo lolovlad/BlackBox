@@ -64,3 +64,9 @@ class EventBus:
 
     async def unsubscribe(self, queue: asyncio.Queue[EventEnvelope]) -> None:
         self._subscribers.discard(queue)
+
+    def forget_vm(self, vm_id: str) -> None:
+        key = str(vm_id)
+        self._latest_status.pop(key, None)
+        self._latest_tags.pop(key, None)
+        self._logs.pop(key, None)

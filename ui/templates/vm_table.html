@@ -27,6 +27,7 @@
           <button type="button" class="bb-btn bb-btn-sm bb-btn-secondary" data-vm-action="restart" data-vm-id="{{ vm.id }}">Рестарт</button>
           <button type="button" class="bb-btn bb-btn-sm bb-btn-secondary" data-vm-action="apply-map" data-vm-id="{{ vm.id }}">Apply map</button>
           <a class="bb-btn bb-btn-sm bb-btn-secondary" href="/admin/vms/{{ vm.id }}/edit">Изменить</a>
+          <button type="button" class="bb-btn bb-btn-sm bb-btn-danger" data-vm-action="delete" data-vm-id="{{ vm.id }}" data-vm-name="{{ vm.name }}">Удалить</button>
         </div>
       </td>
       {% endif %}

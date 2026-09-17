@@ -8,8 +8,7 @@
       <h1 class="bb-page-title">Карты чтения</h1>
     </div>
     <div class="bb-maps-hero-actions">
-      <button type="button" class="bb-btn bb-btn-secondary" @click="createBlank()"><i class="bi bi-plus-lg"></i> Новая карта</button>
-      <button type="button" class="bb-btn" @click="publishOpen = true"><i class="bi bi-upload"></i> Загрузить</button>
+      <button type="button" class="bb-btn" @click="openUpload(false)"><i class="bi bi-upload"></i> Загрузить</button>
     </div>
   </div>
 
@@ -57,19 +56,40 @@
     <div class="bb-studio-panel" role="dialog" aria-modal="true" aria-labelledby="bb-studio-title" @click.stop>
       <header class="bb-studio-head">
         <div>
-          <h2 id="bb-studio-title" x-text="currentMap ? currentMap.version : 'Новая карта'"></h2>
+          <h2 id="bb-studio-title" x-text="draft ? (publishVersion || 'Новая карта') : (currentMap ? currentMap.version : 'Карта')"></h2>
           <p class="bb-studio-sub">
-            <span x-text="currentMap ? protocolLabel(currentMap.protocol) : protocolLabel(draftProtocol)"></span>
-            <span x-show="currentMap && currentMap.preset_id" x-text="currentMap && currentMap.preset_id"></span>
-            <span x-show="dirty" class="bb-map-pill bb-map-pill-warn">есть правки</span>
+            <span x-text="protocolLabel(draftProtocol)"></span>
+            <span x-show="draftPreset" x-text="draftPreset"></span>
+            <span x-show="draft" class="bb-map-pill bb-map-pill-warn">черновик</span>
           </p>
         </div>
         <div class="bb-studio-head-actions">
+          <button type="button" class="bb-btn" x-show="!draft" @click="openUpload(true)"><i class="bi bi-plus-lg"></i> Новая версия</button>
           <button type="button" class="bb-btn bb-btn-secondary bb-btn-sm" @click="copyJson()" :disabled="!documentText"><i class="bi bi-clipboard"></i> Копировать</button>
           <button type="button" class="bb-btn bb-btn-secondary bb-btn-sm" @click="downloadJson()" :disabled="!documentText"><i class="bi bi-download"></i> Скачать</button>
           <button type="button" class="bb-btn bb-btn-ghost bb-btn-sm" @click="closeStudio()" aria-label="Закрыть"><i class="bi bi-x-lg"></i></button>
         </div>
       </header>
+
+      <div class="bb-studio-meta">
+        <label>Название
+          <input x-model="publishVersion" :readonly="!draft" required>
+        </label>
+        <label>Тип
+          <select x-model="draftProtocol" :disabled="!draft">
+            <option value="simulator">Simulator</option>
+            <option value="modbus_rtu">Modbus RTU</option>
+            <option value="modbus_tcp">Modbus TCP</option>
+          </select>
+        </label>
+        <label>Preset
+          <input x-model="draftPreset" :readonly="!draft">
+        </label>
+        <button type="button" class="bb-btn" x-show="draft" @click="publishFromEditor()" :disabled="saving || !documentText">
+          <span x-show="!saving">Опубликовать версию</span>
+          <span x-show="saving">Публикация…</span>
+        </button>
+      </div>
 
       <div class="bb-studio-body">
         <aside class="bb-studio-versions">
@@ -77,7 +97,7 @@
           <ol>
             <template x-for="(map, index) in familyVersions" :key="map.version + '::' + map.protocol">
               <li>
-                <button type="button" class="bb-version-item" :class="{ 'is-active': isSelected(map) }" @click="openMap(map)">
+                <button type="button" class="bb-version-item" :class="{ 'is-active': isSelected(map) && !draft }" @click="openMap(map)">
                   <span class="bb-version-dot" :class="{ 'is-latest': index === 0 }"></span>
                   <span>
                     <strong x-text="map.version"></strong>
@@ -91,32 +111,10 @@
         <div class="bb-studio-editor">
           <p class="bb-muted" x-show="loading">Загрузка…</p>
           <label class="bb-studio-json-label">Карта
-            <textarea class="bb-json-editor" spellcheck="false" x-model="documentText" :readonly="loading"></textarea>
+            <textarea class="bb-json-editor" spellcheck="false" x-model="documentText" :readonly="loading || !draft"></textarea>
           </label>
         </div>
       </div>
-
-      <footer class="bb-studio-foot">
-        <div class="bb-studio-publish">
-          <label>Протокол
-            <select x-model="draftProtocol" :disabled="!!currentMap">
-              <option value="simulator">Simulator</option>
-              <option value="modbus_rtu">Modbus RTU</option>
-              <option value="modbus_tcp">Modbus TCP</option>
-            </select>
-          </label>
-          <label>Preset
-            <input x-model="draftPreset">
-          </label>
-          <label>Новая версия
-            <input x-model="publishVersion" required>
-          </label>
-          <button type="button" class="bb-btn" @click="publishFromEditor()" :disabled="saving || !documentText">
-            <span x-show="!saving">Опубликовать версию</span>
-            <span x-show="saving">Публикация…</span>
-          </button>
-        </div>
-      </footer>
     </div>
   </div>
 
@@ -125,26 +123,18 @@
     <div class="bb-publish-panel" role="dialog" aria-modal="true" aria-labelledby="bb-publish-title" @click.stop>
       <header class="bb-studio-head">
         <div>
-          <h2 id="bb-publish-title">Загрузить карту</h2>
+          <h2 id="bb-publish-title" x-text="uploadAsNewVersion ? 'Новая версия' : 'Загрузить карту'"></h2>
         </div>
         <button type="button" class="bb-btn bb-btn-ghost bb-btn-sm" @click="publishOpen = false" aria-label="Закрыть"><i class="bi bi-x-lg"></i></button>
       </header>
-      <form id="map-upload" class="bb-form bb-publish-form" enctype="multipart/form-data">
-        <label>Протокол
-          <select name="protocol">
-            <option value="simulator">Simulator</option>
-            <option value="modbus_rtu">Modbus RTU</option>
-            <option value="modbus_tcp">Modbus TCP</option>
-          </select>
+      <div class="bb-form bb-publish-form">
+        <label>Файл
+          <input type="file" accept="application/json,.json" @change="onFileChosen($event)">
         </label>
-        <label>Версия<input name="version" required></label>
-        <label>Preset<input name="preset_id"></label>
-        <label>Файл<input type="file" name="file" accept="application/json,.json" required></label>
         <div class="bb-actions">
           <button type="button" class="bb-btn bb-btn-secondary" @click="publishOpen = false">Отмена</button>
-          <button type="submit" class="bb-btn">Опубликовать</button>
         </div>
-      </form>
+      </div>
     </div>
   </div>
 </section>

@@ -187,25 +187,14 @@
       return match[1] + String(Number(match[2]) + 1);
     }
 
-    function blankDocument(protocol) {
-      if (protocol === 'simulator') {
-        return {
-          requests: [{ name: 'sim', fc: 3, address: 0, count: 1 }],
-          fields: [{ name: 'value', type: 'uint16', source: 'sim', address: 0 }],
-        };
-      }
-      return {
-        requests: [{ name: 'holding', fc: 3, address: 0, count: 1 }],
-        fields: [{ name: 'register_0', type: 'uint16', source: 'holding', address: 0 }],
-      };
-    }
-
     return {
       maps: [],
       query: '',
       filter: 'all',
       studioOpen: false,
       publishOpen: false,
+      uploadAsNewVersion: false,
+      draft: false,
       loading: false,
       saving: false,
       selectedKey: '',
@@ -214,9 +203,6 @@
       publishVersion: '',
       draftProtocol: 'modbus_tcp',
       draftPreset: '',
-      get dirty() {
-        return this.documentText !== this.originalText;
-      },
       get currentMap() {
         const key = this.selectedKey;
         return this.maps.find(function (map) { return map.version + '::' + map.protocol === key; }) || null;
@@ -281,26 +267,60 @@
         if (this.studioOpen) this.closeStudio();
       },
       closeStudio() {
-        if (this.dirty && !window.confirm('Есть несохранённые правки. Закрыть окно?')) return;
+        if (this.draft && this.documentText && !window.confirm('Черновик не опубликован. Закрыть окно?')) return;
         this.studioOpen = false;
+        this.draft = false;
       },
-      createBlank() {
+      openUpload(asNewVersion) {
+        this.uploadAsNewVersion = !!asNewVersion;
+        this.publishOpen = true;
+      },
+      onFileChosen(event) {
+        const file = event.target.files && event.target.files[0];
+        event.target.value = '';
+        if (file) this.importFile(file);
+      },
+      async importFile(file) {
+        let text;
+        try {
+          text = await file.text();
+        } catch (_e) {
+          toast('Не удалось прочитать файл.', 'error');
+          return;
+        }
+        let parsed;
+        try {
+          parsed = JSON.parse(text);
+        } catch (_e) {
+          toast('Файл не является JSON.', 'error');
+          return;
+        }
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+          toast('В корне файла должен быть объект карты.', 'error');
+          return;
+        }
+        const suggested = this.uploadAsNewVersion && this.currentMap ? nextVersion(this.currentMap.version) : '';
+        const keepProtocol = this.uploadAsNewVersion ? this.draftProtocol : '';
+        const keepPreset = this.uploadAsNewVersion ? this.draftPreset : '';
+        this.draftProtocol = parsed.protocol || keepProtocol || 'modbus_tcp';
+        this.draftPreset = parsed.preset_id || keepPreset || '';
+        this.publishVersion = parsed.version || suggested || String(file.name || '').replace(/\.json$/i, '') || 'map-v1';
         this.selectedKey = '';
-        this.draftProtocol = this.filter === 'all' ? 'modbus_tcp' : this.filter;
-        this.draftPreset = '';
-        this.publishVersion = 'custom-v1';
-        this.documentText = JSON.stringify(blankDocument(this.draftProtocol), null, 2);
-        this.originalText = this.documentText;
+        this.documentText = JSON.stringify(parsed, null, 2);
+        this.originalText = '';
+        this.draft = true;
+        this.publishOpen = false;
         this.studioOpen = true;
       },
       async openMap(map) {
-        if (this.dirty && this.studioOpen && !this.isSelected(map) && !window.confirm('Есть несохранённые правки. Открыть другую версию?')) {
+        if (this.draft && this.documentText && !window.confirm('Черновик не опубликован. Открыть другую версию?')) {
           return;
         }
+        this.draft = false;
         this.selectedKey = map.version + '::' + map.protocol;
         this.draftProtocol = map.protocol;
         this.draftPreset = map.preset_id || '';
-        this.publishVersion = nextVersion(map.version);
+        this.publishVersion = map.version;
         this.studioOpen = true;
         this.loading = true;
         try {
@@ -331,7 +351,7 @@
         }
       },
       downloadJson() {
-        const name = (this.currentMap ? this.currentMap.version : this.publishVersion || 'map') + '.json';
+        const name = (this.publishVersion || 'map') + '.json';
         const blob = new Blob([this.documentText], { type: 'application/json' });
         const url = URL.createObjectURL(blob);
         const link = document.createElement('a');
@@ -349,11 +369,7 @@
           return;
         }
         if (!this.publishVersion.trim()) {
-          toast('Укажите имя новой версии.', 'error');
-          return;
-        }
-        if (this.currentMap && this.publishVersion.trim() === this.currentMap.version && this.dirty) {
-          toast('Укажите новое имя версии.', 'error');
+          toast('Укажите название.', 'error');
           return;
         }
         this.saving = true;
@@ -381,7 +397,7 @@
           }));
           this.selectedKey = record.version + '::' + record.protocol;
           this.originalText = this.documentText;
-          this.publishVersion = nextVersion(record.version);
+          this.draft = false;
           toast('Опубликована версия ' + record.version, 'ok');
         } catch (error) {
           toast(error.message, 'error');
@@ -391,7 +407,6 @@
       },
     };
   };
-
   document.addEventListener('alpine:init', function () {
     window.Alpine.data('bbShell', window.bbShell);
     window.Alpine.data('bbMapsPage', window.bbMapsPage);
@@ -400,12 +415,26 @@
   document.querySelectorAll('[data-vm-action]').forEach(function (button) {
     button.addEventListener('click', async function () {
       const action = button.dataset.vmAction;
+      const vmId = button.dataset.vmId;
       if ((action === 'stop' || action === 'restart') && !window.confirm(action === 'stop' ? 'Остановить виртуальную машину?' : 'Перезапустить виртуальную машину?')) {
+        return;
+      }
+      if (action === 'delete' && !window.confirm('Удалить виртуальную машину «' + (button.dataset.vmName || 'эту ВМ') + '»?\n\nБудут удалены контейнер и все связанные с этой ВМ файлы: телеметрия, логи и данные. Это действие нельзя отменить.')) {
         return;
       }
       button.disabled = true;
       try {
-        await mutate('/api/v1/vms/' + button.dataset.vmId + '/' + action, { method: 'POST' });
+        if (action === 'delete') {
+          await mutate('/api/v1/vms/' + vmId, { method: 'DELETE' });
+          toast('ВМ удалена', 'ok');
+          if (button.dataset.redirectAfter) {
+            location.href = button.dataset.redirectAfter;
+          } else {
+            location.reload();
+          }
+          return;
+        }
+        await mutate('/api/v1/vms/' + vmId + '/' + action, { method: 'POST' });
         toast(action === 'apply-map' ? 'Карта применена' : 'Операция выполнена', 'ok');
         location.reload();
       } catch (error) {
@@ -444,20 +473,6 @@
           body: JSON.stringify(payload),
         });
         toast('ВМ создана', 'ok');
-        location.reload();
-      } catch (error) {
-        toast(error.message, 'error');
-      }
-    });
-  }
-
-  const upload = document.getElementById('map-upload');
-  if (upload) {
-    upload.addEventListener('submit', async function (event) {
-      event.preventDefault();
-      try {
-        await mutate('/api/v1/maps/upload', { method: 'POST', headers: headers(), body: new FormData(upload) });
-        toast('Карта опубликована', 'ok');
         location.reload();
       } catch (error) {
         toast(error.message, 'error');

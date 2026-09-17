@@ -10,6 +10,11 @@
     <dt>Состояние</dt><dd><span class="bb-badge bb-badge-{{ vm.lifecycle }}">{{ vm.lifecycle }}</span></dd>
     {% if vm.last_error %}<dt>Ошибка</dt><dd class="bb-error">{{ vm.last_error }}</dd>{% endif %}
   </dl>
+  {% if user.role == 'admin' %}
+  <div class="bb-actions">
+    <button type="button" class="bb-btn bb-btn-danger" data-vm-action="delete" data-vm-id="{{ vm.id }}" data-vm-name="{{ vm.name }}" data-redirect-after="/vms">Удалить</button>
+  </div>
+  {% endif %}
   <div id="live">
     <p id="live-status" class="bb-muted"></p>
     <h2 class="bb-section-title">Последние tags</h2>

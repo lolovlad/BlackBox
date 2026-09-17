@@ -658,7 +658,7 @@
 .bb-maps-hero,
 .bb-maps-toolbar,
 .bb-studio-head,
-.bb-studio-publish {
+.bb-studio-meta {
   display: flex;
   flex-wrap: wrap;
   gap: 0.85rem 1rem;
@@ -820,7 +820,7 @@
   border-radius: 20px;
   box-shadow: 0 24px 80px rgba(45, 53, 64, 0.28);
   display: grid;
-  grid-template-rows: auto 1fr auto;
+  grid-template-rows: auto auto 1fr;
   overflow: hidden;
 }
 
@@ -830,10 +830,41 @@
   grid-template-rows: auto auto;
 }
 
-.bb-studio-head,
-.bb-studio-foot { padding: 1rem 1.15rem; border-bottom: 1px solid var(--bb-border); }
+.bb-studio-head { padding: 1rem 1.15rem; border-bottom: 1px solid var(--bb-border); }
 
-.bb-studio-foot { border-bottom: 0; border-top: 1px solid var(--bb-border); }
+.bb-studio-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem 1rem;
+  align-items: end;
+  padding: 0.85rem 1.15rem;
+  border-bottom: 1px solid var(--bb-border);
+  background: #f5f7fb;
+}
+
+.bb-studio-meta label {
+  display: grid;
+  gap: 0.3rem;
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.bb-studio-meta input,
+.bb-studio-meta select {
+  font: inherit;
+  font-weight: 400;
+  padding: 0.5rem 0.65rem;
+  border: 1px solid var(--bb-border);
+  border-radius: 8px;
+  min-width: 9rem;
+  background: #fff;
+}
+
+.bb-studio-meta input:read-only,
+.bb-studio-meta select:disabled {
+  background: #eef1f7;
+  color: var(--bb-navy);
+}
 
 .bb-studio-head h2,
 .bb-publish-panel h2 { margin: 0.15rem 0 0.2rem; font-size: 1.25rem; }
@@ -926,29 +957,10 @@
   color: #e8efff;
 }
 
-.bb-studio-publish { width: 100%; align-items: end; }
-
-.bb-studio-publish label {
-  display: grid;
-  gap: 0.3rem;
-  font-size: 0.78rem;
-  font-weight: 700;
-}
-
-.bb-studio-publish input,
-.bb-studio-publish select {
-  font: inherit;
-  font-weight: 400;
-  padding: 0.5rem 0.65rem;
-  border: 1px solid var(--bb-border);
-  border-radius: 8px;
-  min-width: 9rem;
-}
-
 .bb-publish-form { padding: 0 1.15rem 1.15rem; max-width: none; }
 
 @media (max-width: 839px) {
-  .bb-studio-panel { height: min(100vh - 1.4rem, 920px); grid-template-rows: auto auto 1fr auto; }
+  .bb-studio-panel { height: min(100vh - 1.4rem, 920px); }
   .bb-studio-body { grid-template-rows: 11rem 1fr; }
   .bb-studio-versions { border-right: 0; border-bottom: 1px solid var(--bb-border); }
 }

@@ -29,10 +29,10 @@ from .docker_manager import DockerManager, DockerUnavailable
 from .registry import PROTOCOLS, protocol_spec
 from .security import ACCESS_COOKIE, CSRF_COOKIE, REFRESH_COOKIE, _decode, csrf_protect, current_user, issue_tokens, set_auth_cookies
 from .state import EventBus
-from .storage import ParquetStore, StorageUnavailable
+from .storage import ParquetStore, StorageUnavailable, purge_vm_directories
 from .vm_config import normalize_runtime_config
 
-HUB_VERSION = "2.0.1"
+HUB_VERSION = "2.0.3"
 HUB_VENDOR = "AGK"
 
 
@@ -46,7 +46,7 @@ class VmCreateRequest(BaseModel):
     description: str = ""
     protocol: VmProtocol
     preset_id: str | None = None
-    map_version: str = "default-v1"
+    map_version: str = Field(min_length=1, max_length=128)
     # ``resources`` is retained as a wire-compatibility alias.  New clients
     # should use the explicit read/storage split.
     resources: list[dict[str, Any]] | None = None
@@ -87,46 +87,6 @@ def _problem(code: str, message: str, status_code: int, details: Any = None) -> 
 
 def _vm_json(vm: dict[str, Any]) -> dict[str, Any]:
     return vm
-
-
-def _default_map(repo: HubRepository, protocol: VmProtocol, version: str = "default-v1") -> None:
-    existing = repo.map_by_version(version, protocol.value)
-    if existing:
-        return
-    if protocol == VmProtocol.SIMULATOR:
-        payload = {
-            "requests": [{"name": "sim", "fc": 3, "address": 0, "count": 3}],
-            "fields": [
-                {"name": "counter", "type": "uint16", "source": "sim", "address": 0},
-                {"name": "digital_1", "type": "bool", "source": "sim", "address": 1},
-                {"name": "analog_1", "type": "expr", "expr": "counter * 0.5", "round": True},
-            ],
-        }
-    else:
-        payload = {"requests": [{"name": "holding", "fc": 3, "address": 0, "count": 1}], "fields": [{"name": "register_0", "type": "uint16", "source": "holding", "address": 0}]}
-    doc = adapt_legacy_map(payload, protocol=protocol, version=version)
-    repo.save_map(doc.model_dump(mode="json"))
-
-
-def _load_preset_maps(repo: HubRepository) -> None:
-    """Import checked-in example maps without overwriting immutable versions."""
-    root = Path(__file__).resolve().parents[2] / "presets" / "maps"
-    if not root.is_dir():
-        return
-    for path in sorted(root.rglob("*.json")):
-        try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
-            if not isinstance(payload, dict):
-                continue
-            protocol = VmProtocol(str(payload.pop("protocol", path.parent.name)))
-            version = str(payload.pop("version", path.stem))
-            preset_id = payload.pop("preset_id", None)
-            document = adapt_legacy_map(payload, protocol=protocol, preset_id=preset_id, version=version)
-            repo.save_map(document.model_dump(mode="json"))
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError):
-            # A bad optional preset must not prevent the Hub from starting;
-            # upload validation still reports the precise error to an admin.
-            continue
 
 
 def _discover_resources(data_root: Path) -> list[dict[str, Any]]:
@@ -250,6 +210,47 @@ def _approved_storage_resource(repo: HubRepository, resource_id: str | None) -> 
     return resource_id
 
 
+def _vm_storage_roots(vm: dict[str, Any], repo: HubRepository, cfg: HubConfig) -> list[Path]:
+    roots: list[Path] = []
+    seen: set[str] = set()
+
+    def add(path: Path | str | None) -> None:
+        if not path:
+            return
+        try:
+            resolved = Path(path).resolve()
+        except OSError:
+            return
+        key = str(resolved)
+        if key not in seen:
+            seen.add(key)
+            roots.append(resolved)
+
+    add(cfg.data_root)
+    config = vm.get("config") if isinstance(vm.get("config"), dict) else {}
+    storage_cfg = config.get("storage") if isinstance(config.get("storage"), dict) else {}
+    target_id = storage_cfg.get("target_resource_id") or vm.get("storage_resource_id")
+    if target_id:
+        descriptor = repo.resource_by_id(str(target_id))
+        if descriptor:
+            add(descriptor.get("path"))
+    for resource in repo.list_resources():
+        if resource.get("kind") == ResourceKind.STORAGE.value:
+            add(resource.get("path"))
+    return roots
+
+
+def _vm_storage_subdirs(vm: dict[str, Any]) -> list[str]:
+    config = vm.get("config") if isinstance(vm.get("config"), dict) else {}
+    storage_cfg = config.get("storage") if isinstance(config.get("storage"), dict) else {}
+    return [
+        str(storage_cfg.get("telemetry_subdir") or "telemetry"),
+        str(storage_cfg.get("alarm_subdir") or "alarms"),
+        str(storage_cfg.get("backup_subdir") or "backup"),
+        str(storage_cfg.get("log_subdir") or "logs"),
+    ]
+
+
 def _validate_reader_allowlist(repo: HubRepository, protocol: str, runtime_config: dict[str, Any], resources: list[dict[str, Any]]) -> None:
     """Require an approved physical source for non-simulator workers."""
     if protocol == VmProtocol.SIMULATOR.value:
@@ -287,7 +288,6 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
     cfg = config or HubConfig.from_env()
     repo = HubRepository(cfg.db_path)
     repo.bootstrap_admin(cfg.bootstrap_username, cfg.bootstrap_password)
-    _load_preset_maps(repo)
     # The Hub's own metadata/telemetry disk is the safe default destination;
     # unlike removable devices it is available as soon as the service starts.
     repo.upsert_resources(_discover_resources(cfg.data_root))
@@ -630,9 +630,7 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
         except ValidationError as exc:
             raise HTTPException(422, detail={"code": "invalid_vm_config", "message": "Invalid VM reader/storage configuration", "details": exc.errors()}) from exc
         if repo.map_by_version(payload.map_version, payload.protocol.value) is None:
-            if payload.map_version != "default-v1":
-                raise HTTPException(422, detail={"code": "map_not_found", "message": "Map version not found"})
-            _default_map(repo, payload.protocol, payload.map_version)
+            raise HTTPException(422, detail={"code": "map_not_found", "message": "Map version not found"})
         read_input = payload.read_resources if payload.read_resources is not None else (payload.resources or [])
         resources = _approved_resources(repo, read_input)
         _validate_reader_allowlist(repo, payload.protocol.value, runtime_config, resources)
@@ -740,19 +738,37 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
         vm = repo.get_vm(vm_id)
         if vm is None:
             raise HTTPException(404, detail={"code": "not_found", "message": "VM not found"})
-        if vm.get("container_id"):
-            try:
+        try:
+            if docker_manager.client is not None:
                 docker_manager.remove(vm)
-            except DockerUnavailable:
-                repo.release_resource_leases(vm_id)
-                return _problem("docker_unavailable", "Docker runtime unavailable", 503)
-            except Exception:
+            elif vm.get("container_id"):
+                raise DockerUnavailable("Docker runtime unavailable")
+        except DockerUnavailable:
+            repo.release_resource_leases(vm_id)
+            return _problem("docker_unavailable", "Docker runtime unavailable", 503)
+        except Exception as exc:
+            if not DockerManager.is_not_found(exc):
                 repo.release_resource_leases(vm_id)
                 raise
+        app.state.worker_tokens.pop(vm_id, None)
+        app.state.worker_commands.pop(vm_id, None)
+        app.state.log_seen.pop(vm_id, None)
+        app.state.ingest_pending.pop(vm_id, None)
+        for key in [item for item in list(app.state.storage_stores) if str(item).endswith(f"|{vm_id}")]:
+            store_item = app.state.storage_stores.pop(key, None)
+            if store_item is not None:
+                store_item.discard_vm(vm_id)
+        app.state.store.discard_vm(vm_id)
+        try:
+            deleted_paths = purge_vm_directories(vm_id, _vm_storage_roots(vm, repo, cfg), extra_subdirs=_vm_storage_subdirs(vm))
+        except (OSError, ValueError) as exc:
+            repo.release_resource_leases(vm_id)
+            raise HTTPException(500, detail={"code": "vm_files_delete_failed", "message": str(exc)}) from exc
         repo.release_resource_leases(vm_id)
         repo.delete_vm(vm_id)
-        repo.record_audit(int(account["id"]), "vm.delete", vm_id)
-        return {"ok": True}
+        bus.forget_vm(vm_id)
+        repo.record_audit(int(account["id"]), "vm.delete", vm_id, {"deleted_paths": deleted_paths})
+        return {"ok": True, "deleted_paths": deleted_paths}
 
     async def vm_action(vm_id: str, action: str, account):
         vm = repo.get_vm(vm_id)
@@ -1113,11 +1129,6 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
         except HTTPException as exc:
             return RedirectResponse("/login" if exc.status_code == 401 else "/dashboard", status_code=303)
 
-    def _ensure_default_maps() -> None:
-        for protocol in (VmProtocol.SIMULATOR, VmProtocol.MODBUS_RTU, VmProtocol.MODBUS_TCP):
-            if protocol_spec(protocol).enabled:
-                _default_map(repo, protocol, "default-v1")
-
     @app.get("/dashboard", response_class=HTMLResponse)
     async def dashboard(request: Request):
         try:
@@ -1154,7 +1165,6 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
         account = _require_admin_html(request)
         if isinstance(account, RedirectResponse):
             return account
-        _ensure_default_maps()
         approved = [r for r in repo.list_resources() if r.get("approved")]
         read_resources = [r for r in approved if r.get("kind") != ResourceKind.STORAGE.value]
         storage_resources = [r for r in approved if r.get("kind") == ResourceKind.STORAGE.value]
@@ -1172,7 +1182,6 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
         vm = repo.get_vm(vm_id)
         if vm is None:
             return RedirectResponse("/admin/vms", status_code=303)
-        _ensure_default_maps()
         return templates.TemplateResponse(
             request=request,
             name="vm_edit.html",
@@ -1190,7 +1199,6 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
         account = _require_admin_html(request)
         if isinstance(account, RedirectResponse):
             return account
-        _ensure_default_maps()
         return templates.TemplateResponse(
             request=request,
             name="maps.html",

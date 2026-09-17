@@ -126,7 +126,26 @@ class DockerManager:
         self._container(vm).restart(timeout=10)
 
     def remove(self, vm: dict[str, Any]) -> None:
-        self._container(vm).remove(force=True)
+        """Force-remove the VM container, including orphans named ``bb-vm-<id>``.
+
+        A missing container is success: Hub can still delete metadata and files.
+        """
+        self._require()
+        keys: list[str] = []
+        if vm.get("container_id"):
+            keys.append(str(vm["container_id"]))
+        keys.append(f"bb-vm-{vm['id']}")
+        seen: set[str] = set()
+        for key in keys:
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            try:
+                self.client.containers.get(key).remove(force=True)
+            except Exception as exc:
+                if self.is_not_found(exc):
+                    continue
+                raise
 
     def inspect(self, vm: dict[str, Any]) -> dict[str, Any]:
         container = self._container(vm)
