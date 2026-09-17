@@ -13,38 +13,85 @@
 
 <section class="bb-card">
   <h2 class="bb-section-title">Создать VM</h2>
-  <p class="bb-hint">Контейнер создаётся только при нажатии «Старт». Сначала выберите карту для протокола.</p>
+  <p class="bb-hint">Контейнер создаётся только при нажатии «Старт». Параметры чтения, карта, источник и место записи сохраняются отдельно для каждой VM.</p>
   <form id="create-vm" method="post" class="bb-form">
-    <label>Имя<input name="name" required></label>
-    <label>Протокол
-      <select name="protocol" id="create-protocol">
-        <option value="simulator">Simulator</option>
-        <option value="modbus_rtu">Modbus RTU</option>
-      </select>
-    </label>
-    <label>Preset ID<input name="preset_id" placeholder="optional"></label>
-    <label>Карта
-      <select name="map_version" id="create-map-version" required>
-        <option value="">— выберите карту —</option>
-        {% for m in maps %}
-        <option value="{{ m.version }}" data-protocol="{{ m.protocol }}">{{ m.version }}{% if m.preset_id %} · {{ m.preset_id }}{% endif %}</option>
-        {% endfor %}
-      </select>
-    </label>
-    <p id="create-map-hint" class="bb-hint" hidden>
-      Для этого протокола нет карт. <a href="/admin/maps">Опубликуйте JSON-карту</a>.
-    </p>
+    <div class="bb-settings-grid">
+      <label>Имя<input name="name" required></label>
+      <label>Протокол
+        <select name="protocol" id="create-protocol">
+          <option value="simulator">Simulator</option>
+          <option value="modbus_rtu">Modbus RTU</option>
+          <option value="modbus_tcp">Modbus TCP</option>
+        </select>
+      </label>
+      <label>Preset ID<input name="preset_id" placeholder="optional"></label>
+      <label>Карта чтения
+        <select name="map_version" id="create-map-version" required>
+          <option value="">— выберите карту —</option>
+          {% for m in maps %}
+          <option value="{{ m.version }}" data-protocol="{{ m.protocol }}">{{ m.version }}{% if m.preset_id %} · {{ m.preset_id }}{% endif %}</option>
+          {% endfor %}
+        </select>
+      </label>
+    </div>
+    <p id="create-map-hint" class="bb-hint" hidden>Для этого протокола нет карт. <a href="/admin/maps">Опубликуйте JSON-карту</a>.</p>
+    <div class="bb-config-columns">
+      <fieldset data-reader-settings>
+        <legend>Источник чтения</legend>
+        <div class="bb-settings-grid">
+          <label class="bb-checkbox-label"><input name="enabled" type="checkbox" checked> Включить чтение</label>
+          <label class="bb-checkbox-label"><input name="close_port_after_each_call" type="checkbox" checked> Закрывать serial после транзакции</label>
+          <label class="bb-checkbox-label"><input name="clear_buffers_before_each_transaction" type="checkbox" checked> Очищать serial-буферы</label>
+          <label>Опрос, секунд<input name="poll_interval_sec" type="number" value="0.12" min="0.01" step="0.01"></label>
+          <label>Timeout, секунд<input name="timeout_sec" type="number" value="0.35" min="0.01" step="0.01"></label>
+          <label>Повторы<input name="retries" type="number" value="3" min="1" max="20"></label>
+          <label>Пауза между повторами, секунд<input name="retry_delay_sec" type="number" value="0.2" min="0" step="0.01"></label>
+          <label>Смещение адреса<input name="address_offset" type="number" value="1" min="0"></label>
+          <label data-serial-only>Serial-порт<input name="port" value="/dev/ttyAMA0" placeholder="/dev/ttyUSB0"></label>
+          <label data-serial-only>Slave ID<input name="slave_id" type="number" value="1" min="1" max="247"></label>
+          <label data-serial-only>Baudrate<input name="baudrate" type="number" value="9600" step="1"></label>
+          <label data-serial-only>Биты данных<input name="bytesize" type="number" value="8" min="5" max="8"></label>
+          <label data-serial-only>Parity<select name="parity"><option>N</option><option>E</option><option>O</option></select></label>
+          <label data-serial-only>Stop bits<input name="stopbits" type="number" value="1" min="1" max="2" step="1"></label>
+          <label data-serial-only>Режим<select name="mode"><option value="rtu">RTU</option><option value="ascii">ASCII</option></select></label>
+          <label data-tcp-only>IP / host<input name="host" value="127.0.0.1"></label>
+          <label data-tcp-only>TCP-порт<input name="tcp_port" type="number" value="502" min="1" max="65535"></label>
+          <label data-tcp-only>Unit ID<input name="unit_id" type="number" value="1" min="0" max="247"></label>
+        </div>
+      </fieldset>
+      <fieldset>
+        <legend>Куда сохранять</legend>
+        <div class="bb-settings-grid">
+          <label>Носитель
+            <select name="storage_resource_id">
+              {% for r in storage_resources %}<option value="{{ r.resource_id }}">{{ r.name }} · {{ r.path }}</option>{% endfor %}
+            </select>
+          </label>
+          <label>Каталог telemetry<input name="telemetry_subdir" value="telemetry" pattern="[A-Za-z0-9_./-]+"></label>
+          <label>RAM-буфер, строк<input name="ram_rows" type="number" value="60" min="1" max="1000000"></label>
+          <label>Очередь ingest, batch<input name="max_queue" type="number" value="2048" min="1" max="1000000"></label>
+          <label>Flush, секунд<input name="flush_seconds" type="number" value="5" min="0.1" step="0.1"></label>
+          <label>Минимум свободного места, байт<input name="min_free_bytes" type="number" value="67108864" min="0"></label>
+          <label>Квота telemetry, байт<input name="quota_bytes" type="number" min="1" placeholder="без квоты"></label>
+        </div>
+        <p class="bb-hint">Parquet/ZSTD записывается пакетами. RAM-буфер уменьшает количество операций записи на SSD.</p>
+      </fieldset>
+    </div>
     {% if approved_resources %}
     <fieldset>
-      <legend class="bb-section-title" style="margin-top:0">Подтверждённые ресурсы</legend>
+      <legend>Откуда читать: подтверждённые устройства</legend>
       <div class="bb-check-list">
         {% for r in approved_resources %}
-        <label><input type="checkbox" name="resource_id" value="{{ r.resource_id }}"> {{ r.kind }} · {{ r.name }} <span class="bb-muted">({{ r.path or r.address }})</span></label>
+        <label><input type="checkbox" name="read_resource_id" value="{{ r.resource_id }}"> {{ r.kind }} · {{ r.name }} <span class="bb-muted">({{ r.path or r.address }})</span></label>
         {% endfor %}
       </div>
     </fieldset>
-    {% endif %}
-    <button type="submit" class="bb-btn">Создать</button>
+    {% else %}<p class="bb-hint">Подтверждённых устройств чтения нет. Для Simulator это не требуется; для RTU/TCP выполните сканирование ресурсов.</p>{% endif %}
+    <div class="bb-map-preview-panel">
+      <div><strong>JSON-карта чтения</strong><span id="create-map-preview-status" class="bb-muted"> Выберите карту</span></div>
+      <pre id="create-map-preview" class="bb-json-view">Выберите карту, чтобы открыть requests и fields.</pre>
+    </div>
+    <button type="submit" class="bb-btn">Создать VM</button>
   </form>
 </section>
 {% endblock %}

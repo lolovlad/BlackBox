@@ -19,8 +19,10 @@ vNext features there.
 
 The combined Phase 1+2 implementation is a FastAPI Hub with a separate
 SQLite metadata database, Docker socket-proxy, hardened dynamic workers and
-Parquet telemetry. The legacy application remains isolated under `legacy/` and
-is not imported by the Hub.
+Parquet telemetry. Simulator, Modbus RTU and Modbus TCP VMs use per-VM reader
+settings, immutable JSON maps, explicit read-resource allowlists and a
+separate storage target/RAM flush buffer. The legacy application remains
+isolated under `legacy/` and is not imported by the Hub.
 
 Start the development stack:
 
@@ -51,7 +53,7 @@ ZSTD-compressed Parquet under
 ## Migration status
 
 - [x] Phase 0: repository split and deployment skeleton
-- [x] Phase 1+2: versioned contracts, FastAPI Hub, roles, Docker orchestration, simulator and Modbus RTU worker
+- [x] Phase 1+2: versioned contracts, FastAPI Hub, roles, Docker orchestration, simulator, Modbus RTU and Modbus TCP workers
 - [x] Phase 3: bounded ingest and Parquet/ZSTD storage
 - [x] Phase 4: WebSocket UI, VM/resource/log administration
 - [ ] Phase 5: Video, SCADA and equipment presets

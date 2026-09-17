@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}Карты · BlackBox{% endblock %}
 {% block content %}
-<section class="bb-card" x-data="bbMapsPage()">
+<section class="bb-card" x-data="bbMapsPage()" data-default-map="{% if maps %}{{ maps[0].version }}::{{ maps[0].protocol }}{% endif %}" x-init="if (!selected && $root.dataset.defaultMap) { selected = $root.dataset.defaultMap; loadSelected(); }">
   <h1 class="bb-page-title">Карты чтения JSON</h1>
   <p class="bb-page-lead">Публикация immutable map-версий отдельно от создания ВМ. После публикации карту можно выбрать при создании или изменении ВМ.</p>
 
@@ -40,6 +40,7 @@
           <select name="protocol">
             <option value="simulator">Simulator</option>
             <option value="modbus_rtu">Modbus RTU</option>
+            <option value="modbus_tcp">Modbus TCP</option>
           </select>
         </label>
         <label>Версия<input name="version" required placeholder="например device-v3"></label>

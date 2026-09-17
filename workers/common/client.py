@@ -55,6 +55,10 @@ class WorkerClient:
     def commands(self) -> list[dict]:
         return list(self.get(f"/api/v1/internal/workers/{self.vm_id}/commands").get("items", []))
 
+    def configuration(self) -> dict:
+        """Fetch the current VM settings and immutable map from Hub."""
+        return self.get(f"/api/v1/internal/workers/{self.vm_id}/config")
+
     def acknowledge(self, command: dict, *, accepted: bool = True, message: str | None = None) -> dict:
         payload = WorkerCommandAck(command_id=UUID(str(command["command_id"])), vm_id=UUID(self.vm_id), accepted=accepted, message=message)
         return self.post("/api/v1/internal/workers/command-ack", payload.model_dump(mode="json"))
@@ -63,8 +67,8 @@ class WorkerClient:
         payload = WorkerError(vm_id=UUID(self.vm_id), code=code, message=message, timestamp=datetime.now(timezone.utc), details=details or {})
         return self.post("/api/v1/internal/workers/error", payload.model_dump(mode="json"))
 
-    def batch(self, sources: dict[str, list], map_version: str) -> dict:
+    def batch(self, sources: dict[str, list], map_version: str, *, quality: str = "good") -> dict:
         self.seq += 1
-        sample = RawSample(seq=self.seq, captured_at=datetime.now(timezone.utc), sources=sources)
+        sample = RawSample(seq=self.seq, captured_at=datetime.now(timezone.utc), sources=sources, quality=quality)
         batch = RawBatch(vm_id=UUID(self.vm_id), protocol=self.protocol, map_version=map_version, seq_start=self.seq, samples=[sample])
         return self.post("/api/v1/internal/workers/batches", batch.model_dump(mode="json"))

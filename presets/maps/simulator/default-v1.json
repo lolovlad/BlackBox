@@ -1,0 +1,13 @@
+{
+  "protocol": "simulator",
+  "version": "default-v1",
+  "preset_id": "simulator-basic",
+  "requests": [
+    {"name": "sim", "fc": 3, "address": 0, "count": 3}
+  ],
+  "fields": [
+    {"name": "counter", "display_name": "Счётчик", "type": "uint16", "source": "sim", "address": 0},
+    {"name": "digital_1", "display_name": "Дискретный вход 1", "type": "bool", "source": "sim", "address": 1},
+    {"name": "analog_1", "display_name": "Аналоговый канал 1", "type": "expr", "expr": "counter * 0.5", "round": true}
+  ]
+}

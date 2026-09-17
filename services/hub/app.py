@@ -6,18 +6,19 @@ import hashlib
 import json
 import os
 import secrets
+import shutil
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from uuid import UUID
 
-from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from bb_platform.contracts import AlarmEvent, MapDocument, RawBatch, ResourceDescriptor, ResourceKind, TagSample, VmCommand, VmLifecycle, VmProtocol, VmStatus, WorkerCommandAck, WorkerError, WorkerHeartbeat, WorkerRegister
 from bb_platform.parser import adapt_legacy_map, parse_batch
@@ -29,6 +30,7 @@ from .registry import PROTOCOLS, protocol_spec
 from .security import ACCESS_COOKIE, CSRF_COOKIE, REFRESH_COOKIE, _decode, csrf_protect, current_user, issue_tokens, set_auth_cookies
 from .state import EventBus
 from .storage import ParquetStore, StorageUnavailable
+from .vm_config import normalize_runtime_config
 
 
 class LoginRequest(BaseModel):
@@ -42,7 +44,11 @@ class VmCreateRequest(BaseModel):
     protocol: VmProtocol
     preset_id: str | None = None
     map_version: str = "default-v1"
-    resources: list[dict[str, Any]] = Field(default_factory=list)
+    # ``resources`` is retained as a wire-compatibility alias.  New clients
+    # should use the explicit read/storage split.
+    resources: list[dict[str, Any]] | None = None
+    read_resources: list[dict[str, Any]] | None = None
+    storage_resource_id: str | None = None
     limits: dict[str, Any] = Field(default_factory=dict)
     config: dict[str, Any] = Field(default_factory=dict)
 
@@ -53,6 +59,8 @@ class VmPatchRequest(BaseModel):
     map_version: str | None = None
     preset_id: str | None = None
     resources: list[dict[str, Any]] | None = None
+    read_resources: list[dict[str, Any]] | None = None
+    storage_resource_id: str | None = None
     limits: dict[str, Any] | None = None
     config: dict[str, Any] | None = None
 
@@ -97,9 +105,31 @@ def _default_map(repo: HubRepository, protocol: VmProtocol, version: str = "defa
     repo.save_map(doc.model_dump(mode="json"))
 
 
+def _load_preset_maps(repo: HubRepository) -> None:
+    """Import checked-in example maps without overwriting immutable versions."""
+    root = Path(__file__).resolve().parents[2] / "presets" / "maps"
+    if not root.is_dir():
+        return
+    for path in sorted(root.rglob("*.json")):
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(payload, dict):
+                continue
+            protocol = VmProtocol(str(payload.pop("protocol", path.parent.name)))
+            version = str(payload.pop("version", path.stem))
+            preset_id = payload.pop("preset_id", None)
+            document = adapt_legacy_map(payload, protocol=protocol, preset_id=preset_id, version=version)
+            repo.save_map(document.model_dump(mode="json"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError):
+            # A bad optional preset must not prevent the Hub from starting;
+            # upload validation still reports the precise error to an admin.
+            continue
+
+
 def _discover_resources(data_root: Path) -> list[dict[str, Any]]:
     found: list[dict[str, Any]] = []
-    serial_paths = sorted(glob.glob("/dev/tty*") + glob.glob("/dev/serial/by-id/*") + glob.glob("COM*"))
+    configured_serial = [x.strip() for x in os.getenv("BB_DISCOVERY_SERIAL_PATHS", "").split(",") if x.strip()]
+    serial_paths = sorted(set(glob.glob("/dev/tty*") + glob.glob("/dev/serial/by-id/*") + glob.glob("COM*") + configured_serial))
     for path in serial_paths:
         found.append(ResourceDescriptor(resource_id=f"serial:{path}", kind=ResourceKind.SERIAL, name=Path(path).name, path=path).model_dump(mode="json"))
     for path in sorted(glob.glob("/dev/gpiochip*")):
@@ -112,9 +142,57 @@ def _discover_resources(data_root: Path) -> list[dict[str, Any]]:
         except OSError:
             continue
     for endpoint in filter(None, (x.strip() for x in os.getenv("BB_DISCOVERY_TCP_ENDPOINTS", "").split(","))):
+        endpoint = endpoint.removeprefix("tcp://").removeprefix("tcp:")
         found.append(ResourceDescriptor(resource_id=f"tcp:{endpoint}", kind=ResourceKind.TCP, name=endpoint, address=endpoint).model_dump(mode="json"))
     data_root.mkdir(parents=True, exist_ok=True)
-    found.append(ResourceDescriptor(resource_id="storage:data", kind=ResourceKind.STORAGE, name="Hub data", path=str(data_root)).model_dump(mode="json"))
+    try:
+        usage = shutil.disk_usage(data_root)
+        storage_meta = {"class": "internal", "free_bytes": int(usage.free), "total_bytes": int(usage.total)}
+    except OSError:
+        storage_meta = {"class": "internal"}
+    found.append(ResourceDescriptor(resource_id="storage:data", kind=ResourceKind.STORAGE, name="Внутренний диск Hub", path=str(data_root), metadata=storage_meta).model_dump(mode="json"))
+    # Additional mounted volumes may be supplied explicitly as
+    # ``id=/container/path`` entries (comma separated).  On a Raspberry Pi we
+    # also notice conventional mount roots; approval is still required before
+    # any VM can write to one of them.
+    storage_candidates: list[tuple[str, str]] = []
+    for item in filter(None, (x.strip() for x in os.getenv("BB_STORAGE_PATHS", "").split(","))):
+        if "=" not in item:
+            continue
+        resource_id, path = item.split("=", 1)
+        resource_id, path = resource_id.strip(), path.strip()
+        if resource_id and path and Path(path).exists():
+            storage_candidates.append((resource_id, path))
+    for mount_root in ("/mnt", "/media", "/run/media"):
+        for candidate in sorted(glob.glob(f"{mount_root}/*")):
+            path = Path(candidate)
+            try:
+                if not path.is_dir() or not os.path.ismount(path):
+                    continue
+            except OSError:
+                continue
+            storage_candidates.append((path.name, str(path)))
+            for nested in sorted(glob.glob(f"{candidate}/*")):
+                nested_path = Path(nested)
+                try:
+                    if nested_path.is_dir() and os.path.ismount(nested_path):
+                        storage_candidates.append((nested_path.name, str(nested_path)))
+                except OSError:
+                    continue
+    seen_storage_paths: set[str] = set()
+    seen_storage_ids: set[str] = set()
+    for resource_id, path in storage_candidates:
+        resolved_path = str(Path(path).resolve())
+        if resource_id == "data" or resolved_path == str(data_root.resolve()) or resolved_path in seen_storage_paths or resource_id in seen_storage_ids:
+            continue
+        seen_storage_paths.add(resolved_path)
+        seen_storage_ids.add(resource_id)
+        try:
+            usage = shutil.disk_usage(path)
+            metadata = {"class": "external", "free_bytes": int(usage.free), "total_bytes": int(usage.total)}
+        except OSError:
+            metadata = {"class": "external"}
+        found.append(ResourceDescriptor(resource_id=f"storage:{resource_id}", kind=ResourceKind.STORAGE, name=resource_id, path=path, metadata=metadata).model_dump(mode="json"))
     return found
 
 
@@ -144,6 +222,8 @@ def _approved_resources(repo: HubRepository, resources: list[dict[str, Any]], *,
         descriptor = repo.resource_by_id(resource_id)
         if descriptor is None or not descriptor["approved"] or not descriptor["available"]:
             raise HTTPException(409, detail={"code": "resource_not_approved", "message": "Resource must be discovered and approved before use", "details": [resource_id]})
+        if descriptor["kind"] == ResourceKind.STORAGE.value:
+            raise HTTPException(422, detail={"code": "storage_resource_in_read_list", "message": "Storage targets belong in storage_resource_id, not read_resources"})
         ids.append(resource_id)
         resolved.append({"resource_id": resource_id, "kind": descriptor["kind"], "name": descriptor["name"], "path": descriptor.get("path"), "address": descriptor.get("address"), "metadata": descriptor.get("metadata", {})})
     conflicts = repo.resource_conflicts(ids, exclude_vm_id=exclude_vm_id)
@@ -152,10 +232,64 @@ def _approved_resources(repo: HubRepository, resources: list[dict[str, Any]], *,
     return resolved
 
 
+def _approved_storage_resource(repo: HubRepository, resource_id: str | None) -> str:
+    resource_id = resource_id or "storage:data"
+    descriptor = repo.resource_by_id(resource_id)
+    if descriptor is None or descriptor["kind"] != ResourceKind.STORAGE.value or not descriptor["approved"] or not descriptor["available"]:
+        raise HTTPException(
+            409,
+            detail={
+                "code": "storage_not_approved",
+                "message": "Storage target must be discovered and approved before use",
+                "details": [resource_id],
+            },
+        )
+    return resource_id
+
+
+def _validate_reader_allowlist(repo: HubRepository, protocol: str, runtime_config: dict[str, Any], resources: list[dict[str, Any]]) -> None:
+    """Require an approved physical source for non-simulator workers."""
+    if protocol == VmProtocol.SIMULATOR.value:
+        return
+    read_ids = {str(item.get("resource_id")) for item in resources if isinstance(item, dict)}
+    reader = runtime_config.get("reader", {}) if isinstance(runtime_config, dict) else {}
+    if protocol == VmProtocol.MODBUS_RTU.value:
+        port = str(reader.get("port", ""))
+        if not any(item_id in {f"serial:{port}", f"serial:COM{port}"} or item_id.endswith(port) for item_id in read_ids):
+            raise HTTPException(409, detail={"code": "read_resource_required", "message": "Approve and select the serial resource used by Modbus RTU"})
+    elif protocol == VmProtocol.MODBUS_TCP.value:
+        endpoint = f"{reader.get('host', '127.0.0.1')}:{reader.get('tcp_port', 502)}"
+        # Loopback is useful for a simulator/fake instrument in the lab; remote
+        # endpoints must still be explicitly discovered and approved.
+        if str(reader.get("host", "127.0.0.1")) not in {"127.0.0.1", "localhost", "::1"} and not any(item_id in {f"tcp:{endpoint}", f"tcp://{endpoint}"} for item_id in read_ids):
+            raise HTTPException(409, detail={"code": "read_resource_required", "message": "Discover and approve the Modbus TCP endpoint before use"})
+
+
+def _resource_ids(resources: list[dict[str, Any]] | None) -> list[str]:
+    return [str(item["resource_id"]) for item in (resources or []) if isinstance(item, dict) and item.get("resource_id")]
+
+
+def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+    """Merge a partial API config without resetting unrelated VM settings."""
+    merged = dict(base)
+    for key, value in override.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _deep_merge(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
+
+
 def create_app(config: HubConfig | None = None, *, docker_client: Any = None) -> FastAPI:
     cfg = config or HubConfig.from_env()
     repo = HubRepository(cfg.db_path)
     repo.bootstrap_admin(cfg.bootstrap_username, cfg.bootstrap_password)
+    _load_preset_maps(repo)
+    # The Hub's own metadata/telemetry disk is the safe default destination;
+    # unlike removable devices it is available as soon as the service starts.
+    repo.upsert_resources(_discover_resources(cfg.data_root))
+    if repo.resource_by_id("storage:data"):
+        repo.approve_resource("storage:data", None)
     bus = EventBus()
     store = ParquetStore(cfg.data_root / "telemetry", min_free_bytes=cfg.telemetry_min_free_bytes, quota_bytes=cfg.telemetry_quota_bytes)
     docker_manager = DockerManager(docker_client, enabled=cfg.docker_enabled)
@@ -171,27 +305,82 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
         app.state.worker_tokens = {}
         app.state.worker_commands = {}
         app.state.log_seen = {}
+        # Keep buffers independent per VM, even when several VMs share one
+        # approved SSD. ``app.state.store`` remains as a compatibility handle
+        # for integrations that used the original default store.
+        app.state.storage_stores = {}
+        app.state.ingest_pending = {}
         app.state.ingest_queue = asyncio.Queue(maxsize=max(1, cfg.queue_size))
         stop_ingest = asyncio.Event()
 
+        def store_for_vm(vm: dict[str, Any], runtime_config: dict[str, Any]) -> ParquetStore:
+            storage_cfg = runtime_config.get("storage", {}) if isinstance(runtime_config, dict) else {}
+            target_id = str(storage_cfg.get("target_resource_id") or vm.get("storage_resource_id") or "storage:data")
+            descriptor = repo.resource_by_id(target_id)
+            if descriptor is None or descriptor.get("kind") != ResourceKind.STORAGE.value or not descriptor.get("approved") or not descriptor.get("available"):
+                raise StorageUnavailable(f"Storage target is not approved: {target_id}")
+            base = Path(descriptor.get("path") or cfg.data_root).resolve()
+            subdir = str(storage_cfg.get("telemetry_subdir") or "telemetry")
+            root = (base / subdir).resolve()
+            try:
+                root.relative_to(base)
+            except ValueError as exc:
+                raise StorageUnavailable("Telemetry directory escapes the approved storage root") from exc
+            key = f"{root}|{vm['id']}"
+            existing = app.state.storage_stores.get(key)
+            if existing is None:
+                existing = ParquetStore(
+                    root,
+                    min_free_bytes=int(storage_cfg.get("min_free_bytes", cfg.telemetry_min_free_bytes)),
+                    quota_bytes=storage_cfg.get("quota_bytes") or cfg.telemetry_quota_bytes,
+                )
+                app.state.storage_stores[key] = existing
+            return existing
+
         async def process_batch(batch: RawBatch) -> dict[str, Any]:
+            idempotency_key = repo.ingest_idempotency_key(str(batch.batch_id), str(batch.vm_id), batch.seq_start)
             with repo.connect() as c:
-                exists = c.execute("SELECT 1 FROM ingest_batches WHERE batch_id=?", (str(batch.batch_id),)).fetchone()
+                exists = c.execute("SELECT 1 FROM ingest_batches WHERE idempotency_key=?", (idempotency_key,)).fetchone()
             if exists:
                 return {"ok": True, "duplicate": True, "count": 0}
             document_payload = repo.map_by_version(batch.map_version, getattr(batch.protocol, "value", batch.protocol))
             if document_payload is None:
                 return {"error": ("map_not_found", "Map version not found", 422)}
+            if not repo.claim_ingest_batch(str(batch.batch_id), str(batch.vm_id), batch.seq_start):
+                return {"ok": True, "duplicate": True, "count": 0}
             try:
+                vm = repo.get_vm(str(batch.vm_id))
+                if vm is None:
+                    repo.release_ingest_batch(str(batch.batch_id), str(batch.vm_id), batch.seq_start)
+                    return {"error": ("vm_not_found", "VM not found", 404)}
+                runtime_config = normalize_runtime_config(vm.get("config", {}), protocol=vm.get("protocol"))
                 parsed = parse_batch(batch, MapDocument(**document_payload))
-                store.append(parsed)
+                runtime_buffer = runtime_config.get("buffer", {})
+                runtime_storage = runtime_config.get("storage", {})
+                store_for_vm(vm, runtime_config).append(
+                    parsed,
+                    flush_rows=int(runtime_buffer.get("ram_rows", 60)),
+                    flush_seconds=float(runtime_storage.get("flush_seconds", 5.0)),
+                )
             except StorageUnavailable as exc:
+                repo.release_ingest_batch(str(batch.batch_id), str(batch.vm_id), batch.seq_start)
+                alarm = AlarmEvent(
+                    vm_id=batch.vm_id,
+                    severity="critical",
+                    code="storage_unavailable",
+                    message=str(exc),
+                    active=True,
+                    payload={"storage_resource_id": vm.get("storage_resource_id") if "vm" in locals() and vm else None},
+                )
+                await bus.publish("alarms", alarm.model_dump(mode="json"))
                 await bus.publish_log(str(batch.vm_id), str(exc), level="error")
                 return {"error": ("storage_unavailable", str(exc), 503)}
             except ValueError as exc:
+                repo.release_ingest_batch(str(batch.batch_id), str(batch.vm_id), batch.seq_start)
                 return {"error": ("invalid_batch", str(exc), 422)}
-            with repo.connect() as c:
-                c.execute("INSERT OR IGNORE INTO ingest_batches VALUES(?,?,?,?)", (str(batch.batch_id), str(batch.vm_id), batch.seq_start, datetime.now(timezone.utc).isoformat()))
+            except Exception:
+                repo.release_ingest_batch(str(batch.batch_id), str(batch.vm_id), batch.seq_start)
+                raise
             for sample in parsed:
                 await bus.publish_tags(sample)
             return {"ok": True, "duplicate": False, "count": len(parsed), "last_seq": parsed[-1].seq}
@@ -210,6 +399,8 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
                     if not future.done():
                         future.set_result({"error": ("ingest_failed", str(exc), 500)})
                 finally:
+                    vm_key = str(batch.vm_id)
+                    app.state.ingest_pending[vm_key] = max(0, app.state.ingest_pending.get(vm_key, 1) - 1)
                     app.state.ingest_queue.task_done()
 
         ingest_task = asyncio.create_task(ingest_loop())
@@ -233,6 +424,26 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
                             # recreate it before attempting to start it.
                             if not vm.get("container_id"):
                                 if vm.get("desired_state") != "running":
+                                    repo.release_resource_leases(vm["id"])
+                                    if vm.get("lifecycle") != VmLifecycle.STOPPED.value or vm.get("last_error"):
+                                        updated = repo.update_vm(vm["id"], {"lifecycle": VmLifecycle.STOPPED.value, "last_error": None})
+                                        if updated:
+                                            await bus.publish_status(_status_from_vm(updated))
+                                    continue
+                                initial_resource_ids = _resource_ids(vm.get("read_resources", vm.get("resources", [])))
+                                conflicts = repo.resource_conflicts(initial_resource_ids, exclude_vm_id=vm["id"])
+                                if not conflicts:
+                                    conflicts = repo.acquire_resource_leases(vm["id"], initial_resource_ids)
+                                if conflicts:
+                                    updated = repo.update_vm(
+                                        vm["id"],
+                                        {
+                                            "lifecycle": VmLifecycle.FAILED.value,
+                                            "last_error": f"Resource conflict: {', '.join(conflicts)}",
+                                        },
+                                    )
+                                    if updated:
+                                        await bus.publish_status(_status_from_vm(updated, health="unhealthy"))
                                     continue
                                 token = app.state.worker_tokens.setdefault(vm["id"], secrets.token_urlsafe(32))
                                 created = await asyncio.to_thread(docker_manager.create, vm, token)
@@ -250,6 +461,24 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
                                     pass
                             desired = vm.get("desired_state", "stopped")
                             actual = inspected.get("lifecycle")
+                            resource_ids = _resource_ids(vm.get("read_resources", vm.get("resources", [])))
+                            if desired == "running":
+                                conflicts = repo.resource_conflicts(resource_ids, exclude_vm_id=vm["id"])
+                                if not conflicts:
+                                    conflicts = repo.acquire_resource_leases(vm["id"], resource_ids)
+                                if conflicts:
+                                    updated = repo.update_vm(
+                                        vm["id"],
+                                        {
+                                            "lifecycle": VmLifecycle.FAILED.value,
+                                            "last_error": f"Resource conflict: {', '.join(conflicts)}",
+                                        },
+                                    )
+                                    if updated:
+                                        await bus.publish_status(_status_from_vm(updated, health="unhealthy"))
+                                    continue
+                            else:
+                                repo.release_resource_leases(vm["id"])
                             if desired == "running" and actual in {VmLifecycle.CREATED.value, VmLifecycle.STOPPED.value, VmLifecycle.FAILED.value, VmLifecycle.UNKNOWN.value}:
                                 await asyncio.to_thread(docker_manager.start, vm)
                                 inspected = await asyncio.to_thread(docker_manager.inspect, vm)
@@ -270,10 +499,12 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
                                 if vm.get("desired_state") == "running":
                                     repo.update_vm(vm["id"], {"container_id": None, "lifecycle": VmLifecycle.PENDING.value, "last_error": str(exc)})
                                 else:
+                                    repo.release_resource_leases(vm["id"])
                                     updated = repo.update_vm(vm["id"], {"container_id": None, "lifecycle": VmLifecycle.STOPPED.value, "last_error": None})
                                     if updated:
                                         await bus.publish_status(_status_from_vm(updated))
                                 continue
+                            repo.release_resource_leases(vm["id"])
                             updated = repo.update_vm(vm["id"], {"lifecycle": VmLifecycle.UNKNOWN.value, "last_error": str(exc)})
                             if updated:
                                 await bus.publish_status(_status_from_vm(updated))
@@ -285,6 +516,11 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
         reconciler_task = asyncio.create_task(reconcile())
         yield
         await app.state.ingest_queue.join()
+        for target_store in app.state.storage_stores.values():
+            try:
+                target_store.flush()
+            except StorageUnavailable:
+                pass
         stop_ingest.set()
         await ingest_task
         stop_reconciler.set()
@@ -384,14 +620,39 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
         spec = protocol_spec(payload.protocol)
         if not spec.enabled:
             raise HTTPException(422, detail={"code": "protocol_unsupported", "message": spec.description})
+        try:
+            runtime_config = normalize_runtime_config(payload.config, protocol=payload.protocol.value)
+        except ValidationError as exc:
+            raise HTTPException(422, detail={"code": "invalid_vm_config", "message": "Invalid VM reader/storage configuration", "details": exc.errors()}) from exc
         if repo.map_by_version(payload.map_version, payload.protocol.value) is None:
             if payload.map_version != "default-v1":
                 raise HTTPException(422, detail={"code": "map_not_found", "message": "Map version not found"})
             _default_map(repo, payload.protocol, payload.map_version)
-        resources = _approved_resources(repo, payload.resources)
-        image = cfg.worker_image_simulator if payload.protocol == VmProtocol.SIMULATOR else cfg.worker_image_rtu
+        read_input = payload.read_resources if payload.read_resources is not None else (payload.resources or [])
+        resources = _approved_resources(repo, read_input)
+        _validate_reader_allowlist(repo, payload.protocol.value, runtime_config, resources)
+        storage_id = _approved_storage_resource(repo, payload.storage_resource_id or runtime_config["storage"]["target_resource_id"])
+        runtime_config["storage"]["target_resource_id"] = storage_id
+        image = {
+            VmProtocol.SIMULATOR: cfg.worker_image_simulator,
+            VmProtocol.MODBUS_RTU: cfg.worker_image_rtu,
+            VmProtocol.MODBUS_TCP: cfg.worker_image_tcp,
+        }.get(payload.protocol)
+        if image is None:
+            raise HTTPException(422, detail={"code": "protocol_unsupported", "message": "No worker image is configured for this protocol"})
         try:
-            vm = repo.create_vm({**payload.model_dump(mode="json"), "resources": resources, "worker_image": image})
+            vm = repo.create_vm({
+                "name": payload.name,
+                "description": payload.description,
+                "protocol": payload.protocol.value,
+                "preset_id": payload.preset_id,
+                "map_version": payload.map_version,
+                "read_resources": resources,
+                "storage_resource_id": storage_id,
+                "limits": payload.limits,
+                "config": runtime_config,
+                "worker_image": image,
+            })
         except Exception as exc:
             return _problem("vm_create_failed", str(exc), 409)
         repo.record_audit(int(account["id"]), "vm.create", vm["id"], {"protocol": vm["protocol"], "map_version": vm["map_version"]})
@@ -412,15 +673,60 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
 
     @app.patch("/api/v1/vms/{vm_id}", dependencies=[Depends(csrf_protect)])
     async def patch_vm(vm_id: str, payload: VmPatchRequest, account=Depends(admin)):
-        if repo.get_vm(vm_id) is None:
+        current_vm = repo.get_vm(vm_id)
+        if current_vm is None:
             raise HTTPException(404, detail={"code": "not_found", "message": "VM not found"})
         values = payload.model_dump(exclude_none=True)
-        if "resources" in values:
-            values["resources"] = _approved_resources(repo, values["resources"], exclude_vm_id=vm_id)
-        current_vm = repo.get_vm(vm_id)
+        if "resources" in values and "read_resources" not in values:
+            values["read_resources"] = values.pop("resources")
+        values.pop("resources", None)
+        if "read_resources" in values:
+            values["read_resources"] = _approved_resources(repo, values["read_resources"], exclude_vm_id=vm_id)
         if "map_version" in values and repo.map_by_version(values["map_version"], current_vm["protocol"] if current_vm else None) is None:
             raise HTTPException(422, detail={"code": "map_not_found", "message": "Map version not found"})
+        if "config" in values or "storage_resource_id" in payload.model_dump(exclude_none=True):
+            raw_config = current_vm.get("config", {})
+            if "config" in values:
+                incoming_config = values.get("config") or {}
+                raw_config = _deep_merge(raw_config, incoming_config)
+            try:
+                runtime_config = normalize_runtime_config(raw_config, protocol=current_vm["protocol"])
+            except ValidationError as exc:
+                raise HTTPException(422, detail={"code": "invalid_vm_config", "message": "Invalid VM reader/storage configuration", "details": exc.errors()}) from exc
+            requested_storage = payload.storage_resource_id or runtime_config["storage"]["target_resource_id"]
+            storage_id = _approved_storage_resource(repo, requested_storage)
+            runtime_config["storage"]["target_resource_id"] = storage_id
+            values["config"] = runtime_config
+            values["storage_resource_id"] = storage_id
+        candidate_resources = values.get("read_resources", current_vm.get("read_resources", current_vm.get("resources", [])))
+        try:
+            candidate_config = normalize_runtime_config(values.get("config", current_vm.get("config", {})), protocol=current_vm["protocol"])
+        except ValidationError as exc:
+            raise HTTPException(422, detail={"code": "invalid_vm_config", "message": "Invalid VM reader/storage configuration", "details": exc.errors()}) from exc
+        _validate_reader_allowlist(repo, current_vm["protocol"], candidate_config, candidate_resources)
+        # If a running VM is edited, update the physical-resource lease before
+        # the worker receives its apply-map command.  ``acquire_resource_leases``
+        # replaces the complete set atomically, releasing resources removed
+        # from the configuration and reserving newly selected ones.
+        running_before_update = current_vm.get("desired_state") == "running" or current_vm.get("lifecycle") in {
+            VmLifecycle.STARTING.value,
+            VmLifecycle.RUNNING.value,
+            VmLifecycle.STOPPING.value,
+        }
+        if running_before_update and "read_resources" in values:
+            conflicts = repo.acquire_resource_leases(vm_id, _resource_ids(values["read_resources"]))
+            if conflicts:
+                return _problem("resource_conflict", "Resource is already leased by another running VM", 409, conflicts)
         updated = repo.update_vm(vm_id, values)
+        if updated and updated.get("desired_state") == "running" and any(key in values for key in {"config", "map_version", "read_resources", "storage_resource_id"}):
+            app.state.worker_commands.setdefault(vm_id, []).append(
+                VmCommand(
+                    vm_id=UUID(vm_id),
+                    action="apply_map",
+                    config_revision=updated["config_revision"],
+                    map_version=updated["map_version"],
+                ).model_dump(mode="json")
+            )
         repo.record_audit(int(account["id"]), "vm.update", vm_id, {"fields": sorted(values)})
         return updated
 
@@ -433,7 +739,12 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
             try:
                 docker_manager.remove(vm)
             except DockerUnavailable:
+                repo.release_resource_leases(vm_id)
                 return _problem("docker_unavailable", "Docker runtime unavailable", 503)
+            except Exception:
+                repo.release_resource_leases(vm_id)
+                raise
+        repo.release_resource_leases(vm_id)
         repo.delete_vm(vm_id)
         repo.record_audit(int(account["id"]), "vm.delete", vm_id)
         return {"ok": True}
@@ -443,15 +754,41 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
         if vm is None:
             raise HTTPException(404, detail={"code": "not_found", "message": "VM not found"})
         try:
+            if action in {"start", "restart"}:
+                read_resources = vm.get("read_resources", vm.get("resources", [])) or []
+                ids = _resource_ids(read_resources)
+                conflicts = repo.resource_conflicts(ids, exclude_vm_id=vm_id)
+                if conflicts:
+                    return _problem(
+                        "resource_conflict",
+                        "Resource is already leased by another running VM",
+                        409,
+                        conflicts,
+                    )
+                conflicts = repo.acquire_resource_leases(vm_id, ids)
+                if conflicts:
+                    return _problem("resource_conflict", "Resource is already leased by another running VM", 409, conflicts)
             token = app.state.worker_tokens.setdefault(vm_id, secrets.token_urlsafe(32))
+            inspected: dict[str, Any] | None = None
             if vm.get("container_id"):
                 try:
-                    docker_manager.inspect(vm)
+                    inspected = docker_manager.inspect(vm)
                 except Exception as exc:
                     if DockerManager.is_not_found(exc):
+                        repo.release_resource_leases(vm_id)
                         vm = repo.update_vm(vm_id, {"container_id": None, "lifecycle": VmLifecycle.PENDING.value, "last_error": None}) or vm
                     else:
                         raise
+            if action == "stop" and not vm.get("container_id"):
+                repo.update_vm(vm_id, {"desired_state": "stopped", "lifecycle": VmLifecycle.STOPPED.value})
+                repo.release_resource_leases(vm_id)
+                vm = repo.get_vm(vm_id) or vm
+                repo.record_audit(int(account["id"]), f"vm.{action}", vm_id, {"config_revision": vm.get("config_revision")})
+                return vm
+            if action == "start" and inspected and inspected.get("lifecycle") == VmLifecycle.RUNNING.value:
+                vm = repo.update_vm(vm_id, {"desired_state": "running", "lifecycle": VmLifecycle.RUNNING.value, "last_error": None}) or vm
+                repo.record_audit(int(account["id"]), f"vm.{action}", vm_id, {"config_revision": vm.get("config_revision")})
+                return vm
             if not vm.get("container_id"):
                 created = docker_manager.create(vm, token)
                 vm = repo.update_vm(vm_id, {"container_id": created["container_id"], "lifecycle": created["lifecycle"]}) or vm
@@ -460,19 +797,31 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
                 docker_manager.start(vm)
                 vm = repo.update_vm(vm_id, {"lifecycle": VmLifecycle.RUNNING.value}) or vm
             elif action == "stop":
+                if inspected and inspected.get("lifecycle") in {VmLifecycle.CREATED.value, VmLifecycle.STOPPED.value}:
+                    repo.update_vm(vm_id, {"lifecycle": VmLifecycle.STOPPED.value, "desired_state": "stopped"})
+                    repo.release_resource_leases(vm_id)
+                    vm = repo.get_vm(vm_id) or vm
+                    repo.record_audit(int(account["id"]), f"vm.{action}", vm_id, {"config_revision": vm.get("config_revision")})
+                    return vm
                 repo.update_vm(vm_id, {"lifecycle": VmLifecycle.STOPPING.value, "desired_state": "stopped"})
                 docker_manager.stop(vm)
                 vm = repo.update_vm(vm_id, {"lifecycle": VmLifecycle.STOPPED.value}) or vm
+                repo.release_resource_leases(vm_id)
             elif action == "restart":
                 repo.update_vm(vm_id, {"desired_state": "running", "lifecycle": VmLifecycle.STARTING.value})
-                docker_manager.restart(vm)
+                if inspected and inspected.get("lifecycle") == VmLifecycle.RUNNING.value:
+                    docker_manager.restart(vm)
+                else:
+                    docker_manager.start(vm)
                 vm = repo.update_vm(vm_id, {"lifecycle": VmLifecycle.RUNNING.value}) or vm
             repo.record_audit(int(account["id"]), f"vm.{action}", vm_id, {"config_revision": vm.get("config_revision")})
             return vm
         except DockerUnavailable as exc:
+            repo.release_resource_leases(vm_id)
             repo.update_vm(vm_id, {"lifecycle": VmLifecycle.FAILED.value, "last_error": str(exc)})
             return _problem("docker_unavailable", str(exc), 503)
         except Exception as exc:
+            repo.release_resource_leases(vm_id)
             repo.update_vm(vm_id, {"lifecycle": VmLifecycle.FAILED.value, "last_error": str(exc)})
             return _problem("vm_action_failed", str(exc), 502)
 
@@ -552,14 +901,15 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
             return _problem("user_create_failed", str(exc), 409)
 
     @app.get("/api/v1/vms/{vm_id}/logs")
-    async def vm_logs(vm_id: str, account=Depends(user)):
+    async def vm_logs(vm_id: str, tail: int = Query(default=200, ge=1, le=1000), account=Depends(user)):
         vm = repo.get_vm(vm_id)
         if vm is None:
             raise HTTPException(404, detail={"code": "not_found", "message": "VM not found"})
         try:
-            return {"vm_id": vm_id, "lines": docker_manager.logs(vm)}
+            lines = docker_manager.logs(vm, tail=tail)
+            return {"vm_id": vm_id, "lines": lines[-tail:], "tail": tail, "truncated": len(lines) > tail}
         except Exception as exc:
-            return {"vm_id": vm_id, "lines": [], "error": str(exc)}
+            return {"vm_id": vm_id, "lines": [], "tail": tail, "truncated": False, "error": str(exc)}
 
     @app.get("/api/v1/resources")
     async def resources(account=Depends(admin)):
@@ -568,6 +918,7 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
     @app.post("/api/v1/resources/scan", dependencies=[Depends(csrf_protect)])
     async def scan_resources(account=Depends(admin)):
         items = repo.upsert_resources(_discover_resources(cfg.data_root))
+        repo.approve_resource("storage:data", None)
         repo.record_audit(int(account["id"]), "resources.scan", None, {"count": len(items)})
         return {"items": items}
 
@@ -609,6 +960,22 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
         app.state.worker_commands[vm_id] = []
         return {"items": commands}
 
+    @app.get("/api/v1/internal/workers/{vm_id}/config")
+    async def worker_config(vm_id: str, request: Request):
+        """Return the current reader settings and immutable map to a worker."""
+        vm = worker_auth(request, vm_id)
+        document = repo.map_by_version(vm["map_version"], vm["protocol"])
+        if document is None:
+            raise HTTPException(409, detail={"code": "map_not_found", "message": "VM map is not available"})
+        return {
+            "vm_id": vm_id,
+            "protocol": vm["protocol"],
+            "config_revision": vm["config_revision"],
+            "map_version": vm["map_version"],
+            "config": vm.get("config", {}),
+            "map": {"requests": document.get("requests", []), "fields": document.get("fields", [])},
+        }
+
     @app.post("/api/v1/internal/workers/heartbeat")
     async def worker_heartbeat(payload: WorkerHeartbeat, request: Request):
         worker_auth(request, str(payload.vm_id))
@@ -620,11 +987,23 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
 
     @app.post("/api/v1/internal/workers/batches")
     async def worker_batch(batch: RawBatch, request: Request):
-        worker_auth(request, str(batch.vm_id))
+        vm = worker_auth(request, str(batch.vm_id))
+        try:
+            runtime_config = normalize_runtime_config(vm.get("config", {}), protocol=vm.get("protocol"))
+            max_pending = int(runtime_config.get("buffer", {}).get("max_queue", cfg.queue_size))
+        except (TypeError, ValueError, ValidationError):
+            max_pending = cfg.queue_size
+        pending_key = str(batch.vm_id)
+        if app.state.ingest_pending.get(pending_key, 0) >= max(1, max_pending):
+            alarm = AlarmEvent(vm_id=batch.vm_id, severity="critical", code="ingest_backpressure", message="VM ingest queue is full", active=True)
+            await bus.publish("alarms", alarm.model_dump(mode="json"))
+            await bus.publish_log(pending_key, alarm.message, level="error")
+            raise HTTPException(503, detail={"code": "ingest_backpressure", "message": alarm.message})
         try:
             loop = asyncio.get_running_loop()
             future = loop.create_future()
             app.state.ingest_queue.put_nowait((batch, future))
+            app.state.ingest_pending[pending_key] = app.state.ingest_pending.get(pending_key, 0) + 1
         except asyncio.QueueFull:
             alarm = AlarmEvent(vm_id=batch.vm_id, severity="critical", code="ingest_backpressure", message="Ingest queue is full", active=True)
             await bus.publish("alarms", alarm.model_dump(mode="json"))
@@ -730,7 +1109,7 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
             return RedirectResponse("/login" if exc.status_code == 401 else "/dashboard", status_code=303)
 
     def _ensure_default_maps() -> None:
-        for protocol in (VmProtocol.SIMULATOR, VmProtocol.MODBUS_RTU):
+        for protocol in (VmProtocol.SIMULATOR, VmProtocol.MODBUS_RTU, VmProtocol.MODBUS_TCP):
             if protocol_spec(protocol).enabled:
                 _default_map(repo, protocol, "default-v1")
 
@@ -763,7 +1142,7 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
             lines = docker_manager.logs(vm, tail=200) if vm.get("container_id") else []
         except Exception:
             lines = []
-        return templates.TemplateResponse(request=request, name="vm_detail.html", context={"user": account, "vm": vm, "lines": lines})
+        return templates.TemplateResponse(request=request, name="vm_detail.html", context={"user": account, "vm": vm, "lines": lines, "map_record": repo.map_record(vm["map_version"], vm["protocol"])})
 
     @app.get("/admin/vms", response_class=HTMLResponse)
     async def admin_vms_page(request: Request):
@@ -772,10 +1151,12 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
             return account
         _ensure_default_maps()
         approved = [r for r in repo.list_resources() if r.get("approved")]
+        read_resources = [r for r in approved if r.get("kind") != ResourceKind.STORAGE.value]
+        storage_resources = [r for r in approved if r.get("kind") == ResourceKind.STORAGE.value]
         return templates.TemplateResponse(
             request=request,
             name="admin_vms.html",
-            context={"user": account, "vms": repo.list_vms(), "maps": repo.list_maps(), "approved_resources": approved},
+            context={"user": account, "vms": repo.list_vms(), "maps": repo.list_maps(), "approved_resources": read_resources, "storage_resources": storage_resources},
         )
 
     @app.get("/admin/vms/{vm_id}/edit", response_class=HTMLResponse)
@@ -790,7 +1171,13 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
         return templates.TemplateResponse(
             request=request,
             name="vm_edit.html",
-            context={"user": account, "vm": vm, "maps": repo.list_maps()},
+            context={
+                "user": account,
+                "vm": vm,
+                "maps": repo.list_maps(),
+                "read_resources": [r for r in repo.list_resources() if r.get("approved") and r.get("kind") != ResourceKind.STORAGE.value],
+                "storage_resources": [r for r in repo.list_resources() if r.get("approved") and r.get("kind") == ResourceKind.STORAGE.value],
+            },
         )
 
     @app.get("/admin/maps", response_class=HTMLResponse)
@@ -810,7 +1197,17 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
         account = _require_admin_html(request)
         if isinstance(account, RedirectResponse):
             return account
-        return templates.TemplateResponse(request=request, name="resources.html", context={"user": account, "resources": repo.list_resources()})
+        resources = repo.list_resources()
+        return templates.TemplateResponse(
+            request=request,
+            name="resources.html",
+            context={
+                "user": account,
+                "resources": resources,
+                "read_resources": [r for r in resources if r.get("kind") != ResourceKind.STORAGE.value],
+                "storage_resources": [r for r in resources if r.get("kind") == ResourceKind.STORAGE.value],
+            },
+        )
 
     @app.get("/admin/logs", response_class=HTMLResponse)
     async def admin_logs_page(request: Request):

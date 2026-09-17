@@ -49,7 +49,10 @@ class HubRepository:
                     id TEXT PRIMARY KEY, name TEXT UNIQUE NOT NULL, description TEXT NOT NULL DEFAULT '',
                     protocol TEXT NOT NULL, preset_id TEXT, map_version TEXT NOT NULL,
                     worker_image TEXT NOT NULL, desired_state TEXT NOT NULL DEFAULT 'stopped',
-                    resources_json TEXT NOT NULL DEFAULT '[]', limits_json TEXT NOT NULL DEFAULT '{}',
+                    resources_json TEXT NOT NULL DEFAULT '[]',
+                    read_resources_json TEXT NOT NULL DEFAULT '[]',
+                    storage_resource_id TEXT,
+                    limits_json TEXT NOT NULL DEFAULT '{}',
                     config_json TEXT NOT NULL DEFAULT '{}', config_revision INTEGER NOT NULL DEFAULT 1,
                     lifecycle TEXT NOT NULL DEFAULT 'pending', container_id TEXT, last_error TEXT, heartbeat_at TEXT,
                     created_at TEXT NOT NULL, updated_at TEXT NOT NULL
@@ -65,6 +68,9 @@ class HubRepository:
                     available INTEGER NOT NULL DEFAULT 1, approved INTEGER NOT NULL DEFAULT 0,
                     approved_by INTEGER, approved_at TEXT, updated_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS resource_leases (
+                    resource_id TEXT PRIMARY KEY, vm_id TEXT NOT NULL, leased_at TEXT NOT NULL
+                );
                 CREATE TABLE IF NOT EXISTS lifecycle_events (
                     id INTEGER PRIMARY KEY AUTOINCREMENT, vm_id TEXT NOT NULL,
                     event TEXT NOT NULL, payload_json TEXT NOT NULL, created_at TEXT NOT NULL
@@ -74,8 +80,10 @@ class HubRepository:
                     target TEXT, payload_json TEXT NOT NULL, created_at TEXT NOT NULL
                 );
                 CREATE TABLE IF NOT EXISTS ingest_batches (
-                    batch_id TEXT PRIMARY KEY, vm_id TEXT NOT NULL, seq_start INTEGER NOT NULL,
-                    created_at TEXT NOT NULL
+                    batch_id TEXT NOT NULL, vm_id TEXT NOT NULL, seq_start INTEGER NOT NULL,
+                    idempotency_key TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    PRIMARY KEY(vm_id, batch_id, seq_start)
                 );
                 """
             )
@@ -83,6 +91,52 @@ class HubRepository:
             columns = {row[1] for row in c.execute("PRAGMA table_info(virtual_machines)").fetchall()}
             if "heartbeat_at" not in columns:
                 c.execute("ALTER TABLE virtual_machines ADD COLUMN heartbeat_at TEXT")
+            if "read_resources_json" not in columns:
+                c.execute("ALTER TABLE virtual_machines ADD COLUMN read_resources_json TEXT NOT NULL DEFAULT '[]'")
+                c.execute("UPDATE virtual_machines SET read_resources_json=resources_json WHERE read_resources_json='[]' OR read_resources_json IS NULL")
+            if "storage_resource_id" not in columns:
+                c.execute("ALTER TABLE virtual_machines ADD COLUMN storage_resource_id TEXT")
+            ingest_info = c.execute("PRAGMA table_info(ingest_batches)").fetchall()
+            ingest_columns = {row[1] for row in ingest_info}
+            ingest_pk = [row[1] for row in ingest_info if row[5]]
+            # Pre-vNext databases used batch_id as the sole primary key.  A
+            # batch id is only unique within a VM/sequence in the worker
+            # contract, so rebuild that small metadata table with the proper
+            # composite primary key while preserving existing rows.
+            if ingest_pk == ["batch_id"] or "idempotency_key" not in ingest_columns:
+                c.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS ingest_batches_v2 (
+                        batch_id TEXT NOT NULL, vm_id TEXT NOT NULL, seq_start INTEGER NOT NULL,
+                        idempotency_key TEXT NOT NULL,
+                        created_at TEXT NOT NULL,
+                        PRIMARY KEY(vm_id, batch_id, seq_start)
+                    )
+                    """
+                )
+                if "idempotency_key" in ingest_columns:
+                    c.execute(
+                        """
+                        INSERT OR IGNORE INTO ingest_batches_v2(batch_id,vm_id,seq_start,idempotency_key,created_at)
+                        SELECT batch_id,vm_id,seq_start,
+                               COALESCE(idempotency_key, vm_id || ':' || batch_id || ':' || seq_start),
+                               created_at
+                        FROM ingest_batches
+                        """
+                    )
+                else:
+                    c.execute(
+                        """
+                        INSERT OR IGNORE INTO ingest_batches_v2(batch_id,vm_id,seq_start,idempotency_key,created_at)
+                        SELECT batch_id,vm_id,seq_start,
+                               vm_id || ':' || batch_id || ':' || seq_start,
+                               created_at
+                        FROM ingest_batches
+                        """
+                    )
+                c.execute("DROP TABLE ingest_batches")
+                c.execute("ALTER TABLE ingest_batches_v2 RENAME TO ingest_batches")
+            c.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_ingest_batches_idempotency ON ingest_batches(idempotency_key)")
 
     def bootstrap_admin(self, username: str, password: str) -> None:
         if not password:
@@ -173,10 +227,27 @@ class HubRepository:
     def create_vm(self, values: dict[str, Any]) -> dict[str, Any]:
         vm_id = str(values.get("id") or uuid4())
         now = datetime.now(timezone.utc).isoformat()
+        read_resources = values.get("read_resources", values.get("resources", []))
         with self.connect() as c:
             c.execute(
-                "INSERT INTO virtual_machines(id,name,description,protocol,preset_id,map_version,worker_image,desired_state,resources_json,limits_json,config_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                (vm_id, values["name"], values.get("description", ""), values["protocol"], values.get("preset_id"), values["map_version"], values["worker_image"], "stopped", json.dumps(values.get("resources", [])), json.dumps(values.get("limits", {})), json.dumps(values.get("config", {})), now, now),
+                "INSERT INTO virtual_machines(id,name,description,protocol,preset_id,map_version,worker_image,desired_state,resources_json,read_resources_json,storage_resource_id,limits_json,config_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    vm_id,
+                    values["name"],
+                    values.get("description", ""),
+                    values["protocol"],
+                    values.get("preset_id"),
+                    values["map_version"],
+                    values["worker_image"],
+                    "stopped",
+                    json.dumps(read_resources),
+                    json.dumps(read_resources),
+                    values.get("storage_resource_id"),
+                    json.dumps(values.get("limits", {})),
+                    json.dumps(values.get("config", {})),
+                    now,
+                    now,
+                ),
             )
         return self.get_vm(vm_id)  # type: ignore[return-value]
 
@@ -191,24 +262,52 @@ class HubRepository:
         return None if row is None else self._vm_row(row)
 
     def update_vm(self, vm_id: str, values: dict[str, Any]) -> dict[str, Any] | None:
-        allowed = {k: v for k, v in values.items() if k in {"name", "description", "desired_state", "map_version", "preset_id", "resources", "limits", "config", "lifecycle", "container_id", "last_error", "heartbeat_at", "worker_image"}}
+        allowed = {k: v for k, v in values.items() if k in {"name", "description", "desired_state", "map_version", "preset_id", "resources", "read_resources", "storage_resource_id", "limits", "config", "lifecycle", "container_id", "last_error", "heartbeat_at", "worker_image"}}
         if not allowed:
             return self.get_vm(vm_id)
         sets: list[str] = []
         args: list[Any] = []
         for key, value in allowed.items():
-            col = {"resources": "resources_json", "limits": "limits_json", "config": "config_json"}.get(key, key)
+            col = {"resources": "resources_json", "read_resources": "read_resources_json", "limits": "limits_json", "config": "config_json"}.get(key, key)
             if key in {"resources", "limits", "config"}:
                 value = json.dumps(value)
+            if key == "resources":
+                sets.append("read_resources_json=?")
+                args.append(value)
+            if key == "read_resources":
+                value = json.dumps(value)
+                # Keep the old field in sync for clients written before the
+                # explicit read/storage split.
+                sets.append("resources_json=?")
+                args.append(value)
             sets.append(f"{col}=?")
             args.append(value)
-        if any(key in allowed for key in {"name", "description", "map_version", "preset_id", "resources", "limits", "config", "worker_image"}):
+        if any(key in allowed for key in {"name", "description", "map_version", "preset_id", "resources", "read_resources", "storage_resource_id", "limits", "config", "worker_image"}):
             sets.append("config_revision=config_revision+1")
         sets.append("updated_at=?")
         args.extend([datetime.now(timezone.utc).isoformat(), vm_id])
         with self.connect() as c:
+            previous = c.execute("SELECT lifecycle FROM virtual_machines WHERE id=?", (vm_id,)).fetchone()
             c.execute(f"UPDATE virtual_machines SET {','.join(sets)} WHERE id=?", args)
+            if previous is not None and "lifecycle" in allowed and previous["lifecycle"] != allowed["lifecycle"]:
+                c.execute(
+                    "INSERT INTO lifecycle_events(vm_id,event,payload_json,created_at) VALUES(?,?,?,?)",
+                    (
+                        vm_id,
+                        str(allowed["lifecycle"]),
+                        json.dumps({"from": previous["lifecycle"], "to": allowed["lifecycle"]}, ensure_ascii=False),
+                        datetime.now(timezone.utc).isoformat(),
+                    ),
+                )
         return self.get_vm(vm_id)
+
+    def list_lifecycle_events(self, vm_id: str, *, limit: int = 200) -> list[dict[str, Any]]:
+        with self.connect() as c:
+            rows = c.execute(
+                "SELECT * FROM lifecycle_events WHERE vm_id=? ORDER BY id DESC LIMIT ?",
+                (vm_id, max(1, min(limit, 1000))),
+            ).fetchall()
+        return [dict(row) | {"payload": json.loads(row["payload_json"])} for row in rows]
 
     def delete_vm(self, vm_id: str) -> bool:
         with self.connect() as c:
@@ -277,28 +376,113 @@ class HubRepository:
         approved = {row["resource_id"] for row in self.list_resources() if row["approved"] and row["available"]}
         conflicts = [rid for rid in resource_ids if rid not in approved]
         exclusive = {row["resource_id"] for row in self.list_resources() if row["kind"] in {"serial", "can", "gpio"}}
+        with self.connect() as c:
+            leased_rows = c.execute("SELECT resource_id,vm_id FROM resource_leases WHERE resource_id IN (%s)" % ",".join("?" for _ in resource_ids), resource_ids).fetchall()
+        for row in leased_rows:
+            if row["resource_id"] in exclusive and (not exclude_vm_id or row["vm_id"] != exclude_vm_id):
+                conflicts.append(row["resource_id"])
         for vm in self.list_vms():
             if exclude_vm_id and vm["id"] == exclude_vm_id:
                 continue
-            if vm.get("desired_state") != "running" and vm.get("lifecycle") not in {"created", "starting", "running", "stopping"}:
+            if vm.get("desired_state") != "running" and vm.get("lifecycle") not in {"starting", "running", "stopping"}:
                 continue
-            for item in vm.get("resources", []):
+            for item in vm.get("read_resources", vm.get("resources", [])):
                 rid = item.get("resource_id") if isinstance(item, dict) else str(item)
                 if rid in resource_ids and rid in exclusive:
                     conflicts.append(rid)
         return sorted(set(conflicts))
 
+    def acquire_resource_leases(self, vm_id: str, resource_ids: list[str]) -> list[str]:
+        """Atomically lease exclusive physical resources for a running VM."""
+        ids = sorted(set(str(rid) for rid in resource_ids if rid))
+        exclusive = {
+            row["resource_id"]
+            for row in self.list_resources()
+            if row["resource_id"] in ids and row["kind"] in {"serial", "can", "gpio"}
+        }
+        now = datetime.now(timezone.utc).isoformat()
+        with self.connect() as c:
+            c.execute("BEGIN IMMEDIATE")
+            conflicts: list[str] = []
+            for rid in sorted(exclusive):
+                row = c.execute("SELECT vm_id FROM resource_leases WHERE resource_id=?", (rid,)).fetchone()
+                if row is not None and row["vm_id"] != vm_id:
+                    conflicts.append(rid)
+            if conflicts:
+                c.rollback()
+                return conflicts
+            # A VM may have been edited while running.  Replace its complete
+            # lease set in the same transaction so a removed serial/CAN/GPIO
+            # resource is released immediately and never remains stale.
+            if exclusive:
+                placeholders = ",".join("?" for _ in exclusive)
+                c.execute(
+                    f"DELETE FROM resource_leases WHERE vm_id=? AND resource_id NOT IN ({placeholders})",
+                    [vm_id, *sorted(exclusive)],
+                )
+            else:
+                c.execute("DELETE FROM resource_leases WHERE vm_id=?", (vm_id,))
+            for rid in sorted(exclusive):
+                c.execute(
+                    "INSERT INTO resource_leases(resource_id,vm_id,leased_at) VALUES(?,?,?) ON CONFLICT(resource_id) DO UPDATE SET vm_id=excluded.vm_id,leased_at=excluded.leased_at",
+                    (rid, vm_id, now),
+                )
+            c.commit()
+        return []
+
+    def release_resource_leases(self, vm_id: str, resource_ids: list[str] | None = None) -> None:
+        with self.connect() as c:
+            if resource_ids:
+                ids = sorted(set(str(rid) for rid in resource_ids if rid))
+                if not ids:
+                    return
+                placeholders = ",".join("?" for _ in ids)
+                c.execute(
+                    f"DELETE FROM resource_leases WHERE vm_id=? AND resource_id IN ({placeholders})",
+                    [vm_id, *ids],
+                )
+            else:
+                c.execute("DELETE FROM resource_leases WHERE vm_id=?", (vm_id,))
+
+    @staticmethod
+    def ingest_idempotency_key(batch_id: str, vm_id: str, seq_start: int) -> str:
+        return f"{vm_id}:{batch_id}:{int(seq_start)}"
+
+    def claim_ingest_batch(self, batch_id: str, vm_id: str, seq_start: int) -> bool:
+        """Reserve a batch key before parsing/writing to close duplicate races."""
+        key = self.ingest_idempotency_key(batch_id, vm_id, seq_start)
+        with self.connect() as c:
+            cur = c.execute(
+                "INSERT OR IGNORE INTO ingest_batches(batch_id,vm_id,seq_start,idempotency_key,created_at) VALUES(?,?,?,?,?)",
+                (batch_id, vm_id, int(seq_start), key, datetime.now(timezone.utc).isoformat()),
+            )
+        return cur.rowcount == 1
+
+    def release_ingest_batch(self, batch_id: str, vm_id: str, seq_start: int) -> None:
+        key = self.ingest_idempotency_key(batch_id, vm_id, seq_start)
+        with self.connect() as c:
+            c.execute("DELETE FROM ingest_batches WHERE idempotency_key=?", (key,))
+
     def upsert_resources(self, resources: list[dict[str, Any]]) -> list[dict[str, Any]]:
         now = datetime.now(timezone.utc).isoformat()
         with self.connect() as c:
+            seen_ids = [str(r["resource_id"]) for r in resources if r.get("resource_id")]
+            if seen_ids:
+                placeholders = ",".join("?" for _ in seen_ids)
+                c.execute(
+                    f"UPDATE discovered_resources SET available=0,updated_at=? WHERE resource_id NOT IN ({placeholders})",
+                    [now, *seen_ids],
+                )
+            else:
+                c.execute("UPDATE discovered_resources SET available=0,updated_at=?", (now,))
             for r in resources:
                 c.execute(
-                    "INSERT INTO discovered_resources(resource_id,kind,name,path,address,metadata_json,updated_at) VALUES(?,?,?,?,?,?,?) ON CONFLICT(resource_id) DO UPDATE SET available=1,metadata_json=excluded.metadata_json,updated_at=excluded.updated_at",
+                    "INSERT INTO discovered_resources(resource_id,kind,name,path,address,metadata_json,updated_at) VALUES(?,?,?,?,?,?,?) ON CONFLICT(resource_id) DO UPDATE SET kind=excluded.kind,name=excluded.name,path=excluded.path,address=excluded.address,available=1,metadata_json=excluded.metadata_json,updated_at=excluded.updated_at",
                     (r["resource_id"], r["kind"], r["name"], r.get("path"), r.get("address"), json.dumps(r.get("metadata", {})), now),
                 )
         return self.list_resources()
 
-    def approve_resource(self, resource_id: str, user_id: int) -> bool:
+    def approve_resource(self, resource_id: str, user_id: int | None = None) -> bool:
         with self.connect() as c:
             cur = c.execute("UPDATE discovered_resources SET approved=1,approved_by=?,approved_at=? WHERE resource_id=?", (user_id, datetime.now(timezone.utc).isoformat(), resource_id))
         return cur.rowcount > 0
@@ -306,6 +490,14 @@ class HubRepository:
     @staticmethod
     def _vm_row(row: sqlite3.Row) -> dict[str, Any]:
         out = dict(row)
-        for key in ("resources", "limits", "config"):
-            out[key] = json.loads(out.pop(f"{key}_json"))
+        for key in ("resources", "read_resources", "limits", "config"):
+            storage_key = f"{key}_json"
+            if storage_key not in out:
+                continue
+            raw = out.pop(storage_key) or ("[]" if key in {"resources", "read_resources"} else "{}")
+            out[key] = json.loads(raw)
+        if not out.get("read_resources"):
+            out["read_resources"] = list(out.get("resources", []))
+        if "resources" not in out:
+            out["resources"] = list(out.get("read_resources", []))
         return out

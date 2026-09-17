@@ -53,10 +53,15 @@ class DockerManager:
             "BB_BOOTSTRAP_TOKEN": bootstrap_token,
             "BB_MAP_VERSION": vm["map_version"],
             "BB_MODBUS_CONFIG": json.dumps(vm.get("config", {})),
+            "BB_PROTOCOL_CONFIG": json.dumps(vm.get("config", {})),
+            "BB_CONFIG_REVISION": str(vm.get("config_revision", 0)),
         }
+        runtime = vm.get("config", {}) if isinstance(vm.get("config", {}), dict) else {}
+        reader = runtime.get("reader", {}) if isinstance(runtime.get("reader", {}), dict) else {}
+        environment["BB_INTERVAL"] = str(reader.get("poll_interval_sec", runtime.get("poll_interval", "0.12")))
         limits = vm.get("limits", {}) or {}
         devices = []
-        for resource in vm.get("resources", []) or []:
+        for resource in vm.get("read_resources", vm.get("resources", [])) or []:
             path = resource.get("path") if isinstance(resource, dict) else None
             if path and str(path).startswith("/dev/"):
                 devices.append(f"{path}:{path}:rwm")

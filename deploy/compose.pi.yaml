@@ -1,0 +1,8 @@
+# Optional Raspberry Pi override for an SSD mounted on the host.
+# Usage: BB_COMPOSE_OVERRIDE=deploy/compose.pi.yaml ./bbctl up
+services:
+  hub:
+    volumes:
+      - ${BB_EXTERNAL_STORAGE_HOST_PATH:?Set BB_EXTERNAL_STORAGE_HOST_PATH to the mounted SSD directory}:/external-storage
+    environment:
+      BB_STORAGE_PATHS: ${BB_STORAGE_PATHS:-ssd=/external-storage}

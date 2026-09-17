@@ -17,7 +17,11 @@
     <pre id="live-tags" class="bb-live-tags"></pre>
   </div>
   <h2 class="bb-section-title">Последние логи</h2>
-  <pre class="bb-log-tail">{% for line in lines %}{{ line }}
+  <pre class="bb-log-tail" data-live-logs="{{ vm.id }}" data-log-limit="200">{% for line in lines %}{{ line }}
 {% else %}Логов пока нет.{% endfor %}</pre>
+  <h2 class="bb-section-title">JSON-карта чтения</h2>
+  {% if map_record %}
+  <pre class="bb-json-view bb-live-tags">{{ map_record.document | tojson(indent=2) }}</pre>
+  {% else %}<p class="bb-muted">Карта не найдена.</p>{% endif %}
 </section>
 {% endblock %}

@@ -15,6 +15,7 @@ class HubConfig:
     bootstrap_username: str = "admin"
     bootstrap_password: str = ""
     worker_image_rtu: str = "blackbox/worker-modbus-rtu:dev"
+    worker_image_tcp: str = "blackbox/worker-modbus-tcp:dev"
     worker_image_simulator: str = "blackbox/worker-simulator:dev"
     docker_enabled: bool = True
     queue_size: int = 2048
@@ -33,6 +34,7 @@ class HubConfig:
             bootstrap_username=os.getenv("BB_BOOTSTRAP_ADMIN_USERNAME", "admin"),
             bootstrap_password=os.getenv("BB_BOOTSTRAP_ADMIN_PASSWORD", "admin"),
             worker_image_rtu=os.getenv("BB_WORKER_IMAGE_RTU", cls.worker_image_rtu),
+            worker_image_tcp=os.getenv("BB_WORKER_IMAGE_TCP", cls.worker_image_tcp),
             worker_image_simulator=os.getenv("BB_WORKER_IMAGE_SIMULATOR", cls.worker_image_simulator),
             docker_enabled=os.getenv("BB_DOCKER_ENABLED", "1") == "1",
             cookie_secure=os.getenv("BB_COOKIE_SECURE", "0") == "1",

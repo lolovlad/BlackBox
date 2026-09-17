@@ -30,6 +30,12 @@ services:
       BB_BOOTSTRAP_ADMIN_PASSWORD: ${BB_BOOTSTRAP_ADMIN_PASSWORD:-admin}
       DOCKER_HOST: tcp://docker-socket-proxy:2375
       BB_WORKER_NETWORK: blackbox_control
+      BB_WORKER_IMAGE_RTU: ${BB_WORKER_IMAGE_RTU:-blackbox/worker-modbus-rtu:dev}
+      BB_WORKER_IMAGE_TCP: ${BB_WORKER_IMAGE_TCP:-blackbox/worker-modbus-tcp:dev}
+      BB_WORKER_IMAGE_SIMULATOR: ${BB_WORKER_IMAGE_SIMULATOR:-blackbox/worker-simulator:dev}
+      BB_STORAGE_PATHS: ${BB_STORAGE_PATHS:-}
+      BB_DISCOVERY_SERIAL_PATHS: ${BB_DISCOVERY_SERIAL_PATHS:-}
+      BB_DISCOVERY_TCP_ENDPOINTS: ${BB_DISCOVERY_TCP_ENDPOINTS:-}
     ports:
       - "${BB_HUB_PORT:-8080}:8080"
     depends_on:
@@ -38,7 +44,6 @@ services:
     networks: [bb-control]
     volumes:
       - blackbox-data:/data
-      - ./ui:/app/ui:ro
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/healthz')"]
       interval: 10s
@@ -59,6 +64,13 @@ services:
     build:
       context: .
       dockerfile: workers/modbus-rtu/Dockerfile
+
+  worker-modbus-tcp-image:
+    profiles: ["build"]
+    image: blackbox/worker-modbus-tcp:dev
+    build:
+      context: .
+      dockerfile: workers/modbus-tcp/Dockerfile
 
   legacy-web:
     profiles: ["legacy"]

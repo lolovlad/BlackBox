@@ -17,7 +17,7 @@ class ProtocolSpec:
 
 PROTOCOLS: tuple[ProtocolSpec, ...] = (
     ProtocolSpec(VmProtocol.MODBUS_RTU, True, "modbus-rtu", "Modbus RTU worker"),
-    ProtocolSpec(VmProtocol.MODBUS_TCP, False, "modbus-tcp", "Contract/discovery only; adapter is not enabled in this phase"),
+    ProtocolSpec(VmProtocol.MODBUS_TCP, True, "modbus-tcp", "Modbus TCP worker"),
     ProtocolSpec(VmProtocol.CAN, False, "can", "Contract/discovery only; adapter requires bench validation"),
     ProtocolSpec(VmProtocol.GPIO, False, "gpio", "Digital GPIO contract/simulator only; hardware adapter is disabled"),
     ProtocolSpec(VmProtocol.SIMULATOR, True, "simulator", "Deterministic analog/discrete simulator"),

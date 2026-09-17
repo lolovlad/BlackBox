@@ -3,16 +3,35 @@ set -eu
 
 PROJECT_ROOT="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 COMPOSE_FILE="$PROJECT_ROOT/deploy/compose.yaml"
+COMPOSE_OVERRIDE="${BB_COMPOSE_OVERRIDE:-}"
 PROFILE="${BB_PROFILE:-dev}"
 
 compose() {
-  docker compose --project-directory "$PROJECT_ROOT" \
-    --file "$COMPOSE_FILE" --profile "$PROFILE" "$@"
+  if [ -n "$COMPOSE_OVERRIDE" ]; then
+    case "$COMPOSE_OVERRIDE" in
+      /*) override_file="$COMPOSE_OVERRIDE" ;;
+      *) override_file="$PROJECT_ROOT/$COMPOSE_OVERRIDE" ;;
+    esac
+    docker compose --project-directory "$PROJECT_ROOT" \
+      --file "$COMPOSE_FILE" --file "$override_file" --profile "$PROFILE" "$@"
+  else
+    docker compose --project-directory "$PROJECT_ROOT" \
+      --file "$COMPOSE_FILE" --profile "$PROFILE" "$@"
+  fi
 }
 
 compose_profiles() {
-  docker compose --project-directory "$PROJECT_ROOT" \
-    --file "$COMPOSE_FILE" --profile dev --profile build "$@"
+  if [ -n "$COMPOSE_OVERRIDE" ]; then
+    case "$COMPOSE_OVERRIDE" in
+      /*) override_file="$COMPOSE_OVERRIDE" ;;
+      *) override_file="$PROJECT_ROOT/$COMPOSE_OVERRIDE" ;;
+    esac
+    docker compose --project-directory "$PROJECT_ROOT" \
+      --file "$COMPOSE_FILE" --file "$override_file" --profile dev --profile build "$@"
+  else
+    docker compose --project-directory "$PROJECT_ROOT" \
+      --file "$COMPOSE_FILE" --profile dev --profile build "$@"
+  fi
 }
 
 usage() {
@@ -31,6 +50,7 @@ Commands:
 Environment:
   BB_PROFILE    Compose profile (default: dev)
   BB_HUB_PORT   Hub HTTP port (default: 8080)
+  BB_COMPOSE_OVERRIDE  Optional Compose override, e.g. deploy/compose.pi.yaml
 EOF
 }
 

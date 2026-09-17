@@ -7,6 +7,8 @@ COPY platform ./platform
 COPY bb_platform ./bb_platform
 COPY services ./services
 COPY workers ./workers
+COPY presets ./presets
+COPY ui ./ui
 COPY blackbox ./blackbox
 COPY modbus_acquire ./modbus_acquire
 RUN uv sync --frozen --no-dev

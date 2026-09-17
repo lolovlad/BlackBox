@@ -3,19 +3,78 @@
 {% block content %}
 <section class="bb-card">
   <h1 class="bb-page-title">Изменить VM: {{ vm.name }}</h1>
-  <p class="bb-page-lead">Сохранение меняет метаданные. «Применить карту» отдельно отправляет apply-map running worker.</p>
-  <form id="edit-vm" class="bb-form" data-vm-id="{{ vm.id }}">
-    <label>Имя<input name="name" value="{{ vm.name }}" required></label>
-    <label>Описание<textarea name="description" rows="3">{{ vm.description }}</textarea></label>
-    <label>Карта
-      <select name="map_version" required>
-        {% for m in maps %}
-          {% if m.protocol == vm.protocol %}
-          <option value="{{ m.version }}" {% if m.version == vm.map_version %}selected{% endif %}>{{ m.version }}{% if m.preset_id %} · {{ m.preset_id }}{% endif %}</option>
-          {% endif %}
+  <p class="bb-page-lead">Настройки читаются worker-ом из Hub. Если VM запущена, сохранение автоматически отправляет новую конфигурацию и карту.</p>
+  {% set reader = vm.config.get('reader', {}) %}
+  {% set storage = vm.config.get('storage', {}) %}
+  {% set buffer = vm.config.get('buffer', {}) %}
+  <form id="edit-vm" class="bb-form" data-vm-id="{{ vm.id }}" data-vm-protocol="{{ vm.protocol }}">
+    <div class="bb-settings-grid">
+      <label>Имя<input name="name" value="{{ vm.name }}" required></label>
+      <label>Описание<textarea name="description" rows="2">{{ vm.description }}</textarea></label>
+      <label>Карта чтения
+        <select name="map_version" id="edit-map-version" required>
+          {% for m in maps %}
+            {% if m.protocol == vm.protocol %}<option value="{{ m.version }}" {% if m.version == vm.map_version %}selected{% endif %}>{{ m.version }}{% if m.preset_id %} · {{ m.preset_id }}{% endif %}</option>{% endif %}
+          {% endfor %}
+        </select>
+      </label>
+    </div>
+    <div class="bb-config-columns">
+      <fieldset>
+        <legend>Источник чтения</legend>
+        <div class="bb-settings-grid">
+          <label class="bb-checkbox-label"><input name="enabled" type="checkbox" {% if reader.get('enabled', True) %}checked{% endif %}> Включить чтение</label>
+          <label class="bb-checkbox-label"><input name="close_port_after_each_call" type="checkbox" {% if reader.get('close_port_after_each_call', True) %}checked{% endif %}> Закрывать serial после транзакции</label>
+          <label class="bb-checkbox-label"><input name="clear_buffers_before_each_transaction" type="checkbox" {% if reader.get('clear_buffers_before_each_transaction', True) %}checked{% endif %}> Очищать serial-буферы</label>
+          <label>Опрос, секунд<input name="poll_interval_sec" type="number" value="{{ reader.get('poll_interval_sec', 0.12) }}" min="0.01" step="0.01"></label>
+          <label>Timeout, секунд<input name="timeout_sec" type="number" value="{{ reader.get('timeout_sec', 0.35) }}" min="0.01" step="0.01"></label>
+          <label>Повторы<input name="retries" type="number" value="{{ reader.get('retries', 3) }}" min="1" max="20"></label>
+          <label>Пауза между повторами, секунд<input name="retry_delay_sec" type="number" value="{{ reader.get('retry_delay_sec', 0.2) }}" min="0" step="0.01"></label>
+          <label>Смещение адреса<input name="address_offset" type="number" value="{{ reader.get('address_offset', 1) }}" min="0"></label>
+          <label data-serial-only>Serial-порт<input name="port" value="{{ reader.get('port', '/dev/ttyAMA0') }}"></label>
+          <label data-serial-only>Slave ID<input name="slave_id" type="number" value="{{ reader.get('slave_id', 1) }}" min="1" max="247"></label>
+          <label data-serial-only>Baudrate<input name="baudrate" type="number" value="{{ reader.get('baudrate', 9600) }}"></label>
+          <label data-serial-only>Биты данных<input name="bytesize" type="number" value="{{ reader.get('bytesize', 8) }}" min="5" max="8"></label>
+          <label data-serial-only>Parity<select name="parity"><option {% if reader.get('parity','N') == 'N' %}selected{% endif %}>N</option><option {% if reader.get('parity') == 'E' %}selected{% endif %}>E</option><option {% if reader.get('parity') == 'O' %}selected{% endif %}>O</option></select></label>
+          <label data-serial-only>Stop bits<input name="stopbits" type="number" value="{{ reader.get('stopbits', 1) }}" min="1" max="2" step="1"></label>
+          <label data-serial-only>Режим<select name="mode"><option value="rtu" {% if reader.get('mode','rtu') == 'rtu' %}selected{% endif %}>RTU</option><option value="ascii" {% if reader.get('mode') == 'ascii' %}selected{% endif %}>ASCII</option></select></label>
+          <label data-tcp-only>IP / host<input name="host" value="{{ reader.get('host', '127.0.0.1') }}"></label>
+          <label data-tcp-only>TCP-порт<input name="tcp_port" type="number" value="{{ reader.get('tcp_port', 502) }}" min="1" max="65535"></label>
+          <label data-tcp-only>Unit ID<input name="unit_id" type="number" value="{{ reader.get('unit_id', 1) }}" min="0" max="247"></label>
+        </div>
+      </fieldset>
+      <fieldset>
+        <legend>Куда сохранять</legend>
+        <div class="bb-settings-grid">
+          <label>Носитель
+            <select name="storage_resource_id">
+              {% for r in storage_resources %}<option value="{{ r.resource_id }}" {% if r.resource_id == vm.storage_resource_id or r.resource_id == storage.get('target_resource_id') %}selected{% endif %}>{{ r.name }} · {{ r.path }}</option>{% endfor %}
+            </select>
+          </label>
+          <label>Каталог telemetry<input name="telemetry_subdir" value="{{ storage.get('telemetry_subdir', 'telemetry') }}" pattern="[A-Za-z0-9_./-]+"></label>
+          <label>RAM-буфер, строк<input name="ram_rows" type="number" value="{{ buffer.get('ram_rows', 60) }}" min="1" max="1000000"></label>
+          <label>Очередь ingest, batch<input name="max_queue" type="number" value="{{ buffer.get('max_queue', 2048) }}" min="1" max="1000000"></label>
+          <label>Flush, секунд<input name="flush_seconds" type="number" value="{{ storage.get('flush_seconds', 5) }}" min="0.1" step="0.1"></label>
+          <label>Минимум свободного места, байт<input name="min_free_bytes" type="number" value="{{ storage.get('min_free_bytes', 67108864) }}" min="0"></label>
+          <label>Квота telemetry, байт<input name="quota_bytes" type="number" value="{{ storage.get('quota_bytes', '') or '' }}" min="1" placeholder="без квоты"></label>
+        </div>
+      </fieldset>
+    </div>
+    {% if read_resources %}
+    <fieldset>
+      <legend>Откуда читать: подтверждённые устройства</legend>
+      <div class="bb-check-list">
+        {% for r in read_resources %}
+        {% set selected = (vm.read_resources or vm.resources) | selectattr('resource_id', 'equalto', r.resource_id) | list %}
+        <label><input type="checkbox" name="read_resource_id" value="{{ r.resource_id }}" {% if selected %}checked{% endif %}> {{ r.kind }} · {{ r.name }} <span class="bb-muted">({{ r.path or r.address }})</span></label>
         {% endfor %}
-      </select>
-    </label>
+      </div>
+    </fieldset>
+    {% endif %}
+    <div class="bb-map-preview-panel">
+      <div><strong>JSON-карта чтения</strong><span id="edit-map-preview-status" class="bb-muted"> Загружается…</span></div>
+      <pre id="edit-map-preview" class="bb-json-view">Загрузка карты…</pre>
+    </div>
     <div class="bb-actions">
       <button type="submit" class="bb-btn">Сохранить</button>
       <button type="button" class="bb-btn bb-btn-secondary" data-apply-map="{{ vm.id }}">Применить карту</button>

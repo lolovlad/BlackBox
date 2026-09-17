@@ -8,6 +8,7 @@ from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
 from typing import Iterable
+from uuid import uuid4
 
 from bb_platform.contracts import TagSample
 
@@ -38,13 +39,15 @@ class ParquetStore:
         except ImportError as exc:
             raise StorageUnavailable("pyarrow is required for Parquet telemetry storage") from exc
 
-    def append(self, samples: Iterable[TagSample]) -> None:
+    def append(self, samples: Iterable[TagSample], *, flush_rows: int | None = None, flush_seconds: float | None = None) -> None:
         now = datetime.now().timestamp()
         with self._lock:
             for sample in samples:
                 key = (str(sample.vm_id), sample.captured_at.date().isoformat())
                 self._buffers[key].append(sample)
-            if sum(len(x) for x in self._buffers.values()) >= self.flush_rows or now - self._last_flush >= self.flush_seconds:
+            row_limit = max(1, int(flush_rows or self.flush_rows))
+            time_limit = max(0.1, float(flush_seconds or self.flush_seconds))
+            if sum(len(x) for x in self._buffers.values()) >= row_limit or now - self._last_flush >= time_limit:
                 self.flush()
 
     def flush(self) -> int:
@@ -62,28 +65,53 @@ class ParquetStore:
                 raise StorageUnavailable("telemetry quota exceeded")
         with self._lock:
             buffers, self._buffers = self._buffers, defaultdict(list)
-            for (vm_id, date), samples in buffers.items():
-                if not samples:
-                    continue
-                directory = self.root / f"vm_id={vm_id}" / f"date={date}"
-                directory.mkdir(parents=True, exist_ok=True)
-                rows = [
-                    {
-                        "vm_id": str(sample.vm_id),
-                        "seq": sample.seq,
-                        "captured_at": sample.captured_at.isoformat(),
-                        "map_version": sample.map_version,
-                        "protocol": getattr(sample.protocol, "value", sample.protocol),
-                        "quality": getattr(sample.quality, "value", sample.quality),
-                        "tags_json": json.dumps(sample.tags, ensure_ascii=False, default=str),
-                    }
-                    for sample in samples
-                ]
-                table = pa.Table.from_pylist(rows)
-                final = directory / f"part-{samples[0].seq:020d}-{os.getpid()}.parquet"
-                tmp = final.with_suffix(".tmp")
-                pq.write_table(table, tmp, compression="zstd")
-                tmp.replace(final)
-                total += len(samples)
-            self._last_flush = datetime.now().timestamp()
+            completed: set[tuple[str, str]] = set()
+            try:
+                for key, samples in buffers.items():
+                    vm_id, date = key
+                    if not samples:
+                        completed.add(key)
+                        continue
+                    directory = self.root / f"vm_id={vm_id}" / f"date={date}"
+                    directory.mkdir(parents=True, exist_ok=True)
+                    rows = [
+                        {
+                            "vm_id": str(sample.vm_id),
+                            "seq": sample.seq,
+                            "captured_at": sample.captured_at.isoformat(),
+                            "map_version": sample.map_version,
+                            "protocol": getattr(sample.protocol, "value", sample.protocol),
+                            "quality": getattr(sample.quality, "value", sample.quality),
+                            "tags_json": json.dumps(sample.tags, ensure_ascii=False, default=str),
+                        }
+                        for sample in samples
+                    ]
+                    table = pa.Table.from_pylist(rows)
+                    # A worker sequence restarts after a container restart. Add
+                    # an opaque suffix so a new batch can never overwrite an
+                    # older partition file with the same first sequence number.
+                    final = directory / f"part-{samples[0].seq:020d}-{os.getpid()}-{uuid4().hex[:12]}.parquet"
+                    tmp = final.with_suffix(".tmp")
+                    try:
+                        pq.write_table(table, tmp, compression="zstd")
+                        tmp.replace(final)
+                    finally:
+                        # A failed write must not leave a misleading .tmp file
+                        # that is mistaken for a committed partition.
+                        if tmp.exists():
+                            try:
+                                tmp.unlink()
+                            except OSError:
+                                pass
+                    total += len(samples)
+                    completed.add(key)
+                self._last_flush = datetime.now().timestamp()
+            except Exception:
+                # Keep only partitions that were not committed. This allows a
+                # later flush after an SSD is remounted/space is freed without
+                # duplicating files that were already atomically renamed.
+                for key, samples in buffers.items():
+                    if key not in completed:
+                        self._buffers[key][0:0] = samples
+                raise
         return total

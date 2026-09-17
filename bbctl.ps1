@@ -8,15 +8,22 @@ param(
 $ErrorActionPreference = "Stop"
 $ProjectRoot = $PSScriptRoot
 $ComposeFile = Join-Path $ProjectRoot "deploy/compose.yaml"
+$ComposeOverride = if ($env:BB_COMPOSE_OVERRIDE) {
+    if ([System.IO.Path]::IsPathRooted($env:BB_COMPOSE_OVERRIDE)) { $env:BB_COMPOSE_OVERRIDE } else { Join-Path $ProjectRoot $env:BB_COMPOSE_OVERRIDE }
+} else { $null }
 $Profile = if ($env:BB_PROFILE) { $env:BB_PROFILE } else { "dev" }
 
 function Invoke-Compose {
-    & docker compose --project-directory $ProjectRoot --file $ComposeFile --profile $Profile @args
+    $Files = @("--file", $ComposeFile)
+    if ($ComposeOverride) { $Files += @("--file", $ComposeOverride) }
+    & docker compose --project-directory $ProjectRoot @Files --profile $Profile @args
     if ($LASTEXITCODE -ne 0) { throw "docker compose failed with exit code $LASTEXITCODE" }
 }
 
 function Invoke-ComposeProfiles {
-    & docker compose --project-directory $ProjectRoot --file $ComposeFile --profile dev --profile build @args
+    $Files = @("--file", $ComposeFile)
+    if ($ComposeOverride) { $Files += @("--file", $ComposeOverride) }
+    & docker compose --project-directory $ProjectRoot @Files --profile dev --profile build @args
     if ($LASTEXITCODE -ne 0) { throw "docker compose failed with exit code $LASTEXITCODE" }
 }
 
@@ -52,7 +59,7 @@ function Invoke-Smoke {
             Invoke-Compose exec -T hub /app/.venv/bin/python -m services.hub.smoke --url http://127.0.0.1:8080 --data-root /data
             return
         } catch {
-            if ($Attempt -eq 30) { throw "Web endpoint did not become ready on port $Port" }
+            if ($Attempt -eq 30) { throw "Web endpoint did not become ready on port $HubPort" }
             Start-Sleep -Seconds 1
         }
     }

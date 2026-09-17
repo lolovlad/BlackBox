@@ -13,9 +13,22 @@ def run() -> int:
     interval = float(os.getenv("BB_INTERVAL", "1"))
     client.register()
     while True:
-        for command in client.commands():
+        try:
+            commands = client.commands()
+        except Exception:
+            time.sleep(1)
+            continue
+        for command in commands:
+            if command.get("action") == "stop":
+                return 0
             if command.get("action") == "apply_map" and command.get("map_version"):
                 map_version = str(command["map_version"])
+                try:
+                    current = client.configuration()
+                    reader = current.get("config", {}).get("reader", {})
+                    interval = float(reader.get("poll_interval_sec", interval))
+                except Exception:
+                    pass
             client.acknowledge(command)
         client.batch({"sim": [client.seq, client.seq % 2, client.seq * 0.5]}, map_version)
         client.heartbeat()
