@@ -1,4 +1,5 @@
 from pathlib import Path
+import subprocess
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -39,4 +40,13 @@ def test_legacy_freeze_and_deployment_entrypoints_exist() -> None:
 
     for relative_path in expected_files:
         assert (ROOT / relative_path).is_file(), relative_path
+
+
+def test_bbctl_is_tracked_as_executable() -> None:
+    recorded = subprocess.check_output(
+        ["git", "ls-files", "-s", "--", "bbctl"],
+        cwd=ROOT,
+        text=True,
+    )
+    assert recorded.startswith("100755"), recorded
 

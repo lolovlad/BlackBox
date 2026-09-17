@@ -41,7 +41,7 @@ Usage: ./bbctl <command>
 Commands:
   up       Build and start the current lab profile
   down     Stop the current lab profile
-  update   Pull the repository, rebuild, start and smoke-test
+  update   Stash local tracked changes, pull, rebuild, start and smoke-test
   smoke    Run the Hub login/VM/Parquet/WebSocket acceptance smoke test
   logs     Follow service logs
   ps       Show Compose service state
@@ -70,6 +70,16 @@ remove_dynamic_workers() {
     # Named volumes (including blackbox-data) are not touched.
     docker rm -f $worker_ids >/dev/null
   fi
+}
+
+git_fast_forward() {
+  if ! git -C "$PROJECT_ROOT" diff --quiet || ! git -C "$PROJECT_ROOT" diff --cached --quiet; then
+    echo "Stashing local tracked changes so git pull can fast-forward..."
+    git -C "$PROJECT_ROOT" stash push -m "bbctl-update autostash"
+    echo "Local changes kept in git stash. Inspect with: git stash list"
+  fi
+  git -C "$PROJECT_ROOT" pull --ff-only
+  chmod +x "$PROJECT_ROOT/bbctl" || true
 }
 
 smoke() {
@@ -114,7 +124,10 @@ case "$command" in
     ;;
   update)
     require_docker
-    git -C "$PROJECT_ROOT" pull --ff-only
+    if [ "${BBCTL_UPDATE_APPLY:-}" != "1" ]; then
+      git_fast_forward
+      BBCTL_UPDATE_APPLY=1 exec "$PROJECT_ROOT/bbctl" update
+    fi
     compose_profiles build --pull
     compose stop
     remove_dynamic_workers

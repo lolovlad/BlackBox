@@ -27,7 +27,6 @@ isolated under `legacy/` and is not imported by the Hub.
 Start the development stack:
 
 ```sh
-chmod +x bbctl
 ./bbctl up
 ./bbctl smoke
 ```

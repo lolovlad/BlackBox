@@ -45,6 +45,23 @@ function Remove-DynamicWorkers {
     }
 }
 
+function Invoke-GitFastForward {
+    & git -C $ProjectRoot diff --quiet
+    $WorktreeDirty = $LASTEXITCODE -eq 1
+    if ($LASTEXITCODE -gt 1) { throw "git diff failed" }
+    & git -C $ProjectRoot diff --cached --quiet
+    $IndexDirty = $LASTEXITCODE -eq 1
+    if ($LASTEXITCODE -gt 1) { throw "git diff --cached failed" }
+    if ($WorktreeDirty -or $IndexDirty) {
+        Write-Host "Stashing local tracked changes so git pull can fast-forward..."
+        & git -C $ProjectRoot stash push -m "bbctl-update autostash"
+        if ($LASTEXITCODE -ne 0) { throw "git stash failed" }
+        Write-Host "Local changes kept in git stash. Inspect with: git stash list"
+    }
+    & git -C $ProjectRoot pull --ff-only
+    if ($LASTEXITCODE -ne 0) { throw "git pull failed" }
+}
+
 function Invoke-Smoke {
     if ($Profile -eq "legacy") {
         $LegacyPort = if ($env:BB_HTTP_PORT) { $env:BB_HTTP_PORT } else { "5000" }
@@ -75,8 +92,12 @@ switch ($Command) {
     "up" { Invoke-ComposeProfiles build; Invoke-Compose up --detach --build }
     "down" { Invoke-Compose stop; Remove-DynamicWorkers; Invoke-Compose down }
     "update" {
-        & git -C $ProjectRoot pull --ff-only
-        if ($LASTEXITCODE -ne 0) { throw "git pull failed" }
+        if ($env:BBCTL_UPDATE_APPLY -ne "1") {
+            Invoke-GitFastForward
+            $env:BBCTL_UPDATE_APPLY = "1"
+            & $PSCommandPath update
+            exit $LASTEXITCODE
+        }
         Invoke-ComposeProfiles build --pull
         Invoke-Compose stop
         Remove-DynamicWorkers

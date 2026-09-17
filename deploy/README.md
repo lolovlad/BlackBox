@@ -26,11 +26,21 @@ export BB_PROFILE=prod
 ./bbctl smoke
 ```
 
-After a fast-forward update from GitHub, run `./bbctl update`. It rebuilds the
-Hub and worker images, removes only dynamically-created containers carrying
-the `bb.vm_id` label, starts the stack again, and runs the smoke test. Hub
-metadata and Parquet data remain in `blackbox-data`. Do not use
-`docker compose down -v` on the test stand.
+After a fast-forward update from GitHub, run `./bbctl update`. It stashes local
+tracked changes if needed, pulls, rebuilds the Hub and worker images, removes
+only dynamically-created containers carrying the `bb.vm_id` label, starts the
+stack again, and runs the smoke test. Hub metadata and Parquet data remain in
+`blackbox-data`. Do not use `docker compose down -v` on the test stand.
+
+If a stand still on an older `bbctl` stops with `Your local changes to the
+following files would be overwritten by merge: bbctl`, the executable bit from
+`chmod +x bbctl` is usually the only local change. Discard it and rerun:
+
+```sh
+git checkout -- bbctl
+chmod +x bbctl
+./bbctl update
+```
 
 To use an SSD, mount it on the Pi (for example at `/mnt/blackbox-ssd`), set
 `BB_EXTERNAL_STORAGE_HOST_PATH=/mnt/blackbox-ssd` in `.env`, and start with:
