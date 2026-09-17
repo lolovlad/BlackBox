@@ -156,6 +156,9 @@ def test_html_pages_render_with_current_starlette(tmp_path: Path):
         assert "AGK" in login_html
         assert "2.0.0" in login_html
         assert "bb-login" in login_html
+        app_js = login_html.find("/static/app.js")
+        alpine_js = login_html.find("/static/vendor/alpine.min.js")
+        assert 0 <= app_js < alpine_js
         form_login = client.post("/login", data={"username": "admin", "password": "admin-password"}, follow_redirects=False)
         assert form_login.status_code == 303
         csrf = client.cookies.get("bb_csrf")

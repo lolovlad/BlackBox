@@ -6,10 +6,10 @@
   <title>{% block title %}BlackBox Hub{% endblock %}</title>
   <link rel="stylesheet" href="/static/vendor/tailwind.min.css">
   <link rel="stylesheet" href="/static/vendor/bootstrap-icons/bootstrap-icons.min.css">
-  <link rel="stylesheet" href="/static/app.css">
+  <link rel="stylesheet" href="/static/app.css?v={{ app_version }}">
   <script src="/static/vendor/htmx.min.js"></script>
+  <script defer src="/static/app.js?v={{ app_version }}"></script>
   <script defer src="/static/vendor/alpine.min.js"></script>
-  <script defer src="/static/app.js"></script>
 </head>
 <body class="bb-body {% block body_class %}{% endblock %}" x-data="bbShell()" @bb-toast.window="pushToast($event.detail)">
   {% if user %}

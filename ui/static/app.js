@@ -392,6 +392,11 @@
     };
   };
 
+  document.addEventListener('alpine:init', function () {
+    window.Alpine.data('bbShell', window.bbShell);
+    window.Alpine.data('bbMapsPage', window.bbMapsPage);
+  });
+
   document.querySelectorAll('[data-vm-action]').forEach(function (button) {
     button.addEventListener('click', async function () {
       const action = button.dataset.vmAction;
