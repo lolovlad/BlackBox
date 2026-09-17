@@ -2,8 +2,7 @@
 {% block title %}Логи · BlackBox{% endblock %}
 {% block content %}
 <section class="bb-card">
-  <h1 class="bb-page-title">Логи worker-контейнеров</h1>
-  <p class="bb-page-lead">Последние строки через ограниченный Docker logs endpoint. Worker-контейнеры не получают Docker socket.</p>
+  <h1 class="bb-page-title">Логи</h1>
   {% for item in logs %}
   <article style="margin-top:1rem">
     <h2 class="bb-section-title">{{ item.vm.name }} <span class="bb-muted">({{ item.vm.id }})</span></h2>
@@ -12,7 +11,7 @@
     {% if item.error %}<p class="bb-error">{{ item.error }}</p>{% endif %}
   </article>
   {% else %}
-  <p class="bb-muted">VM ещё не созданы.</p>
+  <p class="bb-muted">Нет ВМ.</p>
   {% endfor %}
 </section>
 {% endblock %}

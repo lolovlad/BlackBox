@@ -154,7 +154,7 @@ def test_html_pages_render_with_current_starlette(tmp_path: Path):
         assert client.get("/login").status_code == 200
         login_html = client.get("/login").text
         assert "AGK" in login_html
-        assert "2.0.0" in login_html
+        assert "2.0.1" in login_html
         assert "bb-login" in login_html
         app_js = login_html.find("/static/app.js")
         alpine_js = login_html.find("/static/vendor/alpine.min.js")
@@ -183,7 +183,7 @@ def test_html_pages_render_with_current_starlette(tmp_path: Path):
             assert response.status_code == 200, (path, response.text)
             assert "<html" in response.text.lower()
             assert "AGK" in response.text
-            assert "2.0.0" in response.text
+            assert "2.0.1" in response.text
 
 
 def test_batch_is_idempotent_and_parser_is_used(tmp_path: Path):
@@ -303,7 +303,6 @@ def test_maps_page_opens_version_studio(tmp_path: Path):
         html = client.get("/admin/maps").text
         assert "bb-maps-page" in html
         assert "bb-studio" in html
-        assert "Просмотр и редактирование" in html
         assert "Опубликовать версию" in html
         start = html.find('id="bb-maps-payload">')
         end = html.find("</script>", start)

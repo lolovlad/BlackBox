@@ -7,15 +7,12 @@
     <div class="bb-login-brand-inner">
       <p class="bb-login-vendor">{{ app_vendor }}</p>
       <h1>BlackBox</h1>
-      <p class="bb-login-tagline">Управление виртуальными машинами, картами чтения и телеметрией.</p>
       <span class="bb-login-version">Версия {{ app_version }}</span>
     </div>
   </div>
   <div class="bb-login-panel">
     <form method="post" class="bb-login-form" x-data="{ showPassword: false }">
-      <p class="bb-login-kicker">BlackBox Hub</p>
       <h2>Вход в систему</h2>
-      <p class="bb-login-lead">Введите учётную запись администратора или оператора.</p>
       {% if error %}<p class="bb-error bb-login-error" role="alert">{{ error }}</p>{% endif %}
       <label>
         Логин

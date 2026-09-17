@@ -32,7 +32,7 @@
       {% endif %}
     </tr>
   {% else %}
-    <tr><td colspan="{% if user.role == 'admin' %}5{% else %}4{% endif %}" class="bb-muted">VM пока нет.</td></tr>
+    <tr><td colspan="{% if user.role == 'admin' %}5{% else %}4{% endif %}" class="bb-muted">Нет ВМ.</td></tr>
   {% endfor %}
   </tbody>
 </table>

@@ -85,8 +85,8 @@
     const version = select.value;
     const protocol = option && option.dataset ? option.dataset.protocol : (select.closest('form')?.dataset.vmProtocol || '');
     if (!version) {
-      target.textContent = 'Выберите карту, чтобы открыть requests и fields.';
-      if (status) status.textContent = ' Выберите карту';
+      target.textContent = '';
+      if (status) status.textContent = '';
       return;
     }
     if (status) status.textContent = ' Загрузка…';
@@ -281,7 +281,7 @@
         if (this.studioOpen) this.closeStudio();
       },
       closeStudio() {
-        if (this.dirty && !window.confirm('Есть несохранённые правки JSON. Закрыть окно?')) return;
+        if (this.dirty && !window.confirm('Есть несохранённые правки. Закрыть окно?')) return;
         this.studioOpen = false;
       },
       createBlank() {
@@ -294,7 +294,7 @@
         this.studioOpen = true;
       },
       async openMap(map) {
-        if (this.dirty && this.studioOpen && !this.isSelected(map) && !window.confirm('Есть несохранённые правки JSON. Открыть другую версию?')) {
+        if (this.dirty && this.studioOpen && !this.isSelected(map) && !window.confirm('Есть несохранённые правки. Открыть другую версию?')) {
           return;
         }
         this.selectedKey = map.version + '::' + map.protocol;
@@ -345,7 +345,7 @@
         try {
           parsed = JSON.parse(this.documentText);
         } catch (_e) {
-          toast('JSON некорректен. Исправьте документ перед публикацией.', 'error');
+          toast('Документ повреждён.', 'error');
           return;
         }
         if (!this.publishVersion.trim()) {
@@ -353,7 +353,7 @@
           return;
         }
         if (this.currentMap && this.publishVersion.trim() === this.currentMap.version && this.dirty) {
-          toast('Версия ' + this.currentMap.version + ' неизменяема. Укажите новое имя версии.', 'error');
+          toast('Укажите новое имя версии.', 'error');
           return;
         }
         this.saving = true;
@@ -406,7 +406,7 @@
       button.disabled = true;
       try {
         await mutate('/api/v1/vms/' + button.dataset.vmId + '/' + action, { method: 'POST' });
-        toast(action === 'apply-map' ? 'Команда apply-map отправлена' : 'Операция выполнена', 'ok');
+        toast(action === 'apply-map' ? 'Карта применена' : 'Операция выполнена', 'ok');
         location.reload();
       } catch (error) {
         toast(error.message, 'error');
@@ -434,7 +434,7 @@
         config: runtimeConfigFromForm(create),
       };
       if (!payload.map_version) {
-        toast('Выберите опубликованную карту или создайте её на странице «Карты».', 'error');
+        toast('Выберите карту', 'error');
         return;
       }
       try {
@@ -443,7 +443,7 @@
           headers: headers({ 'Content-Type': 'application/json' }),
           body: JSON.stringify(payload),
         });
-        toast('ВМ создана. Запустите её кнопкой «Старт».', 'ok');
+        toast('ВМ создана', 'ok');
         location.reload();
       } catch (error) {
         toast(error.message, 'error');
@@ -506,7 +506,7 @@
           });
         }
         await mutate('/api/v1/vms/' + applyMap.dataset.applyMap + '/apply-map', { method: 'POST' });
-        toast('Карта привязана и apply-map отправлен', 'ok');
+        toast('Карта применена', 'ok');
       } catch (error) {
         toast(error.message, 'error');
       } finally {

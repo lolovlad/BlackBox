@@ -3,7 +3,6 @@
 {% block content %}
 <section class="bb-card">
   <h1 class="bb-page-title">Изменить VM: {{ vm.name }}</h1>
-  <p class="bb-page-lead">Настройки читаются worker-ом из Hub. Если VM запущена, сохранение автоматически отправляет новую конфигурацию и карту.</p>
   {% set reader = vm.config.get('reader', {}) %}
   {% set storage = vm.config.get('storage', {}) %}
   {% set buffer = vm.config.get('buffer', {}) %}
@@ -44,7 +43,7 @@
         </div>
       </fieldset>
       <fieldset>
-        <legend>Куда сохранять</legend>
+        <legend>Хранение</legend>
         <div class="bb-settings-grid">
           <label>Носитель
             <select name="storage_resource_id">
@@ -56,13 +55,13 @@
           <label>Очередь ingest, batch<input name="max_queue" type="number" value="{{ buffer.get('max_queue', 2048) }}" min="1" max="1000000"></label>
           <label>Flush, секунд<input name="flush_seconds" type="number" value="{{ storage.get('flush_seconds', 5) }}" min="0.1" step="0.1"></label>
           <label>Минимум свободного места, байт<input name="min_free_bytes" type="number" value="{{ storage.get('min_free_bytes', 67108864) }}" min="0"></label>
-          <label>Квота telemetry, байт<input name="quota_bytes" type="number" value="{{ storage.get('quota_bytes', '') or '' }}" min="1" placeholder="без квоты"></label>
+          <label>Квота telemetry, байт<input name="quota_bytes" type="number" value="{{ storage.get('quota_bytes', '') or '' }}" min="1"></label>
         </div>
       </fieldset>
     </div>
     {% if read_resources %}
     <fieldset>
-      <legend>Откуда читать: подтверждённые устройства</legend>
+        <legend>Устройства чтения</legend>
       <div class="bb-check-list">
         {% for r in read_resources %}
         {% set selected = (vm.read_resources or vm.resources) | selectattr('resource_id', 'equalto', r.resource_id) | list %}
@@ -72,8 +71,8 @@
     </fieldset>
     {% endif %}
     <div class="bb-map-preview-panel">
-      <div><strong>JSON-карта чтения</strong><span id="edit-map-preview-status" class="bb-muted"> Загружается…</span></div>
-      <pre id="edit-map-preview" class="bb-json-view">Загрузка карты…</pre>
+      <div><strong>Карта</strong><span id="edit-map-preview-status" class="bb-muted"></span></div>
+      <pre id="edit-map-preview" class="bb-json-view"></pre>
     </div>
     <div class="bb-actions">
       <button type="submit" class="bb-btn">Сохранить</button>

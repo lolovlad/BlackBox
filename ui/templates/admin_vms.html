@@ -3,17 +3,11 @@
 {% block content %}
 <section class="bb-card">
   <h1 class="bb-page-title">Админ · виртуальные машины</h1>
-  <p class="bb-page-lead">
-    Создание ВМ и привязка уже опубликованной карты.
-    Загрузка JSON — на странице <a href="/admin/maps">Карты</a>.
-    Ресурсы: <a href="/admin/resources">сканировать и подтвердить</a>.
-  </p>
   {% include "vm_table.html" %}
 </section>
 
 <section class="bb-card">
   <h2 class="bb-section-title">Создать VM</h2>
-  <p class="bb-hint">Контейнер создаётся только при нажатии «Старт». Параметры чтения, карта, источник и место записи сохраняются отдельно для каждой VM.</p>
   <form id="create-vm" method="post" class="bb-form">
     <div class="bb-settings-grid">
       <label>Имя<input name="name" required></label>
@@ -24,7 +18,7 @@
           <option value="modbus_tcp">Modbus TCP</option>
         </select>
       </label>
-      <label>Preset ID<input name="preset_id" placeholder="optional"></label>
+      <label>Preset ID<input name="preset_id"></label>
       <label>Карта чтения
         <select name="map_version" id="create-map-version" required>
           <option value="">— выберите карту —</option>
@@ -34,7 +28,7 @@
         </select>
       </label>
     </div>
-    <p id="create-map-hint" class="bb-hint" hidden>Для этого протокола нет карт. <a href="/admin/maps">Опубликуйте JSON-карту</a>.</p>
+    <p id="create-map-hint" class="bb-muted" hidden>Нет карт для этого протокола.</p>
     <div class="bb-config-columns">
       <fieldset data-reader-settings>
         <legend>Источник чтения</legend>
@@ -47,7 +41,7 @@
           <label>Повторы<input name="retries" type="number" value="3" min="1" max="20"></label>
           <label>Пауза между повторами, секунд<input name="retry_delay_sec" type="number" value="0.2" min="0" step="0.01"></label>
           <label>Смещение адреса<input name="address_offset" type="number" value="1" min="0"></label>
-          <label data-serial-only>Serial-порт<input name="port" value="/dev/ttyAMA0" placeholder="/dev/ttyUSB0"></label>
+          <label data-serial-only>Serial-порт<input name="port" value="/dev/ttyAMA0"></label>
           <label data-serial-only>Slave ID<input name="slave_id" type="number" value="1" min="1" max="247"></label>
           <label data-serial-only>Baudrate<input name="baudrate" type="number" value="9600" step="1"></label>
           <label data-serial-only>Биты данных<input name="bytesize" type="number" value="8" min="5" max="8"></label>
@@ -60,7 +54,7 @@
         </div>
       </fieldset>
       <fieldset>
-        <legend>Куда сохранять</legend>
+        <legend>Хранение</legend>
         <div class="bb-settings-grid">
           <label>Носитель
             <select name="storage_resource_id">
@@ -72,24 +66,23 @@
           <label>Очередь ingest, batch<input name="max_queue" type="number" value="2048" min="1" max="1000000"></label>
           <label>Flush, секунд<input name="flush_seconds" type="number" value="5" min="0.1" step="0.1"></label>
           <label>Минимум свободного места, байт<input name="min_free_bytes" type="number" value="67108864" min="0"></label>
-          <label>Квота telemetry, байт<input name="quota_bytes" type="number" min="1" placeholder="без квоты"></label>
+          <label>Квота telemetry, байт<input name="quota_bytes" type="number" min="1"></label>
         </div>
-        <p class="bb-hint">Parquet/ZSTD записывается пакетами. RAM-буфер уменьшает количество операций записи на SSD.</p>
       </fieldset>
     </div>
     {% if approved_resources %}
     <fieldset>
-      <legend>Откуда читать: подтверждённые устройства</legend>
+      <legend>Устройства чтения</legend>
       <div class="bb-check-list">
         {% for r in approved_resources %}
         <label><input type="checkbox" name="read_resource_id" value="{{ r.resource_id }}"> {{ r.kind }} · {{ r.name }} <span class="bb-muted">({{ r.path or r.address }})</span></label>
         {% endfor %}
       </div>
     </fieldset>
-    {% else %}<p class="bb-hint">Подтверждённых устройств чтения нет. Для Simulator это не требуется; для RTU/TCP выполните сканирование ресурсов.</p>{% endif %}
+    {% else %}<p class="bb-muted">Нет устройств чтения.</p>{% endif %}
     <div class="bb-map-preview-panel">
-      <div><strong>JSON-карта чтения</strong><span id="create-map-preview-status" class="bb-muted"> Выберите карту</span></div>
-      <pre id="create-map-preview" class="bb-json-view">Выберите карту, чтобы открыть requests и fields.</pre>
+      <div><strong>Карта</strong><span id="create-map-preview-status" class="bb-muted"></span></div>
+      <pre id="create-map-preview" class="bb-json-view"></pre>
     </div>
     <button type="submit" class="bb-btn">Создать VM</button>
   </form>
