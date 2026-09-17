@@ -34,7 +34,7 @@
       </header>
       <div class="bb-map-grid">
         <template x-for="(map, index) in family.items" :key="map.version + '::' + map.protocol">
-          <button type="button" class="bb-map-card" @click="openMap(map)">
+          <article class="bb-map-card" @click="openMap(map)">
             <div class="bb-map-card-top">
               <strong x-text="map.version"></strong>
               <span class="bb-map-pill" x-show="index === 0">актуальная</span>
@@ -44,7 +44,10 @@
               <span x-text="formatStamp(map.created_at)"></span>
             </p>
             <code class="bb-map-checksum" x-text="shortChecksum(map.checksum)"></code>
-          </button>
+            <div class="bb-map-card-actions">
+              <button type="button" class="bb-btn bb-btn-sm bb-btn-danger" @click.stop="deleteMap(map)">Удалить</button>
+            </div>
+          </article>
         </template>
       </div>
     </section>
@@ -65,6 +68,7 @@
         </div>
         <div class="bb-studio-head-actions">
           <button type="button" class="bb-btn" x-show="!draft" @click="openUpload(true)"><i class="bi bi-plus-lg"></i> Новая версия</button>
+          <button type="button" class="bb-btn bb-btn-danger bb-btn-sm" x-show="!draft && currentMap" @click="deleteMap(currentMap)"><i class="bi bi-trash"></i> Удалить</button>
           <button type="button" class="bb-btn bb-btn-secondary bb-btn-sm" @click="copyJson()" :disabled="!documentText"><i class="bi bi-clipboard"></i> Копировать</button>
           <button type="button" class="bb-btn bb-btn-secondary bb-btn-sm" @click="downloadJson()" :disabled="!documentText"><i class="bi bi-download"></i> Скачать</button>
           <button type="button" class="bb-btn bb-btn-ghost bb-btn-sm" @click="closeStudio()" aria-label="Закрыть"><i class="bi bi-x-lg"></i></button>
@@ -96,7 +100,7 @@
           <h3>Версии</h3>
           <ol>
             <template x-for="(map, index) in familyVersions" :key="map.version + '::' + map.protocol">
-              <li>
+              <li class="bb-version-row">
                 <button type="button" class="bb-version-item" :class="{ 'is-active': isSelected(map) && !draft }" @click="openMap(map)">
                   <span class="bb-version-dot" :class="{ 'is-latest': index === 0 }"></span>
                   <span>
@@ -104,6 +108,7 @@
                     <small x-text="formatStamp(map.created_at)"></small>
                   </span>
                 </button>
+                <button type="button" class="bb-btn bb-btn-ghost bb-btn-sm bb-btn-danger" @click.stop="deleteMap(map)" :aria-label="'Удалить ' + map.version"><i class="bi bi-trash"></i></button>
               </li>
             </template>
           </ol>

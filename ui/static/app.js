@@ -360,6 +360,38 @@
         link.click();
         URL.revokeObjectURL(url);
       },
+      async deleteMap(map) {
+        if (!map) return;
+        if (!window.confirm('Удалить карту «' + map.version + '»?\n\nВерсия будет удалена из каталога. Это действие нельзя отменить.')) {
+          return;
+        }
+        const protocol = map.protocol;
+        const preset = map.preset_id || '';
+        const selected = this.isSelected(map);
+        try {
+          await mutate('/api/v1/maps/' + encodeURIComponent(map.version) + '?protocol=' + encodeURIComponent(map.protocol), { method: 'DELETE' });
+          this.maps = this.maps.filter(function (item) {
+            return !(item.version === map.version && item.protocol === map.protocol);
+          });
+          toast('Карта удалена', 'ok');
+          if (this.studioOpen && selected) {
+            const next = this.maps.filter(function (item) {
+              return item.protocol === protocol && (item.preset_id || '') === preset;
+            }).sort(function (a, b) { return String(b.created_at || '').localeCompare(String(a.created_at || '')); })[0];
+            if (next) {
+              await this.openMap(next);
+            } else {
+              this.studioOpen = false;
+              this.draft = false;
+              this.selectedKey = '';
+              this.documentText = '';
+              this.originalText = '';
+            }
+          }
+        } catch (error) {
+          toast(error.message, 'error');
+        }
+      },
       async publishFromEditor() {
         let parsed;
         try {

@@ -184,7 +184,7 @@ def test_html_pages_render_with_current_starlette(tmp_path: Path):
         assert client.get("/login").status_code == 200
         login_html = client.get("/login").text
         assert "AGK" in login_html
-        assert "2.0.3" in login_html
+        assert "2.0.4" in login_html
         assert "bb-login" in login_html
         app_js = login_html.find("/static/app.js")
         alpine_js = login_html.find("/static/vendor/alpine.min.js")
@@ -214,7 +214,7 @@ def test_html_pages_render_with_current_starlette(tmp_path: Path):
             assert response.status_code == 200, (path, response.text)
             assert "<html" in response.text.lower()
             assert "AGK" in response.text
-            assert "2.0.3" in response.text
+            assert "2.0.4" in response.text
             if path in {"/dashboard", "/vms", "/admin/vms", f"/vms/{vm['id']}", f"/admin/vms/{vm['id']}/edit"}:
                 assert 'data-vm-action="delete"' in response.text
                 assert "Удалить" in response.text
@@ -338,6 +338,7 @@ def test_user_is_read_only_and_websocket_gets_snapshot(tmp_path: Path):
         assert admin.get("/api/v1/auth/me").json()["role"] == "user"
         assert admin.post(f"/api/v1/vms/{vm['id']}/start", headers={"X-CSRF-Token": admin.cookies.get("bb_csrf")}).status_code == 403
         assert admin.delete(f"/api/v1/vms/{vm['id']}", headers={"X-CSRF-Token": admin.cookies.get("bb_csrf")}).status_code == 403
+        assert admin.delete("/api/v1/maps/default-v1", params={"protocol": "simulator"}, headers={"X-CSRF-Token": admin.cookies.get("bb_csrf")}).status_code == 403
         assert admin.get("/api/v1/vms").status_code == 200
         with admin.websocket_connect("/ws/v1/events") as websocket:
             snapshot = websocket.receive_json()
@@ -416,6 +417,7 @@ def test_maps_page_opens_version_studio(tmp_path: Path):
         assert "bb-studio" in html
         assert "Новая версия" in html
         assert "Опубликовать версию" in html
+        assert "Удалить" in html
         start = html.find('id="bb-maps-payload">')
         end = html.find("</script>", start)
         payload = html[start + len('id="bb-maps-payload">') : end]
@@ -437,6 +439,30 @@ def test_map_edits_publish_as_a_new_immutable_version(tmp_path: Path):
         second = client.get("/api/v1/maps/edit-v2", params={"protocol": "simulator"}).json()
         assert first["document"]["requests"][0]["count"] == 1
         assert second["document"]["requests"][0]["count"] == 2
+
+
+def test_admin_can_delete_unused_map_but_not_assigned_map(tmp_path: Path):
+    with _client(tmp_path) as client:
+        assert client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin-password"}).status_code == 200
+        csrf = client.cookies.get("bb_csrf")
+        _publish_map(client, csrf, version="keep-v1")
+        _publish_map(client, csrf, version="drop-v1")
+        vm = client.post(
+            "/api/v1/vms",
+            json={"name": "mapped", "protocol": "simulator", "map_version": "keep-v1"},
+            headers={"X-CSRF-Token": csrf},
+        ).json()
+        blocked = client.delete("/api/v1/maps/keep-v1", params={"protocol": "simulator"}, headers={"X-CSRF-Token": csrf})
+        assert blocked.status_code == 409
+        assert blocked.json()["code"] == "map_in_use"
+        assert vm["id"] in blocked.json()["details"]
+        removed = client.delete("/api/v1/maps/drop-v1", params={"protocol": "simulator"}, headers={"X-CSRF-Token": csrf})
+        assert removed.status_code == 200, removed.text
+        assert client.get("/api/v1/maps/drop-v1", params={"protocol": "simulator"}).status_code == 404
+        assert client.get("/api/v1/maps/keep-v1", params={"protocol": "simulator"}).status_code == 200
+        missing = client.delete("/api/v1/maps/drop-v1", params={"protocol": "simulator"}, headers={"X-CSRF-Token": csrf})
+        assert missing.status_code == 404
+        assert client.delete("/api/v1/maps/keep-v1", headers={"X-CSRF-Token": csrf}).status_code == 422
 
 
 def test_refresh_rotation_and_logout(tmp_path: Path):

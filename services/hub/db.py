@@ -361,6 +361,19 @@ class HubRepository:
         payload["document"] = json.loads(payload.pop("document_json"))
         return payload
 
+    def vms_using_map(self, version: str, protocol: str) -> list[dict[str, Any]]:
+        with self.connect() as c:
+            rows = c.execute(
+                "SELECT id,name,lifecycle FROM virtual_machines WHERE map_version=? AND protocol=? ORDER BY name",
+                (version, protocol),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def delete_map(self, version: str, protocol: str) -> bool:
+        with self.connect() as c:
+            cur = c.execute("DELETE FROM map_versions WHERE version=? AND protocol=?", (version, protocol))
+        return cur.rowcount > 0
+
     def list_resources(self) -> list[dict[str, Any]]:
         with self.connect() as c:
             rows = c.execute("SELECT * FROM discovered_resources ORDER BY kind,name").fetchall()

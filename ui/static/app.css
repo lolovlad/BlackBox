@@ -795,6 +795,11 @@
   color: var(--bb-slate);
 }
 
+.bb-map-card-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
 .bb-studio {
   position: fixed;
   inset: 0;
@@ -897,6 +902,14 @@
 .bb-studio-versions h3 { margin: 0 0 0.45rem; font-size: 0.92rem; }
 
 .bb-studio-versions ol { list-style: none; margin: 0.8rem 0 0; padding: 0; display: grid; gap: 0.35rem; }
+
+.bb-version-row {
+  display: flex;
+  align-items: center;
+  gap: 0.15rem;
+}
+
+.bb-version-row .bb-version-item { flex: 1; min-width: 0; }
 
 .bb-version-item {
   width: 100%;

@@ -32,7 +32,7 @@ from .state import EventBus
 from .storage import ParquetStore, StorageUnavailable, purge_vm_directories
 from .vm_config import normalize_runtime_config
 
-HUB_VERSION = "2.0.3"
+HUB_VERSION = "2.0.4"
 HUB_VENDOR = "AGK"
 
 
@@ -907,6 +907,24 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
         if record is None:
             raise HTTPException(404, detail={"code": "map_not_found", "message": "Map version not found"})
         return record
+
+    @app.delete("/api/v1/maps/{version}", dependencies=[Depends(csrf_protect)])
+    async def delete_map(version: str, protocol: str = Query(..., min_length=1), account=Depends(admin)):
+        record = repo.map_record(version, protocol)
+        if record is None:
+            raise HTTPException(404, detail={"code": "map_not_found", "message": "Map version not found"})
+        used = repo.vms_using_map(version, protocol)
+        if used:
+            names = ", ".join(item["name"] for item in used)
+            return _problem(
+                "map_in_use",
+                f"Карту нельзя удалить: она назначена ВМ {names}",
+                409,
+                [item["id"] for item in used],
+            )
+        repo.delete_map(version, protocol)
+        repo.record_audit(int(account["id"]), "map.delete", version, {"protocol": protocol, "checksum": record.get("checksum")})
+        return {"ok": True, "version": version, "protocol": protocol}
 
     @app.get("/api/v1/users")
     async def list_users(account=Depends(admin)):
