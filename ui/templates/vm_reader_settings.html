@@ -27,7 +27,7 @@
       <select name="serial_resource_id" required>
         <option value="">— выберите порт —</option>
         {% for r in serial_resources %}
-        <option value="{{ r.resource_id }}" data-path="{{ r.path or '' }}" {% if r.resource_id in selected_read_ids or r.path == reader.get('port') %}selected{% endif %}>{{ r.name }} · {{ r.path }}</option>
+        <option value="{{ r.resource_id }}" data-path="{{ r.path or '' }}" {% if r.resource_id in selected_read_ids or r.path == reader.get('port') %}selected{% endif %}>{{ r.name }} — {{ r.path }}</option>
         {% endfor %}
       </select>
       {% endcall %}
@@ -91,7 +91,7 @@
       <select name="tcp_resource_id">
         <option value="">Указать IP и порт</option>
         {% for r in tcp_resources %}
-        <option value="{{ r.resource_id }}" data-address="{{ r.address or r.path or r.name }}" {% if r.resource_id in selected_read_ids %}selected{% endif %}>{{ r.name }}</option>
+        <option value="{{ r.resource_id }}" data-address="{{ r.address or r.path or r.name }}" {% if r.resource_id in selected_read_ids %}selected{% endif %}>{{ r.name }}{% if r.metadata.get('reachable') is sameas false %} · нет ответа{% endif %}</option>
         {% endfor %}
       </select>
       {% endcall %}
@@ -140,7 +140,7 @@
       <select name="can_resource_id" required>
         <option value="">— выберите интерфейс —</option>
         {% for r in can_resources %}
-        <option value="{{ r.resource_id }}" data-interface="{{ r.name }}" {% if r.resource_id in selected_read_ids or r.name == reader.get('can_interface') %}selected{% endif %}>{{ r.name }}</option>
+        <option value="{{ r.resource_id }}" data-interface="{{ r.name }}" {% if r.resource_id in selected_read_ids or r.name == reader.get('can_interface') %}selected{% endif %}>{{ r.name }}{% if r.metadata.get('detail') %} — {{ r.metadata.get('detail') }}{% endif %}</option>
         {% endfor %}
       </select>
       {% else %}

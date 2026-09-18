@@ -514,6 +514,17 @@
   font-weight: 700;
 }
 
+.bb-table tr.is-gone td { color: var(--bb-slate); opacity: 0.72; }
+
+.bb-resource-name { font-weight: 600; }
+.bb-resource-detail {
+  margin-top: 0.2rem;
+  color: var(--bb-slate);
+  font-size: 0.8rem;
+  line-height: 1.35;
+}
+.bb-mono { font-family: "Cascadia Mono", "Consolas", monospace; font-size: 0.84rem; }
+
 .bb-badge {
   display: inline-flex;
   align-items: center;

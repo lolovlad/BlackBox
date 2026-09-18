@@ -661,14 +661,28 @@
   }
 
   const scan = document.querySelector('[data-resource-scan]');
+  const message = document.getElementById('resource-message');
+  if (message) {
+    const saved = sessionStorage.getItem('bb-scan-msg');
+    if (saved) {
+      message.textContent = saved;
+      sessionStorage.removeItem('bb-scan-msg');
+    }
+  }
   if (scan) {
     scan.addEventListener('click', async function () {
       scan.disabled = true;
-      const message = document.getElementById('resource-message');
       try {
-        await mutate('/api/v1/resources/scan', { method: 'POST' });
-        if (message) message.textContent = 'Сканирование завершено';
-        toast('Ресурсы обновлены', 'ok');
+        const result = await mutate('/api/v1/resources/scan', { method: 'POST' });
+        const summary = result && result.summary ? result.summary : {};
+        const parts = [];
+        if (summary.serial) parts.push(summary.serial + ' serial');
+        if (summary.tcp) parts.push(summary.tcp + ' TCP');
+        if (summary.can) parts.push(summary.can + ' CAN');
+        if (summary.gpio) parts.push(summary.gpio + ' GPIO');
+        const text = parts.length ? ('Найдено: ' + parts.join(', ')) : 'Подходящих устройств нет';
+        sessionStorage.setItem('bb-scan-msg', text);
+        toast(text, 'ok');
         location.reload();
       } catch (error) {
         if (message) message.textContent = error.message;

@@ -1,12 +1,10 @@
 from __future__ import annotations
 
 import asyncio
-import glob
 import hashlib
 import json
 import os
 import secrets
-import shutil
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -20,11 +18,12 @@ from fastapi.templating import Jinja2Templates
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, ValidationError
 
-from bb_platform.contracts import AlarmEvent, MapDocument, RawBatch, ResourceDescriptor, ResourceKind, TagSample, VmCommand, VmLifecycle, VmProtocol, VmStatus, WorkerCommandAck, WorkerError, WorkerHeartbeat, WorkerRegister
+from bb_platform.contracts import AlarmEvent, MapDocument, RawBatch, ResourceKind, TagSample, VmCommand, VmLifecycle, VmProtocol, VmStatus, WorkerCommandAck, WorkerError, WorkerHeartbeat, WorkerRegister
 from bb_platform.parser import adapt_legacy_map, parse_batch
 
 from .config import HubConfig
 from .db import HubRepository
+from .discovery import KIND_LABELS, discover_resources, discovery_summary, is_usable_can_interface, is_usable_serial_port, tcp_hints_from_vms
 from .docker_manager import DockerManager, DockerUnavailable
 from .registry import PROTOCOLS, protocol_spec
 from .security import ACCESS_COOKIE, CSRF_COOKIE, REFRESH_COOKIE, _decode, csrf_protect, current_user, issue_tokens, set_auth_cookies
@@ -32,7 +31,7 @@ from .state import EventBus
 from .storage import ParquetStore, StorageUnavailable, purge_vm_directories
 from .vm_config import normalize_runtime_config
 
-HUB_VERSION = "2.0.7"
+HUB_VERSION = "2.0.9"
 HUB_VENDOR = "AGK"
 
 
@@ -89,74 +88,12 @@ def _vm_json(vm: dict[str, Any]) -> dict[str, Any]:
     return vm
 
 
-def _discover_resources(data_root: Path) -> list[dict[str, Any]]:
-    found: list[dict[str, Any]] = []
-    configured_serial = [x.strip() for x in os.getenv("BB_DISCOVERY_SERIAL_PATHS", "").split(",") if x.strip()]
-    serial_paths = sorted(set(glob.glob("/dev/tty*") + glob.glob("/dev/serial/by-id/*") + glob.glob("COM*") + configured_serial))
-    for path in serial_paths:
-        found.append(ResourceDescriptor(resource_id=f"serial:{path}", kind=ResourceKind.SERIAL, name=Path(path).name, path=path).model_dump(mode="json"))
-    for path in sorted(glob.glob("/dev/gpiochip*")):
-        found.append(ResourceDescriptor(resource_id=f"gpio:{path}", kind=ResourceKind.GPIO, name=Path(path).name, path=path).model_dump(mode="json"))
-    for iface in sorted(glob.glob("/sys/class/net/*")):
-        try:
-            if Path(iface, "type").read_text().strip() == "280":
-                name = Path(iface).name
-                found.append(ResourceDescriptor(resource_id=f"can:{name}", kind=ResourceKind.CAN, name=name, path=f"/sys/class/net/{name}").model_dump(mode="json"))
-        except OSError:
-            continue
-    for endpoint in filter(None, (x.strip() for x in os.getenv("BB_DISCOVERY_TCP_ENDPOINTS", "").split(","))):
-        endpoint = endpoint.removeprefix("tcp://").removeprefix("tcp:")
-        found.append(ResourceDescriptor(resource_id=f"tcp:{endpoint}", kind=ResourceKind.TCP, name=endpoint, address=endpoint).model_dump(mode="json"))
-    data_root.mkdir(parents=True, exist_ok=True)
-    try:
-        usage = shutil.disk_usage(data_root)
-        storage_meta = {"class": "internal", "free_bytes": int(usage.free), "total_bytes": int(usage.total)}
-    except OSError:
-        storage_meta = {"class": "internal"}
-    found.append(ResourceDescriptor(resource_id="storage:data", kind=ResourceKind.STORAGE, name="Внутренний диск Hub", path=str(data_root), metadata=storage_meta).model_dump(mode="json"))
-    # Additional mounted volumes may be supplied explicitly as
-    # ``id=/container/path`` entries (comma separated).  On a Raspberry Pi we
-    # also notice conventional mount roots; approval is still required before
-    # any VM can write to one of them.
-    storage_candidates: list[tuple[str, str]] = []
-    for item in filter(None, (x.strip() for x in os.getenv("BB_STORAGE_PATHS", "").split(","))):
-        if "=" not in item:
-            continue
-        resource_id, path = item.split("=", 1)
-        resource_id, path = resource_id.strip(), path.strip()
-        if resource_id and path and Path(path).exists():
-            storage_candidates.append((resource_id, path))
-    for mount_root in ("/mnt", "/media", "/run/media"):
-        for candidate in sorted(glob.glob(f"{mount_root}/*")):
-            path = Path(candidate)
-            try:
-                if not path.is_dir() or not os.path.ismount(path):
-                    continue
-            except OSError:
-                continue
-            storage_candidates.append((path.name, str(path)))
-            for nested in sorted(glob.glob(f"{candidate}/*")):
-                nested_path = Path(nested)
-                try:
-                    if nested_path.is_dir() and os.path.ismount(nested_path):
-                        storage_candidates.append((nested_path.name, str(nested_path)))
-                except OSError:
-                    continue
-    seen_storage_paths: set[str] = set()
-    seen_storage_ids: set[str] = set()
-    for resource_id, path in storage_candidates:
-        resolved_path = str(Path(path).resolve())
-        if resource_id == "data" or resolved_path == str(data_root.resolve()) or resolved_path in seen_storage_paths or resource_id in seen_storage_ids:
-            continue
-        seen_storage_paths.add(resolved_path)
-        seen_storage_ids.add(resource_id)
-        try:
-            usage = shutil.disk_usage(path)
-            metadata = {"class": "external", "free_bytes": int(usage.free), "total_bytes": int(usage.total)}
-        except OSError:
-            metadata = {"class": "external"}
-        found.append(ResourceDescriptor(resource_id=f"storage:{resource_id}", kind=ResourceKind.STORAGE, name=resource_id, path=path, metadata=metadata).model_dump(mode="json"))
-    return found
+_is_usable_serial_port = is_usable_serial_port
+
+
+def _discover_resources(data_root: Path, repo: HubRepository | None = None, *, probe_network: bool = False) -> list[dict[str, Any]]:
+    extra_tcp = tcp_hints_from_vms(repo.list_vms()) if repo is not None else []
+    return discover_resources(data_root, extra_tcp_endpoints=extra_tcp, probe_network=probe_network)
 
 
 def _status_from_vm(vm: dict[str, Any], *, health: str = "unknown", heartbeat_at: datetime | None = None) -> VmStatus:
@@ -268,8 +205,14 @@ def _validate_reader_allowlist(repo: HubRepository, protocol: str, runtime_confi
     if protocol == VmProtocol.MODBUS_RTU.value:
         serials = by_kind.get(ResourceKind.SERIAL.value, [])
         path = str(serials[0].get("path") or "") if serials else ""
-        if not path:
-            raise HTTPException(409, detail={"code": "read_resource_required", "message": "Сначала подтвердите serial-порт в «Ресурсах» и выберите его для этой ВМ"})
+        if not path or not _is_usable_serial_port(path):
+            raise HTTPException(
+                409,
+                detail={
+                    "code": "read_resource_required",
+                    "message": "Нужен UART вроде /dev/ttyAMA0, /dev/ttyUSB0 или /dev/serial0. /dev/tty — это не порт прибора.",
+                },
+            )
         reader["port"] = path
         return
     if protocol == VmProtocol.MODBUS_TCP.value:
@@ -289,17 +232,18 @@ def _validate_reader_allowlist(repo: HubRepository, protocol: str, runtime_confi
     if protocol == VmProtocol.CAN.value:
         cans = by_kind.get(ResourceKind.CAN.value, [])
         iface = str((cans[0].get("name") if cans else "") or reader.get("can_interface") or "")
-        if not cans or not iface:
-            raise HTTPException(409, detail={"code": "read_resource_required", "message": "Сначала подтвердите CAN-интерфейс в «Ресурсах» и выберите его для этой ВМ"})
+        if not cans or not iface or not is_usable_can_interface(iface):
+            raise HTTPException(409, detail={"code": "read_resource_required", "message": "Нужен интерфейс вроде can0. Сначала подтвердите его в «Ресурсах»."})
         reader["can_interface"] = iface
 
 
 def _approved_resource_groups(repo: HubRepository) -> dict[str, list[dict[str, Any]]]:
-    approved = [item for item in repo.list_resources() if item.get("approved")]
+    approved = [item for item in repo.list_resources() if item.get("approved") and item.get("available")]
     return {
         "serial_resources": [item for item in approved if item.get("kind") == ResourceKind.SERIAL.value],
         "tcp_resources": [item for item in approved if item.get("kind") == ResourceKind.TCP.value],
         "can_resources": [item for item in approved if item.get("kind") == ResourceKind.CAN.value],
+        "gpio_resources": [item for item in approved if item.get("kind") == ResourceKind.GPIO.value],
         "storage_resources": [item for item in approved if item.get("kind") == ResourceKind.STORAGE.value],
     }
 
@@ -325,7 +269,7 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
     repo.bootstrap_admin(cfg.bootstrap_username, cfg.bootstrap_password)
     # The Hub's own metadata/telemetry disk is the safe default destination;
     # unlike removable devices it is available as soon as the service starts.
-    repo.upsert_resources(_discover_resources(cfg.data_root))
+    repo.upsert_resources(_discover_resources(cfg.data_root, repo, probe_network=False))
     if repo.resource_by_id("storage:data"):
         repo.approve_resource("storage:data", None)
     bus = EventBus()
@@ -334,6 +278,7 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
     templates = Jinja2Templates(directory=str(Path(__file__).resolve().parents[2] / "ui" / "templates"))
     templates.env.globals["app_version"] = HUB_VERSION
     templates.env.globals["app_vendor"] = HUB_VENDOR
+    templates.env.globals["kind_labels"] = KIND_LABELS
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -991,10 +936,11 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
 
     @app.post("/api/v1/resources/scan", dependencies=[Depends(csrf_protect)])
     async def scan_resources(account=Depends(admin)):
-        items = repo.upsert_resources(_discover_resources(cfg.data_root))
+        items = repo.upsert_resources(_discover_resources(cfg.data_root, repo, probe_network=True))
         repo.approve_resource("storage:data", None)
-        repo.record_audit(int(account["id"]), "resources.scan", None, {"count": len(items)})
-        return {"items": items}
+        summary = discovery_summary(items)
+        repo.record_audit(int(account["id"]), "resources.scan", None, {"count": len(items), "summary": summary})
+        return {"items": items, "summary": summary}
 
     @app.post("/api/v1/resources/{resource_id:path}/approve", dependencies=[Depends(csrf_protect)])
     async def approve_resource(resource_id: str, account=Depends(admin)):
@@ -1290,6 +1236,15 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
             context={
                 "user": account,
                 "resources": resources,
+                "read_resource_groups": [
+                    {
+                        "kind": kind,
+                        "label": KIND_LABELS.get(kind, kind),
+                        "devices": [item for item in resources if item.get("kind") == kind],
+                    }
+                    for kind in ("serial", "tcp", "can", "gpio")
+                    if any(item.get("kind") == kind for item in resources)
+                ],
                 "read_resources": [r for r in resources if r.get("kind") != ResourceKind.STORAGE.value],
                 "storage_resources": [r for r in resources if r.get("kind") == ResourceKind.STORAGE.value],
             },

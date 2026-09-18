@@ -157,12 +157,12 @@ def test_modbus_vm_persists_reader_and_storage_settings(tmp_path: Path, monkeypa
 
 
 def test_rtu_binds_approved_serial_path_when_form_sends_default_port(tmp_path: Path, monkeypatch):
-    monkeypatch.setenv("BB_DISCOVERY_SERIAL_PATHS", "/dev/tty")
+    monkeypatch.setenv("BB_DISCOVERY_SERIAL_PATHS", "/dev/ttyAMA0")
     with _client(tmp_path) as client:
         assert client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin-password"}).status_code == 200
         csrf = client.cookies.get("bb_csrf")
         client.post("/api/v1/resources/scan", headers={"X-CSRF-Token": csrf})
-        assert client.post("/api/v1/resources/serial:/dev/tty/approve", headers={"X-CSRF-Token": csrf}).status_code == 200
+        assert client.post("/api/v1/resources/serial:/dev/ttyAMA0/approve", headers={"X-CSRF-Token": csrf}).status_code == 200
         _publish_map(client, csrf, protocol="modbus_rtu")
         created = client.post(
             "/api/v1/vms",
@@ -171,14 +171,72 @@ def test_rtu_binds_approved_serial_path_when_form_sends_default_port(tmp_path: P
                 "name": "rtu-tty",
                 "protocol": "modbus_rtu",
                 "map_version": "deif-gempac-v1",
-                "read_resources": [{"resource_id": "serial:/dev/tty"}],
-                "config": {"reader": {"port": "/dev/ttyAMA0"}},
+                "read_resources": [{"resource_id": "serial:/dev/ttyAMA0"}],
+                "config": {"reader": {"port": "/dev/ttyUSB0"}},
             },
         )
         assert created.status_code == 200, created.text
         vm = created.json()
-        assert vm["read_resources"][0]["path"] == "/dev/tty"
-        assert vm["config"]["reader"]["port"] == "/dev/tty"
+        assert vm["read_resources"][0]["path"] == "/dev/ttyAMA0"
+        assert vm["config"]["reader"]["port"] == "/dev/ttyAMA0"
+
+
+def test_controlling_tty_is_not_a_uart():
+    from fastapi import HTTPException
+
+    from services.hub.app import _is_usable_serial_port, _validate_reader_allowlist
+
+    assert not _is_usable_serial_port("/dev/tty")
+    assert not _is_usable_serial_port("/dev/tty0")
+    assert not _is_usable_serial_port("/dev/console")
+    assert _is_usable_serial_port("/dev/ttyAMA0")
+    assert _is_usable_serial_port("/dev/ttyUSB0")
+    assert _is_usable_serial_port("/dev/serial0")
+    assert _is_usable_serial_port("COM3")
+    assert _is_usable_serial_port("/dev/serial/by-id/usb-FTDI-if00")
+    reader = {"port": "/dev/ttyAMA0"}
+    try:
+        _validate_reader_allowlist(None, "modbus_rtu", {"reader": reader}, [{"kind": "serial", "path": "/dev/tty"}])
+        raise AssertionError("expected 409")
+    except HTTPException as exc:
+        assert exc.status_code == 409
+        assert exc.detail["code"] == "read_resource_required"
+
+
+def test_serial_scan_skips_controlling_tty(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("BB_DISCOVERY_SERIAL_PATHS", "/dev/tty,/dev/ttyAMA0")
+    with _client(tmp_path) as client:
+        assert client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin-password"}).status_code == 200
+        csrf = client.cookies.get("bb_csrf")
+        scanned = client.post("/api/v1/resources/scan", headers={"X-CSRF-Token": csrf})
+        ids = {item["resource_id"] for item in scanned.json()["items"]}
+        assert "serial:/dev/tty" not in ids
+        assert "serial:/dev/ttyAMA0" in ids
+
+
+def test_scan_lists_forced_physical_resources_for_each_protocol(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("BB_DISCOVERY_SERIAL_PATHS", "/dev/ttyUSB0")
+    monkeypatch.setenv("BB_DISCOVERY_CAN_IFACES", "can0")
+    monkeypatch.setenv("BB_DISCOVERY_GPIO_PATHS", "/dev/gpiochip0")
+    monkeypatch.setenv("BB_DISCOVERY_TCP_ENDPOINTS", "10.0.0.8:502")
+    monkeypatch.setenv("BB_DISCOVERY_TCP_SCAN", "0")
+    with _client(tmp_path) as client:
+        assert client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin-password"}).status_code == 200
+        csrf = client.cookies.get("bb_csrf")
+        scanned = client.post("/api/v1/resources/scan", headers={"X-CSRF-Token": csrf})
+        payload = scanned.json()
+        ids = {item["resource_id"] for item in payload["items"]}
+        assert ids >= {"serial:/dev/ttyUSB0", "can:can0", "gpio:/dev/gpiochip0", "tcp:10.0.0.8:502", "storage:data"}
+        assert payload["summary"]["serial"] >= 1
+        assert payload["summary"]["can"] >= 1
+        assert payload["summary"]["gpio"] >= 1
+        assert payload["summary"]["tcp"] >= 1
+        html = client.get("/admin/resources").text
+        assert "Serial · Modbus RTU" in html
+        assert "TCP · Modbus TCP" in html
+        assert "CAN" in html
+        assert "GPIO" in html
+        assert "USB serial (ttyUSB0)" in html or "ttyUSB0" in html
 
 
 def test_modbus_tcp_vm_persists_host_and_port(tmp_path: Path):
@@ -265,7 +323,7 @@ def test_html_pages_render_with_current_starlette(tmp_path: Path):
         assert client.get("/login").status_code == 200
         login_html = client.get("/login").text
         assert "AGK" in login_html
-        assert "2.0.7" in login_html
+        assert "2.0.9" in login_html
         assert "bb-login" in login_html
         app_js = login_html.find("/static/app.js")
         alpine_js = login_html.find("/static/vendor/alpine.min.js")
@@ -295,7 +353,7 @@ def test_html_pages_render_with_current_starlette(tmp_path: Path):
             assert response.status_code == 200, (path, response.text)
             assert "<html" in response.text.lower()
             assert "AGK" in response.text
-            assert "2.0.7" in response.text
+            assert "2.0.9" in response.text
             if path in {"/dashboard", "/vms", "/admin/vms", f"/vms/{vm['id']}", f"/admin/vms/{vm['id']}/edit"}:
                 assert 'data-vm-action="delete"' in response.text
                 assert "Удалить" in response.text

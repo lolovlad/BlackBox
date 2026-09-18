@@ -7,38 +7,60 @@
     <button type="button" class="bb-btn" data-resource-scan><i class="bi bi-radar"></i> Сканировать</button>
     <span id="resource-message" class="bb-muted" role="status"></span>
   </div>
-  <h2 class="bb-section-title">Откуда читать</h2>
+  {% for group in read_resource_groups %}
+  <h2 class="bb-section-title">{{ group.label }}</h2>
   <div class="bb-table-wrap">
     <table class="bb-table">
       <thead>
-        <tr><th>Тип</th><th>Имя</th><th>Путь/адрес</th><th>Статус</th><th></th></tr>
+        <tr><th>Устройство</th><th>Путь / адрес</th><th>Состояние</th><th></th></tr>
       </thead>
       <tbody>
-      {% for r in read_resources %}
-        <tr>
-          <td>{{ r.kind }}</td>
-          <td>{{ r.name }}</td>
-          <td>{{ r.path or r.address }}</td>
-          <td>{% if r.approved %}<span class="bb-badge bb-badge-running">подтверждён</span>{% else %}<span class="bb-badge bb-badge-pending">ожидает</span>{% endif %}</td>
-          <td>{% if not r.approved %}<button type="button" class="bb-btn bb-btn-sm" data-resource-approve="{{ r.resource_id }}">Подтвердить</button>{% endif %}</td>
+      {% for r in group.devices %}
+        <tr class="{% if not r.available %}is-gone{% endif %}">
+          <td>
+            <div class="bb-resource-name">{{ r.name }}</div>
+            {% if r.metadata.get('detail') %}<div class="bb-resource-detail">{{ r.metadata.get('detail') }}</div>{% endif %}
+          </td>
+          <td class="bb-mono">{{ r.path or r.address }}</td>
+          <td>
+            {% if not r.available %}
+              <span class="bb-badge bb-badge-stopped">нет в системе</span>
+            {% elif r.metadata.get('reachable') is sameas false %}
+              <span class="bb-badge bb-badge-pending">нет ответа</span>
+            {% elif r.approved %}
+              <span class="bb-badge bb-badge-running">подтверждён</span>
+            {% else %}
+              <span class="bb-badge bb-badge-pending">ожидает</span>
+            {% endif %}
+            {% if r.metadata.get('operstate') == 'up' %}<span class="bb-badge bb-badge-running">up</span>{% endif %}
+            {% if r.metadata.get('operstate') and r.metadata.get('operstate') != 'up' %}<span class="bb-badge bb-badge-stopped">{{ r.metadata.get('operstate') }}</span>{% endif %}
+          </td>
+          <td>
+            {% if r.available and not r.approved %}
+              <button type="button" class="bb-btn bb-btn-sm" data-resource-approve="{{ r.resource_id }}">Подтвердить</button>
+            {% endif %}
+          </td>
         </tr>
-      {% else %}
-        <tr><td colspan="5" class="bb-muted">Нет устройств.</td></tr>
       {% endfor %}
       </tbody>
     </table>
   </div>
+  {% else %}
+  <h2 class="bb-section-title">Откуда читать</h2>
+  <p class="bb-muted">Нет устройств. Нажмите «Сканировать» после подключения прибора.</p>
+  {% endfor %}
   <h2 class="bb-section-title">Хранение</h2>
   <div class="bb-table-wrap">
     <table class="bb-table">
       <thead><tr><th>Носитель</th><th>Путь</th><th>Свободно</th><th>Статус</th><th></th></tr></thead>
       <tbody>
       {% for r in storage_resources %}
-        <tr>
-          <td>{{ r.name }}</td><td>{{ r.path }}</td>
-          <td>{{ r.metadata.get('free_bytes', '—') }}</td>
-          <td>{% if r.approved %}<span class="bb-badge bb-badge-running">подтверждён</span>{% else %}<span class="bb-badge bb-badge-pending">ожидает</span>{% endif %}</td>
-          <td>{% if not r.approved %}<button type="button" class="bb-btn bb-btn-sm" data-resource-approve="{{ r.resource_id }}">Подтвердить</button>{% endif %}</td>
+        <tr class="{% if not r.available %}is-gone{% endif %}">
+          <td>{{ r.name }}</td>
+          <td class="bb-mono">{{ r.path }}</td>
+          <td>{{ r.metadata.get('free_human') or r.metadata.get('detail') or '—' }}</td>
+          <td>{% if not r.available %}<span class="bb-badge bb-badge-stopped">нет в системе</span>{% elif r.approved %}<span class="bb-badge bb-badge-running">подтверждён</span>{% else %}<span class="bb-badge bb-badge-pending">ожидает</span>{% endif %}</td>
+          <td>{% if r.available and not r.approved %}<button type="button" class="bb-btn bb-btn-sm" data-resource-approve="{{ r.resource_id }}">Подтвердить</button>{% endif %}</td>
         </tr>
       {% else %}<tr><td colspan="5" class="bb-muted">Нет носителей.</td></tr>{% endfor %}
       </tbody>
