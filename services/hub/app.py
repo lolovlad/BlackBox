@@ -31,7 +31,7 @@ from .state import EventBus
 from .storage import ParquetStore, StorageUnavailable, purge_vm_directories
 from .vm_config import normalize_runtime_config
 
-HUB_VERSION = "2.0.9"
+HUB_VERSION = "2.0.10"
 HUB_VENDOR = "AGK"
 
 

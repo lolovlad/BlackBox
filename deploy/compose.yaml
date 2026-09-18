@@ -36,6 +36,11 @@ services:
       BB_STORAGE_PATHS: ${BB_STORAGE_PATHS:-}
       BB_DISCOVERY_SERIAL_PATHS: ${BB_DISCOVERY_SERIAL_PATHS:-}
       BB_DISCOVERY_TCP_ENDPOINTS: ${BB_DISCOVERY_TCP_ENDPOINTS:-}
+      BB_DISCOVERY_DEV_ROOT: /host-dev
+      BB_DISCOVERY_SYS_CLASS_NET: /host/sys/class/net
+      BB_DISCOVERY_SYS_BUS_GPIO: /host/sys/bus/gpio/devices
+      BB_DISCOVERY_SYS_CLASS_GPIO: /host/sys/class/gpio
+      BB_DISCOVERY_PROC_NET_ARP: /host/proc/net/arp
     ports:
       - "${BB_HUB_PORT:-8080}:8080"
     depends_on:
@@ -44,6 +49,11 @@ services:
     networks: [bb-control]
     volumes:
       - blackbox-data:/data
+      - /dev:/host-dev:ro
+      - /sys/class/net:/host/sys/class/net:ro
+      - /sys/bus/gpio:/host/sys/bus/gpio:ro
+      - /sys/class/gpio:/host/sys/class/gpio:ro
+      - /proc/net/arp:/host/proc/net/arp:ro
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/healthz')"]
       interval: 10s

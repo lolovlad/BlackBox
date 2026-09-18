@@ -40,6 +40,38 @@ def _env_csv(name: str) -> list[str]:
     return [item.strip() for item in os.getenv(name, "").split(",") if item.strip()]
 
 
+def _path_from_env(name: str, *defaults: str) -> Path:
+    raw = os.getenv(name, "").strip()
+    if raw:
+        return Path(raw)
+    for default in defaults:
+        if Path(default).exists():
+            return Path(default)
+    return Path(defaults[-1] if defaults else ".")
+
+
+def discovery_dev_root() -> Path:
+    """Host /dev, bind-mounted into Hub as /host-dev when running in Docker."""
+    return _path_from_env("BB_DISCOVERY_DEV_ROOT", "/host-dev", "/dev")
+
+
+def as_linux_dev_path(path: str, *, dev_root: Path | None = None) -> str:
+    """Turn /host-dev/ttyAMA10 into /dev/ttyAMA10 for Docker --device and workers."""
+    candidate = Path(path)
+    root = Path(dev_root) if dev_root is not None else discovery_dev_root()
+    try:
+        actual = candidate.resolve() if candidate.exists() else candidate
+        base = root.resolve() if root.exists() else root
+        relative = actual.relative_to(base)
+        mapped = relative.as_posix().lstrip("/")
+        return f"/dev/{mapped}" if mapped else "/dev"
+    except (ValueError, OSError):
+        posix = str(path).replace("\\", "/")
+        if posix.startswith("/dev/"):
+            return posix
+        return f"/dev/{candidate.name}"
+
+
 def _env_flag(name: str, default: bool = False) -> bool:
     raw = os.getenv(name)
     if raw is None or not raw.strip():
@@ -78,8 +110,8 @@ def is_usable_serial_port(path: str) -> bool:
     name = resolved.name
     if name in {"tty", "console", "ttyprintk"} or re.fullmatch(r"tty\d+", name):
         return False
-    parent = resolved.parent.as_posix()
-    if parent in {"/dev/serial/by-id", "/dev/serial/by-path"}:
+    parent = resolved.parent
+    if parent.name in {"by-id", "by-path"} and parent.parent.name == "serial":
         return True
     return bool(_SERIAL_DEVICE.match(name))
 
@@ -211,8 +243,9 @@ def _serial_info_for(path: str, catalog: dict[str, dict[str, Any]]) -> dict[str,
     return {}
 
 
-def _serial_display_name(path: str, info: dict[str, Any], transport: str) -> str:
+def _serial_display_name(path: str, info: dict[str, Any], transport: str, aliases: list[str] | None = None) -> str:
     node = Path(path).name
+    alias_names = {Path(item).name.lower() for item in (aliases or [])}
     product = str(info.get("product") or "").strip()
     description = str(info.get("description") or "").strip()
     manufacturer = str(info.get("manufacturer") or "").strip()
@@ -221,6 +254,8 @@ def _serial_display_name(path: str, info: dict[str, Any], transport: str) -> str
         return f"{label} ({node})"
     if manufacturer:
         return f"{manufacturer} ({node})"
+    if "serial0" in alias_names or node.lower() == "serial0":
+        return f"GPIO UART ({node})"
     if transport == "onboard":
         return f"Бортовой UART ({node})"
     if transport == "usb":
@@ -245,20 +280,21 @@ def _serial_detail(path: str, info: dict[str, Any], aliases: list[str]) -> str:
 
 
 def discover_serial_resources() -> list[dict[str, Any]]:
+    root = discovery_dev_root()
     forced = _env_csv("BB_DISCOVERY_SERIAL_PATHS")
     catalog = _pyserial_ports()
     found: list[str] = list(forced)
     found.extend(catalog.keys())
     for pattern in (
-        "/dev/ttyUSB*",
-        "/dev/ttyACM*",
-        "/dev/ttyAMA*",
-        "/dev/ttyS*",
-        "/dev/serial0",
-        "/dev/serial1",
-        "/dev/serial/by-id/*",
-        "/dev/serial/by-path/*",
-        "/dev/rfcomm*",
+        str(root / "ttyUSB*"),
+        str(root / "ttyACM*"),
+        str(root / "ttyAMA*"),
+        str(root / "ttyS*"),
+        str(root / "serial0"),
+        str(root / "serial1"),
+        str(root / "serial" / "by-id" / "*"),
+        str(root / "serial" / "by-path" / "*"),
+        str(root / "rfcomm*"),
     ):
         found.extend(glob.glob(pattern))
     usable: list[str] = []
@@ -275,22 +311,23 @@ def discover_serial_resources() -> list[dict[str, Any]]:
     resources: list[dict[str, Any]] = []
     seen: set[str] = set()
     for path in preferred:
-        if path in seen:
+        host_path = as_linux_dev_path(path, dev_root=root)
+        if host_path in seen:
             continue
-        seen.add(path)
+        seen.add(host_path)
         info = _serial_info_for(path, catalog)
-        transport = _serial_transport(path)
-        aliases = sorted(set(grouped.get(_safe_realpath(path), [path])))
+        transport = _serial_transport(host_path)
+        aliases = sorted({as_linux_dev_path(item, dev_root=root) for item in grouped.get(_safe_realpath(path), [path])})
         resources.append(
             ResourceDescriptor(
-                resource_id=f"serial:{path}",
+                resource_id=f"serial:{host_path}",
                 kind=ResourceKind.SERIAL,
-                name=_serial_display_name(path, info, transport),
-                path=path,
+                name=_serial_display_name(host_path, info, transport, aliases),
+                path=host_path,
                 metadata={
                     "protocol": "modbus_rtu",
                     "transport": transport,
-                    "detail": _serial_detail(path, info, aliases),
+                    "detail": _serial_detail(host_path, info, aliases),
                     "aliases": aliases,
                     "manufacturer": info.get("manufacturer"),
                     "product": info.get("product") or info.get("description"),
@@ -310,7 +347,7 @@ def _sysfs_text(path: Path) -> str:
 
 
 def discover_can_resources(*, sys_class_net: Path | None = None) -> list[dict[str, Any]]:
-    root = sys_class_net or Path("/sys/class/net")
+    root = sys_class_net or _path_from_env("BB_DISCOVERY_SYS_CLASS_NET", "/host/sys/class/net", "/sys/class/net")
     names: set[str] = set(_env_csv("BB_DISCOVERY_CAN_IFACES"))
     if root.exists():
         try:
@@ -353,7 +390,7 @@ def discover_can_resources(*, sys_class_net: Path | None = None) -> list[dict[st
                 resource_id=f"can:{name}",
                 kind=ResourceKind.CAN,
                 name=name,
-                path=str(iface) if iface.exists() else f"/sys/class/net/{name}",
+                path=f"/sys/class/net/{name}",
                 metadata={
                     "protocol": "can",
                     "operstate": operstate or None,
@@ -376,36 +413,38 @@ def _gpio_sysfs_info(name: str, *, sys_bus_gpio: Path, sys_class_gpio: Path) -> 
 
 
 def discover_gpio_resources(*, sys_bus_gpio: Path | None = None, sys_class_gpio: Path | None = None) -> list[dict[str, Any]]:
-    bus_root = sys_bus_gpio or Path("/sys/bus/gpio/devices")
-    class_root = sys_class_gpio or Path("/sys/class/gpio")
+    bus_root = sys_bus_gpio or _path_from_env("BB_DISCOVERY_SYS_BUS_GPIO", "/host/sys/bus/gpio/devices", "/sys/bus/gpio/devices")
+    class_root = sys_class_gpio or _path_from_env("BB_DISCOVERY_SYS_CLASS_GPIO", "/host/sys/class/gpio", "/sys/class/gpio")
+    root = discovery_dev_root()
     forced = _env_csv("BB_DISCOVERY_GPIO_PATHS")
     paths = list(forced)
-    paths.extend(glob.glob("/dev/gpiochip*"))
+    paths.extend(glob.glob(str(root / "gpiochip*")))
     resources: list[dict[str, Any]] = []
     seen: set[str] = set()
     for path in sorted(set(paths)):
-        name = Path(path).name
+        host_path = as_linux_dev_path(path, dev_root=root)
+        name = Path(host_path).name
         info = _gpio_sysfs_info(name, sys_bus_gpio=bus_root, sys_class_gpio=class_root)
-        if not is_usable_gpio_chip(path, label=info["label"]):
+        if not is_usable_gpio_chip(host_path, label=info["label"]):
             continue
         if path not in forced and not _is_present_node(path) and os.name != "nt":
             continue
-        if path in seen:
+        if host_path in seen:
             continue
-        seen.add(path)
+        seen.add(host_path)
         lines = info["ngpio"]
         label = info["label"] or name
-        detail_parts = [path]
+        detail_parts = [host_path]
         if info["label"]:
             detail_parts.append(info["label"])
         if lines:
             detail_parts.append(f"{lines} линий")
         resources.append(
             ResourceDescriptor(
-                resource_id=f"gpio:{path}",
+                resource_id=f"gpio:{host_path}",
                 kind=ResourceKind.GPIO,
                 name=f"{name} · {label}" if info["label"] else name,
-                path=path,
+                path=host_path,
                 metadata={
                     "protocol": "gpio",
                     "label": info["label"] or None,
@@ -523,7 +562,7 @@ def discover_tcp_resources(
             configured.append((*parsed, "configured"))
     arp_targets: list[tuple[str, int, str, str, str]] = []
     if _lan_scan_enabled(probe_network=probe_network):
-        for ip, mac, iface in _arp_neighbors(proc_net_arp or Path("/proc/net/arp")):
+        for ip, mac, iface in _arp_neighbors(proc_net_arp or _path_from_env("BB_DISCOVERY_PROC_NET_ARP", "/host/proc/net/arp", "/proc/net/arp")):
             for port in _tcp_ports():
                 arp_targets.append((ip, port, "arp", mac, iface))
 

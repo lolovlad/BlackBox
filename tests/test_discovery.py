@@ -29,6 +29,7 @@ def test_serial_filter_and_alias_collapse():
     assert not is_usable_serial_port("/dev/tty")
     assert not is_usable_serial_port("/dev/tty0")
     assert is_usable_serial_port("/dev/ttyAMA0")
+    assert is_usable_serial_port("/dev/ttyAMA10")
     assert is_usable_serial_port("/dev/serial0")
     resolve = {
         "/dev/serial0": "/real/ttyAMA0",
@@ -124,6 +125,20 @@ def test_tcp_hints_ignore_loopback_simulator():
         ]
     )
     assert hints == ["192.168.10.4:1502"]
+
+
+def test_host_dev_uart_is_published_as_linux_path(tmp_path: Path, monkeypatch):
+    from services.hub.discovery import as_linux_dev_path, discover_serial_resources
+
+    root = tmp_path / "host-dev"
+    root.mkdir()
+    (root / "ttyAMA10").write_text("")
+    (root / "serial0").write_text("")
+    assert as_linux_dev_path(str(root / "ttyAMA10"), dev_root=root) == "/dev/ttyAMA10"
+    monkeypatch.setenv("BB_DISCOVERY_DEV_ROOT", str(root))
+    monkeypatch.setenv("BB_DISCOVERY_SERIAL_PATHS", str(root / "ttyAMA10"))
+    items = discover_serial_resources()
+    assert any(item["resource_id"] == "serial:/dev/ttyAMA10" and item["path"] == "/dev/ttyAMA10" for item in items)
 
 
 def test_human_bytes():
