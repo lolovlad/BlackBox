@@ -156,6 +156,31 @@ def test_modbus_vm_persists_reader_and_storage_settings(tmp_path: Path, monkeypa
         assert vm["storage_resource_id"] == "storage:data"
 
 
+def test_rtu_binds_approved_serial_path_when_form_sends_default_port(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("BB_DISCOVERY_SERIAL_PATHS", "/dev/tty")
+    with _client(tmp_path) as client:
+        assert client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin-password"}).status_code == 200
+        csrf = client.cookies.get("bb_csrf")
+        client.post("/api/v1/resources/scan", headers={"X-CSRF-Token": csrf})
+        assert client.post("/api/v1/resources/serial:/dev/tty/approve", headers={"X-CSRF-Token": csrf}).status_code == 200
+        _publish_map(client, csrf, protocol="modbus_rtu")
+        created = client.post(
+            "/api/v1/vms",
+            headers={"X-CSRF-Token": csrf},
+            json={
+                "name": "rtu-tty",
+                "protocol": "modbus_rtu",
+                "map_version": "deif-gempac-v1",
+                "read_resources": [{"resource_id": "serial:/dev/tty"}],
+                "config": {"reader": {"port": "/dev/ttyAMA0"}},
+            },
+        )
+        assert created.status_code == 200, created.text
+        vm = created.json()
+        assert vm["read_resources"][0]["path"] == "/dev/tty"
+        assert vm["config"]["reader"]["port"] == "/dev/tty"
+
+
 def test_modbus_tcp_vm_persists_host_and_port(tmp_path: Path):
     with _client(tmp_path) as client:
         assert client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin-password"}).status_code == 200
@@ -240,7 +265,7 @@ def test_html_pages_render_with_current_starlette(tmp_path: Path):
         assert client.get("/login").status_code == 200
         login_html = client.get("/login").text
         assert "AGK" in login_html
-        assert "2.0.6" in login_html
+        assert "2.0.7" in login_html
         assert "bb-login" in login_html
         app_js = login_html.find("/static/app.js")
         alpine_js = login_html.find("/static/vendor/alpine.min.js")
@@ -270,7 +295,7 @@ def test_html_pages_render_with_current_starlette(tmp_path: Path):
             assert response.status_code == 200, (path, response.text)
             assert "<html" in response.text.lower()
             assert "AGK" in response.text
-            assert "2.0.6" in response.text
+            assert "2.0.7" in response.text
             if path in {"/dashboard", "/vms", "/admin/vms", f"/vms/{vm['id']}", f"/admin/vms/{vm['id']}/edit"}:
                 assert 'data-vm-action="delete"' in response.text
                 assert "Удалить" in response.text

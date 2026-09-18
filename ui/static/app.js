@@ -180,7 +180,7 @@
 
   function runtimeConfigFromForm(form) {
     const get = function (name) { return enabledField(form, name); };
-    const protocol = form.querySelector('[name="protocol"]')?.value || form.dataset.vmProtocol || 'simulator';
+    const protocol = (form.querySelector('[name="protocol"]:checked') || form.querySelector('[name="protocol"]'))?.value || form.dataset.vmProtocol || 'simulator';
     const reader = {
       enabled: get('enabled') ? get('enabled').checked : true,
       poll_interval_sec: numberOr(get('poll_interval_sec')?.value, 0.12),

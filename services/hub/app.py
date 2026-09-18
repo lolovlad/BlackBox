@@ -32,7 +32,7 @@ from .state import EventBus
 from .storage import ParquetStore, StorageUnavailable, purge_vm_directories
 from .vm_config import normalize_runtime_config
 
-HUB_VERSION = "2.0.6"
+HUB_VERSION = "2.0.7"
 HUB_VENDOR = "AGK"
 
 
@@ -252,25 +252,46 @@ def _vm_storage_subdirs(vm: dict[str, Any]) -> list[str]:
 
 
 def _validate_reader_allowlist(repo: HubRepository, protocol: str, runtime_config: dict[str, Any], resources: list[dict[str, Any]]) -> None:
-    """Require an approved physical source for non-simulator workers."""
+    """Require an approved physical source and bind its path into reader config.
+
+    The browser may send a stale default port (``/dev/ttyAMA0``).  The selected
+    approved resource is the only trusted device path.
+    """
     if protocol == VmProtocol.SIMULATOR.value:
         return
-    read_ids = {str(item.get("resource_id")) for item in resources if isinstance(item, dict)}
-    reader = runtime_config.get("reader", {}) if isinstance(runtime_config, dict) else {}
+    reader = runtime_config.setdefault("reader", {}) if isinstance(runtime_config, dict) else {}
+    by_kind = {}
+    for item in resources:
+        if isinstance(item, dict) and item.get("kind"):
+            by_kind.setdefault(str(item["kind"]), []).append(item)
+
     if protocol == VmProtocol.MODBUS_RTU.value:
-        port = str(reader.get("port", ""))
-        if not any(item_id in {f"serial:{port}", f"serial:COM{port}"} or item_id.endswith(port) for item_id in read_ids):
+        serials = by_kind.get(ResourceKind.SERIAL.value, [])
+        path = str(serials[0].get("path") or "") if serials else ""
+        if not path:
             raise HTTPException(409, detail={"code": "read_resource_required", "message": "Сначала подтвердите serial-порт в «Ресурсах» и выберите его для этой ВМ"})
-    elif protocol == VmProtocol.MODBUS_TCP.value:
-        endpoint = f"{reader.get('host', '127.0.0.1')}:{reader.get('tcp_port', 502)}"
-        # Loopback is useful for a simulator/fake instrument in the lab; remote
-        # endpoints must still be explicitly discovered and approved.
-        if str(reader.get("host", "127.0.0.1")) not in {"127.0.0.1", "localhost", "::1"} and not any(item_id in {f"tcp:{endpoint}", f"tcp://{endpoint}"} for item_id in read_ids):
-            raise HTTPException(409, detail={"code": "read_resource_required", "message": "Сначала найдите и подтвердите TCP-адрес прибора в «Ресурсах»"})
-    elif protocol == VmProtocol.CAN.value:
-        iface = str(reader.get("can_interface") or reader.get("interface") or "")
-        if not any(item_id in {f"can:{iface}"} or str(item_id).endswith(iface) for item_id in read_ids if iface):
+        reader["port"] = path
+        return
+    if protocol == VmProtocol.MODBUS_TCP.value:
+        tcps = by_kind.get(ResourceKind.TCP.value, [])
+        if tcps:
+            address = str(tcps[0].get("address") or tcps[0].get("path") or tcps[0].get("name") or "")
+            host, sep, port = address.rpartition(":")
+            if host and sep and port.isdigit():
+                reader["host"] = host
+                reader["tcp_port"] = int(port)
+            elif address:
+                reader["host"] = address
+            return
+        if str(reader.get("host", "127.0.0.1")) in {"127.0.0.1", "localhost", "::1"}:
+            return
+        raise HTTPException(409, detail={"code": "read_resource_required", "message": "Сначала найдите и подтвердите TCP-адрес прибора в «Ресурсах»"})
+    if protocol == VmProtocol.CAN.value:
+        cans = by_kind.get(ResourceKind.CAN.value, [])
+        iface = str((cans[0].get("name") if cans else "") or reader.get("can_interface") or "")
+        if not cans or not iface:
             raise HTTPException(409, detail={"code": "read_resource_required", "message": "Сначала подтвердите CAN-интерфейс в «Ресурсах» и выберите его для этой ВМ"})
+        reader["can_interface"] = iface
 
 
 def _approved_resource_groups(repo: HubRepository) -> dict[str, list[dict[str, Any]]]:
