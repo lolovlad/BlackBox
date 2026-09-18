@@ -131,7 +131,7 @@ def run() -> int:
         except Exception as exc:
             if str(exc) != last_error:
                 try:
-                    client.report_error("hub_unavailable", str(exc))
+                    client.report_error("hub_unavailable", exc)
                 except Exception:
                     pass
                 last_error = str(exc)
@@ -151,7 +151,7 @@ def run() -> int:
                     client.acknowledge(command)
                 except Exception as exc:
                     client.acknowledge(command, accepted=False, message=str(exc))
-                    client.report_error("config_apply_failed", str(exc))
+                    client.report_error("config_apply_failed", exc)
                 continue
             client.acknowledge(command)
         if reader is None:
@@ -178,7 +178,7 @@ def run() -> int:
         except Exception as exc:
             if str(exc) != last_error:
                 try:
-                    client.report_error("read_failed", str(exc))
+                    client.report_error("read_failed", exc)
                 except Exception:
                     pass
                 last_error = str(exc)

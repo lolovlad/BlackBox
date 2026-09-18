@@ -1,8 +1,179 @@
 {% extends "base.html" %}
 {% block title %}ВМ · BlackBox{% endblock %}
+{% block body_class %}bb-vms-body{% endblock %}
 {% block content %}
-<section class="bb-card">
-  <h1 class="bb-page-title">Виртуальные машины</h1>
-  {% include "vm_table.html" %}
+<section
+  class="bb-vm-workspace"
+  data-vm-workspace
+  data-selected-vm="{{ selected_vm_id }}"
+  :class="{ 'is-inspecting': selected }"
+  x-data="bbVmsPage()"
+  x-init="boot()"
+  @keydown.escape.window="onEscape()"
+>
+  <header class="bb-maps-hero">
+    <div>
+      <h1 class="bb-page-title">Виртуальные машины</h1>
+    </div>
+    {% if user.role == 'admin' %}
+    <div class="bb-maps-hero-actions">
+      <button type="button" class="bb-btn" @click="createOpen = true"><i class="bi bi-plus-lg"></i> Добавить</button>
+    </div>
+    {% endif %}
+  </header>
+
+  {% if vms %}
+  <div class="bb-vm-grid">
+    {% for vm in vms %}
+    {% set protocol = vm.protocol %}
+    {% set connection = vm_connection(vm) %}
+    <article
+      class="bb-vm-card"
+      data-vm-card="{{ vm.id }}"
+      :class="{ 'is-open': selected === '{{ vm.id }}' }"
+      @click="openVm('{{ vm.id }}')"
+    >
+      <div class="bb-vm-card-top">
+        <span class="bb-vm-proto"><i class="bi {{ protocol_icons.get(protocol, 'bi-hdd-stack') }}"></i> {{ protocol_labels.get(protocol, protocol) }}</span>
+        <span class="bb-badge" :class="'bb-badge-' + (lifecycles['{{ vm.id }}'] || '{{ vm.lifecycle }}')" x-text="lifecycleLabel(lifecycles['{{ vm.id }}'] || '{{ vm.lifecycle }}')">{{ lifecycle_labels.get(vm.lifecycle, vm.lifecycle) }}</span>
+      </div>
+      <h2 class="bb-vm-card-title">{{ vm.name }}</h2>
+      <p class="bb-vm-card-desc">{{ vm.description or ('Карта ' ~ vm.map_version ~ ' · ' ~ connection) }}</p>
+      <dl class="bb-vm-card-meta">
+        <div><dt>Карта</dt><dd>{{ vm.map_version }}</dd></div>
+        <div><dt>Подключение</dt><dd>{{ connection }}</dd></div>
+      </dl>
+      <p class="bb-vm-card-error" x-show="errors['{{ vm.id }}']" x-text="errors['{{ vm.id }}']"{% if vm.last_error %} style="display:block"{% endif %}>{% if vm.last_error %}{{ vm.last_error }}{% endif %}</p>
+      {% if user.role == 'admin' %}
+      <div class="bb-vm-card-ops" @click.stop>
+        <button
+          type="button"
+          class="bb-icon-btn bb-icon-btn-play"
+          data-vm-action="start"
+          data-vm-id="{{ vm.id }}"
+          title="Запустить"
+          aria-label="Запустить"
+          :disabled="['running','starting'].includes(lifecycles['{{ vm.id }}'] || '{{ vm.lifecycle }}')"
+          {% if vm.lifecycle in ['running', 'starting'] %}disabled{% endif %}
+        ><i class="bi bi-play-fill"></i></button>
+        <button
+          type="button"
+          class="bb-icon-btn bb-icon-btn-stop"
+          data-vm-action="stop"
+          data-vm-id="{{ vm.id }}"
+          title="Остановить"
+          aria-label="Остановить"
+          :disabled="['stopped','pending','created'].includes(lifecycles['{{ vm.id }}'] || '{{ vm.lifecycle }}')"
+          {% if vm.lifecycle in ['stopped', 'pending', 'created'] %}disabled{% endif %}
+        ><i class="bi bi-stop-fill"></i></button>
+        <button
+          type="button"
+          class="bb-icon-btn"
+          data-vm-action="restart"
+          data-vm-id="{{ vm.id }}"
+          title="Перезапустить"
+          aria-label="Перезапустить"
+        ><i class="bi bi-arrow-repeat"></i></button>
+        <span class="bb-vm-ops-gap"></span>
+        <a class="bb-icon-btn" href="/admin/vms/{{ vm.id }}/edit" title="Изменить" aria-label="Изменить"><i class="bi bi-pencil"></i></a>
+        <button
+          type="button"
+          class="bb-icon-btn bb-icon-btn-danger"
+          data-vm-action="delete"
+          data-vm-id="{{ vm.id }}"
+          data-vm-name="{{ vm.name }}"
+          data-redirect-after="/vms"
+          title="Удалить"
+          aria-label="Удалить"
+        ><i class="bi bi-trash3"></i><span class="bb-sr-only">Удалить</span></button>
+      </div>
+      {% endif %}
+    </article>
+    {% endfor %}
+  </div>
+  {% else %}
+  <div class="bb-empty-card">
+    <i class="bi bi-hdd-stack"></i>
+    <p>Нет виртуальных машин</p>
+    {% if user.role == 'admin' %}
+    <button type="button" class="bb-btn" @click="createOpen = true"><i class="bi bi-plus-lg"></i> Добавить</button>
+    {% endif %}
+  </div>
+  {% endif %}
+
+  <aside class="bb-vm-inspector" x-show="selected" x-cloak role="dialog" aria-label="Инспектор ВМ">
+    <header class="bb-inspector-head">
+      <div>
+        <p class="bb-inspector-kicker" x-text="selectedMeta.protocol"></p>
+        <h2 x-text="selectedMeta.name">ВМ</h2>
+        <p class="bb-muted" x-text="selectedMeta.connection"></p>
+      </div>
+      <div class="bb-inspector-head-actions">
+        {% if user.role == 'admin' %}
+        <button type="button" class="bb-btn bb-btn-secondary bb-btn-sm" @click="applyMap()" :disabled="!selected"><i class="bi bi-file-earmark-arrow-up"></i> Карта</button>
+        {% endif %}
+        <button type="button" class="bb-btn bb-btn-ghost bb-btn-sm" @click="closeInspector()" aria-label="Закрыть"><i class="bi bi-x-lg"></i></button>
+      </div>
+    </header>
+    <div class="bb-inspector-tabs">
+      <button type="button" class="bb-chip" :class="{ 'is-active': tab === 'log' }" @click="tab = 'log'">Журнал</button>
+      <button type="button" class="bb-chip" :class="{ 'is-active': tab === 'read' }" @click="tab = 'read'">Чтение</button>
+    </div>
+    <div class="bb-inspector-body">
+      <div class="bb-journal-wrap" x-show="tab === 'log'">
+        <p class="bb-muted" x-show="loading">Загрузка журнала…</p>
+        <div class="bb-journal" x-ref="journal">
+          <template x-for="(entry, index) in entries" :key="entry.timestamp + index">
+            <div class="bb-log-row" :class="'is-' + entry.level + ' is-' + entry.kind">
+              <span class="bb-log-time" x-text="entry.clock"></span>
+              <span class="bb-log-src" x-text="entry.source"></span>
+              <span class="bb-log-msg" x-text="entry.line"></span>
+            </div>
+          </template>
+          <p class="bb-journal-empty" x-show="!loading && entries.length === 0">Журнал пуст. Запустите ВМ, чтобы увидеть старт, остановку и ошибки воркера.</p>
+        </div>
+      </div>
+      <div class="bb-read-wrap" x-show="tab === 'read'">
+        <p class="bb-read-status">
+          <span x-show="quality" x-text="'Качество: ' + quality"></span>
+          <span x-show="capturedAt" x-text="formatClock(capturedAt)"></span>
+        </p>
+        <p class="bb-error" x-show="selectedError" x-text="selectedError"></p>
+        <table class="bb-read-table" x-show="readingRows.length">
+          <thead>
+            <tr><th>Тег</th><th>Значение</th><th>Источник</th></tr>
+          </thead>
+          <tbody>
+            <template x-for="row in readingRows" :key="row.name">
+              <tr>
+                <td x-text="row.name"></td>
+                <td class="bb-mono" x-text="formatValue(row.value)"></td>
+                <td class="bb-muted" x-text="row.source || row.type || ''"></td>
+              </tr>
+            </template>
+          </tbody>
+        </table>
+        <p class="bb-muted" x-show="!readingRows.length">Нет прочитанных значений. Запустите ВМ, чтобы увидеть события карты.</p>
+      </div>
+    </div>
+  </aside>
+
+  {% if user.role == 'admin' %}
+  <div class="bb-studio" x-show="createOpen" x-cloak>
+    <div class="bb-studio-backdrop" @click="createOpen = false"></div>
+    <div class="bb-studio-panel bb-vm-create-panel" role="dialog" aria-modal="true" aria-labelledby="bb-vm-create-title" @click.stop>
+      <header class="bb-studio-head">
+        <div>
+          <h2 id="bb-vm-create-title">Добавить ВМ</h2>
+        </div>
+        <button type="button" class="bb-btn bb-btn-ghost bb-btn-sm" @click="createOpen = false" aria-label="Закрыть"><i class="bi bi-x-lg"></i></button>
+      </header>
+      <div class="bb-vm-create-body">
+        {% include "vm_create_form.html" %}
+      </div>
+    </div>
+  </div>
+  {% endif %}
 </section>
+<script type="application/json" id="bb-vms-state">{{ {"selected": selected_vm_id, "vms": vms}|tojson }}</script>
 {% endblock %}

@@ -305,7 +305,7 @@ class HubRepository:
         with self.connect() as c:
             rows = c.execute(
                 "SELECT * FROM lifecycle_events WHERE vm_id=? ORDER BY id DESC LIMIT ?",
-                (vm_id, max(1, min(limit, 1000))),
+                (vm_id, max(1, min(limit, 5000))),
             ).fetchall()
         return [dict(row) | {"payload": json.loads(row["payload_json"])} for row in rows]
 

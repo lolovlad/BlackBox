@@ -11,6 +11,22 @@ from uuid import UUID
 from bb_platform.contracts import RawBatch, RawSample, VmProtocol, WorkerCommandAck, WorkerError, WorkerHeartbeat, WorkerRegister
 
 
+def format_exception(exc: BaseException) -> str:
+    parts: list[str] = []
+    current: BaseException | None = exc
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        text = str(current).strip() or type(current).__name__
+        if not parts or text not in parts[-1]:
+            parts.append(text)
+        nxt = current.__cause__
+        if nxt is None and not getattr(current, "__suppress_context__", False):
+            nxt = current.__context__
+        current = nxt
+    return " — ".join(parts)
+
+
 class WorkerClient:
     """Small stdlib HTTP client used inside hardened worker containers."""
 
@@ -63,8 +79,9 @@ class WorkerClient:
         payload = WorkerCommandAck(command_id=UUID(str(command["command_id"])), vm_id=UUID(self.vm_id), accepted=accepted, message=message)
         return self.post("/api/v1/internal/workers/command-ack", payload.model_dump(mode="json"))
 
-    def report_error(self, code: str, message: str, details: dict | None = None) -> dict:
-        payload = WorkerError(vm_id=UUID(self.vm_id), code=code, message=message, timestamp=datetime.now(timezone.utc), details=details or {})
+    def report_error(self, code: str, message: str | BaseException, details: dict | None = None) -> dict:
+        text = format_exception(message) if isinstance(message, BaseException) else str(message)
+        payload = WorkerError(vm_id=UUID(self.vm_id), code=code, message=text, timestamp=datetime.now(timezone.utc), details=details or {})
         return self.post("/api/v1/internal/workers/error", payload.model_dump(mode="json"))
 
     def batch(self, sources: dict[str, list], map_version: str, *, quality: str = "good") -> dict:

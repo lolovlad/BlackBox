@@ -32,6 +32,29 @@ class DockerManager:
             raise DockerUnavailable(getattr(self, "error", "Docker is unavailable"))
 
     @staticmethod
+    def device_mappings(vm: dict[str, Any]) -> list[str]:
+        """Host /dev nodes the worker must see. Docker --device is fixed at create time."""
+        paths: set[str] = set()
+
+        def add(value: Any) -> None:
+            text = str(value or "").strip()
+            if text.startswith("/dev/") and text != "/dev/tty":
+                paths.add(text)
+
+        for resource in vm.get("read_resources", vm.get("resources", [])) or []:
+            if not isinstance(resource, dict):
+                continue
+            add(resource.get("path"))
+            metadata = resource.get("metadata") if isinstance(resource.get("metadata"), dict) else {}
+            aliases = metadata.get("aliases") if isinstance(metadata.get("aliases"), list) else []
+            for alias in aliases:
+                add(alias)
+        config = vm.get("config") if isinstance(vm.get("config"), dict) else {}
+        reader = config.get("reader") if isinstance(config.get("reader"), dict) else {}
+        add(reader.get("port"))
+        return [f"{path}:{path}:rwm" for path in sorted(paths)]
+
+    @staticmethod
     def is_not_found(exc: Exception) -> bool:
         """Recognize Docker SDK and fake-client not-found errors."""
         name = type(exc).__name__.lower()
@@ -60,11 +83,7 @@ class DockerManager:
         reader = runtime.get("reader", {}) if isinstance(runtime.get("reader", {}), dict) else {}
         environment["BB_INTERVAL"] = str(reader.get("poll_interval_sec", runtime.get("poll_interval", "0.12")))
         limits = vm.get("limits", {}) or {}
-        devices = []
-        for resource in vm.get("read_resources", vm.get("resources", [])) or []:
-            path = resource.get("path") if isinstance(resource, dict) else None
-            if path and str(path).startswith("/dev/"):
-                devices.append(f"{path}:{path}:rwm")
+        devices = self.device_mappings(vm)
         # create (not run) so Hub can record lifecycle=created and start() separately
         create_kwargs: dict[str, Any] = {
             "name": f"bb-vm-{vm['id']}",
@@ -161,6 +180,6 @@ class DockerManager:
         return {"container_id": getattr(container, "id", None), "lifecycle": lifecycle, "health": state.get("Health", {}).get("Status", "unknown"), "error": state.get("Error") or None}
 
     def logs(self, vm: dict[str, Any], *, tail: int = 200):
-        raw = self._container(vm).logs(stream=False, timestamps=True, tail=max(1, min(tail, 1000)))
+        raw = self._container(vm).logs(stream=False, timestamps=True, tail=max(1, min(tail, 5000)))
         text = raw.decode("utf-8", errors="replace") if isinstance(raw, bytes) else str(raw)
         return text.splitlines()

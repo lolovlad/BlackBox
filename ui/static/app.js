@@ -527,9 +527,230 @@
       },
     };
   };
+
+  function formatClock(value) {
+    if (!value) return '';
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return String(value).slice(0, 19).replace('T', ' ');
+    const pad = function (n) { return String(n).padStart(2, '0'); };
+    return date.getUTCFullYear() + '-' + pad(date.getUTCMonth() + 1) + '-' + pad(date.getUTCDate()) + ' ' + pad(date.getUTCHours()) + ':' + pad(date.getUTCMinutes()) + ':' + pad(date.getUTCSeconds());
+  }
+
+  function logEntryFromPayload(payload) {
+    const raw = String((payload && payload.line) || '');
+    let line = raw;
+    let timestamp = (payload && payload.timestamp) || new Date().toISOString();
+    if (raw.length > 20 && raw.charAt(10) === 'T') {
+      const idx = raw.indexOf(' ');
+      if (idx > 0) {
+        timestamp = raw.slice(0, idx);
+        line = raw.slice(idx + 1);
+      }
+    }
+    const lowered = line.toLowerCase();
+    const level = (payload && payload.level) || (/(error|exception|traceback|failed|errno|critical|ошибка)/.test(lowered) ? 'error' : 'info');
+    const kind = line.indexOf('Оператор:') === 0 ? 'lifecycle' : 'log';
+    let source = 'hub';
+    if (raw.length > 20 && raw.charAt(10) === 'T') source = 'worker';
+    if (kind === 'lifecycle') source = 'hub';
+    return { timestamp: timestamp, clock: formatClock(timestamp), source: source, level: level, kind: kind, line: line };
+  }
+
+  window.bbVmsPage = function bbVmsPage() {
+    const labels = { pending: 'Ожидает', created: 'Создана', starting: 'Запускается', running: 'Работает', stopping: 'Останавливается', stopped: 'Остановлена', failed: 'Ошибка', unknown: 'Неизвестно' };
+    const protocols = { simulator: 'Симулятор', modbus_rtu: 'Modbus RTU', modbus_tcp: 'Modbus TCP', can: 'CAN' };
+    let payload = { selected: '', vms: [] };
+    const node = document.getElementById('bb-vms-state');
+    if (node) {
+      try { payload = JSON.parse(node.textContent || '{}'); } catch (_e) {}
+    }
+    const workspace = document.querySelector('[data-vm-workspace]');
+    const selectedInit = (payload && payload.selected) || (workspace && workspace.dataset.selectedVm) || sessionStorage.getItem('bb-vm-selected') || '';
+    const vms = (payload && payload.vms) || [];
+    const lifecycles = {};
+    const errors = {};
+    const index = {};
+    vms.forEach(function (vm) {
+      index[vm.id] = vm;
+      lifecycles[vm.id] = vm.lifecycle;
+      errors[vm.id] = vm.last_error || '';
+    });
+    return {
+      selected: selectedInit,
+      tab: 'log',
+      createOpen: false,
+      entries: [],
+      tags: {},
+      fields: [],
+      quality: '',
+      capturedAt: '',
+      loading: false,
+      lifecycles: lifecycles,
+      errors: errors,
+      vmIndex: index,
+      boot: function () {
+        const self = this;
+        if (this.selected) this.openVm(this.selected, false);
+        window.addEventListener('bb-hub-event', function (event) { self.onEvent(event.detail); });
+        window.addEventListener('bb-vm-action', function (event) { self.onAction(event.detail || {}); });
+      },
+      lifecycleLabel: function (value) {
+        return labels[value] || value;
+      },
+      formatClock: formatClock,
+      formatValue: function (value) {
+        if (value === null || value === undefined || value === '') return '—';
+        if (typeof value === 'object') return JSON.stringify(value);
+        return String(value);
+      },
+      get selectedMeta() {
+        const vm = this.vmIndex[this.selected] || {};
+        const config = vm.config && vm.config.reader ? vm.config.reader : {};
+        let connection = '';
+        if (vm.protocol === 'modbus_rtu') connection = config.port || '';
+        else if (vm.protocol === 'modbus_tcp') connection = config.host ? (config.host + ':' + (config.tcp_port || 502)) : '';
+        else if (vm.protocol === 'can') connection = config.can_interface || '';
+        else connection = 'без физического прибора';
+        return {
+          name: vm.name || 'ВМ',
+          protocol: protocols[vm.protocol] || vm.protocol || '',
+          connection: connection,
+          map: vm.map_version || '',
+        };
+      },
+      get selectedError() {
+        return this.errors[this.selected] || '';
+      },
+      get readingRows() {
+        if (this.fields && this.fields.length) return this.fields;
+        const tags = this.tags || {};
+        return Object.keys(tags).map(function (name) {
+          return { name: name, value: tags[name], type: '', source: '' };
+        });
+      },
+      openVm: function (id, persist) {
+        this.selected = id;
+        this.tab = 'log';
+        if (persist !== false) {
+          sessionStorage.setItem('bb-vm-selected', id);
+          if (location.pathname !== '/vms/' + id) history.replaceState({}, '', '/vms/' + id);
+        }
+        this.refresh();
+      },
+      closeInspector: function () {
+        this.selected = '';
+        this.entries = [];
+        this.tags = {};
+        this.fields = [];
+        sessionStorage.removeItem('bb-vm-selected');
+        if (location.pathname.indexOf('/vms/') === 0) history.replaceState({}, '', '/vms');
+      },
+      onEscape: function () {
+        if (this.createOpen) this.createOpen = false;
+        else if (this.selected) this.closeInspector();
+      },
+      scrollJournal: function () {
+        const el = this.$refs.journal;
+        if (el) el.scrollTop = el.scrollHeight;
+      },
+      refresh: async function () {
+        if (!this.selected) return;
+        this.loading = true;
+        try {
+          const logs = await fetch('/api/v1/vms/' + this.selected + '/logs?tail=2000').then(function (response) { return response.json(); });
+          this.entries = logs.entries || [];
+          const reading = await fetch('/api/v1/vms/' + this.selected + '/reading').then(function (response) { return response.json(); });
+          this.tags = reading.tags || {};
+          this.fields = reading.fields || [];
+          this.quality = reading.quality || '';
+          this.capturedAt = reading.captured_at || '';
+          if (reading.lifecycle) {
+            this.lifecycles = Object.assign({}, this.lifecycles, { [this.selected]: reading.lifecycle });
+          }
+          if (reading.last_error !== undefined) {
+            this.errors = Object.assign({}, this.errors, { [this.selected]: reading.last_error || '' });
+          }
+          this.$nextTick(this.scrollJournal.bind(this));
+        } catch (_e) {
+          this.entries = [];
+        } finally {
+          this.loading = false;
+        }
+      },
+      applyMap: async function () {
+        if (!this.selected) return;
+        try {
+          await mutate('/api/v1/vms/' + this.selected + '/apply-map', { method: 'POST' });
+          toast('Карта применена', 'ok');
+          this.refresh();
+        } catch (error) {
+          toast(error.message, 'error');
+        }
+      },
+      onAction: function (detail) {
+        if (!detail.vmId) return;
+        const patch = {};
+        patch[detail.vmId] = detail.lifecycle || this.lifecycles[detail.vmId];
+        this.lifecycles = Object.assign({}, this.lifecycles, patch);
+        if (detail.lastError !== undefined) {
+          const errors = {};
+          errors[detail.vmId] = detail.lastError || '';
+          this.errors = Object.assign({}, this.errors, errors);
+        }
+        if (this.selected === detail.vmId) this.refresh();
+      },
+      onEvent: function (message) {
+        if (!message) return;
+        const payload = message.payload || {};
+        const vmId = String(payload.vm_id || '');
+        if (message.type === 'snapshot' && payload.vm_status) {
+          const next = Object.assign({}, this.lifecycles);
+          const nextErrors = Object.assign({}, this.errors);
+          payload.vm_status.forEach(function (status) {
+            if (status.vm_id) {
+              next[status.vm_id] = status.lifecycle;
+              nextErrors[status.vm_id] = status.last_error || '';
+            }
+          });
+          this.lifecycles = next;
+          this.errors = nextErrors;
+          return;
+        }
+        if (message.type !== 'delta') return;
+        if (message.topic === 'vm_status' && vmId) {
+          const statusPatch = {};
+          statusPatch[vmId] = payload.lifecycle;
+          this.lifecycles = Object.assign({}, this.lifecycles, statusPatch);
+          const errorPatch = {};
+          errorPatch[vmId] = payload.last_error || '';
+          this.errors = Object.assign({}, this.errors, errorPatch);
+        }
+        if (message.topic === 'tags' && vmId === this.selected) {
+          this.tags = payload.tags || {};
+          this.quality = payload.quality || '';
+          this.capturedAt = payload.captured_at || '';
+          if (this.fields && this.fields.length) {
+            const tags = this.tags;
+            this.fields = this.fields.map(function (field) {
+              return Object.assign({}, field, { value: tags[field.name] });
+            });
+          }
+        }
+        if (message.topic === 'logs' && vmId === this.selected) {
+          const entry = logEntryFromPayload(payload);
+          const last = this.entries[this.entries.length - 1];
+          if (!last || last.line !== entry.line || last.clock !== entry.clock) {
+            this.entries = this.entries.concat([entry]).slice(-5000);
+            this.$nextTick(this.scrollJournal.bind(this));
+          }
+        }
+      },
+    };
+  };
   document.addEventListener('alpine:init', function () {
     window.Alpine.data('bbShell', window.bbShell);
     window.Alpine.data('bbMapsPage', window.bbMapsPage);
+    window.Alpine.data('bbVmsPage', window.bbVmsPage);
   });
 
   document.querySelectorAll('[data-vm-action]').forEach(function (button) {
@@ -554,9 +775,17 @@
           }
           return;
         }
-        await mutate('/api/v1/vms/' + vmId + '/' + action, { method: 'POST' });
+        const result = await mutate('/api/v1/vms/' + vmId + '/' + action, { method: 'POST' });
         toast(action === 'apply-map' ? 'Карта применена' : 'Операция выполнена', 'ok');
-        location.reload();
+        window.dispatchEvent(new CustomEvent('bb-vm-action', {
+          detail: {
+            vmId: vmId,
+            action: action,
+            lifecycle: result && result.lifecycle,
+            lastError: (result && result.last_error) || '',
+          },
+        }));
+        if (!document.querySelector('[data-vm-workspace]')) location.reload();
       } catch (error) {
         toast(error.message, 'error');
       } finally {
@@ -573,6 +802,7 @@
       const protocol = form.get('protocol');
       const payload = {
         name: form.get('name'),
+        description: form.get('description') || '',
         protocol: protocol,
         map_version: form.get('map_version'),
         read_resources: readResourcesFromForm(create, protocol),
@@ -629,7 +859,7 @@
           }),
         });
         toast('ВМ сохранена', 'ok');
-        location.href = '/admin/vms';
+        location.href = '/vms';
       } catch (error) {
         toast(error.message, 'error');
       }
@@ -719,11 +949,12 @@
   }
 
   const live = document.getElementById('live');
+  const vmWorkspace = document.querySelector('[data-vm-workspace]');
   const logTargets = {};
   document.querySelectorAll('[data-live-logs]').forEach(function (target) {
     logTargets[target.dataset.liveLogs] = target;
   });
-  if ((!live && Object.keys(logTargets).length === 0) || !window.WebSocket) return;
+  if ((!live && Object.keys(logTargets).length === 0 && !vmWorkspace) || !window.WebSocket) return;
 
   // One socket is shared by dashboard, VM details and the admin log tail.
   // The server sends a snapshot first, then deltas; a short reconnect loop
@@ -749,6 +980,7 @@
 
   function handleMessage(message) {
     if (!message || !message.type) return;
+    window.dispatchEvent(new CustomEvent('bb-hub-event', { detail: message }));
     const payload = message.payload || {};
     if (message.type === 'snapshot') {
       if (live) live.dataset.lastEvent = payload.seq || '';

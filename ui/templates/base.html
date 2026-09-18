@@ -25,12 +25,10 @@
       <nav class="bb-nav" aria-label="Основное меню">
         {% set path = request.url.path %}
         <a href="/dashboard" class="bb-nav-link{% if path == '/dashboard' %} is-active{% endif %}"><i class="bi bi-speedometer2"></i> Дашборд</a>
-        <a href="/vms" class="bb-nav-link{% if path.startswith('/vms') %} is-active{% endif %}"><i class="bi bi-hdd-stack"></i> ВМ</a>
+        <a href="/vms" class="bb-nav-link{% if path.startswith('/vms') or path.startswith('/admin/vms') %} is-active{% endif %}"><i class="bi bi-hdd-stack"></i> ВМ</a>
         {% if user.role == 'admin' %}
-        <a href="/admin/vms" class="bb-nav-link{% if path.startswith('/admin/vms') %} is-active{% endif %}"><i class="bi bi-gear"></i> Админ ВМ</a>
         <a href="/admin/maps" class="bb-nav-link{% if path.startswith('/admin/maps') %} is-active{% endif %}"><i class="bi bi-file-earmark-code"></i> Карты</a>
         <a href="/admin/resources" class="bb-nav-link{% if path.startswith('/admin/resources') %} is-active{% endif %}"><i class="bi bi-hdd-network"></i> Ресурсы</a>
-        <a href="/admin/logs" class="bb-nav-link{% if path.startswith('/admin/logs') %} is-active{% endif %}"><i class="bi bi-journal-text"></i> Логи</a>
         {% endif %}
       </nav>
       <div class="bb-header-meta">

@@ -45,13 +45,20 @@ class EventBus:
         self._logs[vm_id].append(item)
         return await self.publish("logs", item)
 
+    def logs_for(self, vm_id: str, *, limit: int = 2000) -> list[dict[str, Any]]:
+        cap = max(1, min(int(limit), 10_000))
+        return list(self._logs.get(str(vm_id), []))[-cap:]
+
+    def latest_tags(self, vm_id: str) -> TagSample | None:
+        return self._latest_tags.get(str(vm_id))
+
     def snapshot(self) -> dict[str, Any]:
         return {
             "seq": self._seq,
             "vm_status": [x.model_dump(mode="json") for x in self._latest_status.values()],
             "tags": [x.model_dump(mode="json") for x in self._latest_tags.values()],
-            "logs": {key: list(value)[-200:] for key, value in self._logs.items()},
-            "alarms": list(self._alarms)[-200:],
+            "logs": {key: list(value)[-2000:] for key, value in self._logs.items()},
+            "alarms": list(self._alarms)[-500:],
         }
 
     async def subscribe(self, *, after_seq: int = 0) -> asyncio.Queue[EventEnvelope]:

@@ -31,8 +31,46 @@ from .state import EventBus
 from .storage import ParquetStore, StorageUnavailable, purge_vm_directories
 from .vm_config import normalize_runtime_config
 
-HUB_VERSION = "2.0.10"
+HUB_VERSION = "2.0.13"
 HUB_VENDOR = "AGK"
+
+PROTOCOL_LABELS = {
+    "simulator": "Симулятор",
+    "modbus_rtu": "Modbus RTU",
+    "modbus_tcp": "Modbus TCP",
+    "can": "CAN",
+}
+PROTOCOL_ICONS = {
+    "simulator": "bi-cpu",
+    "modbus_rtu": "bi-usb-plug",
+    "modbus_tcp": "bi-ethernet",
+    "can": "bi-broadcast",
+}
+LIFECYCLE_LABELS = {
+    "pending": "Ожидает",
+    "created": "Создана",
+    "starting": "Запускается",
+    "running": "Работает",
+    "stopping": "Останавливается",
+    "stopped": "Остановлена",
+    "failed": "Ошибка",
+    "unknown": "Неизвестно",
+}
+LIFECYCLE_LOG_MESSAGES = {
+    "pending": "ВМ ожидает запуска",
+    "created": "Контейнер создан",
+    "starting": "Старт: контейнер запускается",
+    "running": "Старт: ВМ запущена",
+    "stopping": "Остановка: контейнер останавливается",
+    "stopped": "ВМ остановлена",
+    "failed": "Ошибка: ВМ не смогла работать",
+    "unknown": "Состояние ВМ неизвестно",
+}
+OPERATOR_LOG_LABELS = {
+    "start": "старт",
+    "stop": "остановка",
+    "restart": "перезапуск",
+}
 
 
 class LoginRequest(BaseModel):
@@ -82,6 +120,140 @@ class UserCreateRequest(BaseModel):
 
 def _problem(code: str, message: str, status_code: int, details: Any = None) -> JSONResponse:
     return JSONResponse(status_code=status_code, content={"code": code, "message": message, "details": details, "request_id": secrets.token_hex(8)})
+
+
+def _as_utc(value: Any) -> datetime:
+    if isinstance(value, datetime):
+        dt = value
+    else:
+        text = str(value or "").strip()
+        if not text:
+            dt = datetime.now(timezone.utc)
+        else:
+            try:
+                dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+            except ValueError:
+                dt = datetime.now(timezone.utc)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def _format_clock(value: Any) -> str:
+    return _as_utc(value).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _split_docker_line(line: str) -> tuple[datetime | None, str]:
+    text = str(line or "")
+    if len(text) > 20 and text[10:11] == "T":
+        stamp, _, rest = text.partition(" ")
+        try:
+            return _as_utc(stamp), rest
+        except ValueError:
+            pass
+    return None, text
+
+
+def _looks_error(text: str) -> bool:
+    lowered = str(text or "").lower()
+    return any(token in lowered for token in ("error", "exception", "traceback", "failed", "errno", "critical", "ошибка"))
+
+
+def _journal_entry(timestamp: Any, source: str, line: str, *, level: str = "info", kind: str = "log") -> dict[str, Any]:
+    dt = _as_utc(timestamp)
+    return {
+        "timestamp": dt.isoformat(),
+        "clock": _format_clock(dt),
+        "source": source,
+        "level": "error" if level == "error" or _looks_error(line) else level,
+        "kind": kind,
+        "line": str(line or "").strip(),
+    }
+
+
+def _normalize_log_line(text: str) -> str:
+    return " ".join(str(text or "").split())
+
+
+def vm_connection(vm: dict[str, Any]) -> str:
+    protocol = str(vm.get("protocol") or "")
+    config = vm.get("config") if isinstance(vm.get("config"), dict) else {}
+    reader = config.get("reader") if isinstance(config.get("reader"), dict) else {}
+    resources = vm.get("read_resources") or vm.get("resources") or []
+    paths = [str(item.get("path")) for item in resources if isinstance(item, dict) and item.get("path")]
+    if protocol == "modbus_rtu":
+        return str(reader.get("port") or (paths[0] if paths else "serial не выбран"))
+    if protocol == "modbus_tcp":
+        host = str(reader.get("host") or "").strip()
+        port = reader.get("tcp_port") or 502
+        return f"{host}:{port}" if host else "TCP не настроен"
+    if protocol == "can":
+        return str(reader.get("can_interface") or "CAN не выбран")
+    return "без физического прибора"
+
+
+def _compose_vm_journal(repo: HubRepository, bus: EventBus, docker_manager: DockerManager, vm: dict[str, Any], *, tail: int) -> dict[str, Any]:
+    vm_id = str(vm["id"])
+    cap = max(1, min(int(tail), 5000))
+    entries: list[dict[str, Any]] = []
+    error: str | None = None
+
+    for event in reversed(repo.list_lifecycle_events(vm_id, limit=cap)):
+        payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+        to_state = str(event.get("event") or payload.get("to") or "")
+        from_state = str(payload.get("from") or "")
+        message = LIFECYCLE_LOG_MESSAGES.get(to_state, f"Состояние: {to_state or 'неизвестно'}")
+        if from_state and to_state:
+            message = f"{message} ({from_state} → {to_state})"
+        level = "error" if to_state == VmLifecycle.FAILED.value else "info"
+        entries.append(_journal_entry(event.get("created_at"), "lifecycle", message, level=level, kind="lifecycle"))
+
+    try:
+        docker_lines = docker_manager.logs(vm, tail=cap) if vm.get("container_id") else []
+    except Exception as exc:
+        docker_lines = []
+        error = str(exc)
+
+    docker_bodies: set[str] = set()
+    for line in docker_lines:
+        stamp, text = _split_docker_line(line)
+        body = text or str(line)
+        docker_bodies.add(_normalize_log_line(body))
+        entries.append(_journal_entry(stamp or datetime.now(timezone.utc), "worker", body, kind="worker"))
+
+    for item in bus.logs_for(vm_id, limit=cap):
+        raw = str(item.get("line") or "")
+        stamp, text = _split_docker_line(raw)
+        body = text if stamp else raw
+        if _normalize_log_line(body) in docker_bodies:
+            continue
+        source = "worker" if stamp else "hub"
+        entries.append(
+            _journal_entry(
+                stamp or item.get("timestamp"),
+                source,
+                body,
+                level=str(item.get("level") or "info"),
+                kind="lifecycle" if body.startswith("Оператор:") else "log",
+            )
+        )
+
+    last_error = str(vm.get("last_error") or "").strip()
+    if last_error and not any(_normalize_log_line(last_error) in _normalize_log_line(item["line"]) for item in entries):
+        entries.append(_journal_entry(vm.get("updated_at"), "hub", last_error, level="error", kind="error"))
+
+    entries.sort(key=lambda item: item["timestamp"])
+    unique: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for item in entries:
+        key = (item["clock"], item["source"], _normalize_log_line(item["line"]))
+        if not item["line"] or key in seen:
+            continue
+        seen.add(key)
+        unique.append(item)
+    unique = unique[-cap:]
+    lines = [f"{item['clock']}  [{item['source']}]  {item['line']}" for item in unique]
+    return {"entries": unique, "lines": lines, "error": error, "truncated": len(seen) > cap}
 
 
 def _vm_json(vm: dict[str, Any]) -> dict[str, Any]:
@@ -275,10 +447,27 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
     bus = EventBus()
     store = ParquetStore(cfg.data_root / "telemetry", min_free_bytes=cfg.telemetry_min_free_bytes, quota_bytes=cfg.telemetry_quota_bytes)
     docker_manager = DockerManager(docker_client, enabled=cfg.docker_enabled)
+
+    def _replace_worker_container(vm: dict[str, Any], token: str) -> dict[str, Any]:
+        """Recreate the worker so Docker --device matches the current UART/GPIO."""
+        vm_id = str(vm["id"])
+        if vm.get("container_id"):
+            try:
+                docker_manager.remove(vm)
+            except Exception as exc:
+                if not DockerManager.is_not_found(exc):
+                    raise
+            vm = repo.update_vm(vm_id, {"container_id": None}) or vm
+        created = docker_manager.create(vm, token)
+        return repo.update_vm(vm_id, {"container_id": created["container_id"], "lifecycle": created["lifecycle"]}) or vm
     templates = Jinja2Templates(directory=str(Path(__file__).resolve().parents[2] / "ui" / "templates"))
     templates.env.globals["app_version"] = HUB_VERSION
     templates.env.globals["app_vendor"] = HUB_VENDOR
     templates.env.globals["kind_labels"] = KIND_LABELS
+    templates.env.globals["protocol_labels"] = PROTOCOL_LABELS
+    templates.env.globals["protocol_icons"] = PROTOCOL_ICONS
+    templates.env.globals["lifecycle_labels"] = LIFECYCLE_LABELS
+    templates.env.globals["vm_connection"] = vm_connection
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -436,12 +625,12 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
                             inspected = await asyncio.to_thread(docker_manager.inspect, vm)
                             if vm.get("container_id"):
                                 try:
-                                    lines = await asyncio.to_thread(docker_manager.logs, vm, tail=200)
+                                    lines = await asyncio.to_thread(docker_manager.logs, vm, tail=500)
                                     seen = app.state.log_seen.setdefault(vm["id"], set())
                                     for line in lines:
                                         if line not in seen:
                                             await bus.publish_log(vm["id"], line)
-                                    app.state.log_seen[vm["id"]] = set(lines[-200:])
+                                    app.state.log_seen[vm["id"]] = set(lines[-500:])
                                 except Exception:
                                     pass
                             desired = vm.get("desired_state", "stopped")
@@ -639,6 +828,10 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
         except Exception as exc:
             return _problem("vm_create_failed", str(exc), 409)
         repo.record_audit(int(account["id"]), "vm.create", vm["id"], {"protocol": vm["protocol"], "map_version": vm["map_version"]})
+        await bus.publish_log(
+            vm["id"],
+            f"ВМ создана · {PROTOCOL_LABELS.get(vm['protocol'], vm['protocol'])} · карта {vm['map_version']}",
+        )
         return vm
 
     @app.get("/api/v1/vms/{vm_id}")
@@ -687,6 +880,8 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
         except ValidationError as exc:
             raise HTTPException(422, detail={"code": "invalid_vm_config", "message": "Invalid VM reader/storage configuration", "details": exc.errors()}) from exc
         _validate_reader_allowlist(repo, current_vm["protocol"], candidate_config, candidate_resources)
+        if "read_resources" in values or "config" in payload.model_dump(exclude_none=True):
+            values["config"] = candidate_config
         # If a running VM is edited, update the physical-resource lease before
         # the worker receives its apply-map command.  ``acquire_resource_leases``
         # replaces the complete set atomically, releasing resources removed
@@ -701,15 +896,29 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
             if conflicts:
                 return _problem("resource_conflict", "Resource is already leased by another running VM", 409, conflicts)
         updated = repo.update_vm(vm_id, values)
-        if updated and updated.get("desired_state") == "running" and any(key in values for key in {"config", "map_version", "read_resources", "storage_resource_id"}):
-            app.state.worker_commands.setdefault(vm_id, []).append(
-                VmCommand(
-                    vm_id=UUID(vm_id),
-                    action="apply_map",
-                    config_revision=updated["config_revision"],
-                    map_version=updated["map_version"],
-                ).model_dump(mode="json")
-            )
+        if updated and (updated.get("desired_state") == "running" or updated.get("lifecycle") in {
+            VmLifecycle.STARTING.value,
+            VmLifecycle.RUNNING.value,
+        }):
+            old_devices = DockerManager.device_mappings(current_vm)
+            new_devices = DockerManager.device_mappings(updated)
+            if old_devices != new_devices:
+                token = app.state.worker_tokens.setdefault(vm_id, secrets.token_urlsafe(32))
+                updated = _replace_worker_container(updated, token)
+                docker_manager.start(updated)
+                updated = repo.update_vm(
+                    vm_id,
+                    {"lifecycle": VmLifecycle.RUNNING.value, "desired_state": "running", "last_error": None},
+                ) or updated
+            elif any(key in values for key in {"config", "map_version", "read_resources", "storage_resource_id"}):
+                app.state.worker_commands.setdefault(vm_id, []).append(
+                    VmCommand(
+                        vm_id=UUID(vm_id),
+                        action="apply_map",
+                        config_revision=updated["config_revision"],
+                        map_version=updated["map_version"],
+                    ).model_dump(mode="json")
+                )
         repo.record_audit(int(account["id"]), "vm.update", vm_id, {"fields": sorted(values)})
         return updated
 
@@ -750,6 +959,16 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
         repo.record_audit(int(account["id"]), "vm.delete", vm_id, {"deleted_paths": deleted_paths})
         return {"ok": True, "deleted_paths": deleted_paths}
 
+    async def _record_operator_event(vm: dict[str, Any], action: str, *, error: str | None = None) -> None:
+        label = OPERATOR_LOG_LABELS.get(action, action)
+        vm_id = str(vm["id"])
+        if error:
+            await bus.publish_log(vm_id, f"Оператор: {label} — ошибка: {error}", level="error")
+        else:
+            await bus.publish_log(vm_id, f"Оператор: {label}")
+        health = "unhealthy" if error or vm.get("lifecycle") == VmLifecycle.FAILED.value else "unknown"
+        await bus.publish_status(_status_from_vm(vm, health=health))
+
     async def vm_action(vm_id: str, action: str, account):
         vm = repo.get_vm(vm_id)
         if vm is None:
@@ -785,45 +1004,42 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
                 repo.release_resource_leases(vm_id)
                 vm = repo.get_vm(vm_id) or vm
                 repo.record_audit(int(account["id"]), f"vm.{action}", vm_id, {"config_revision": vm.get("config_revision")})
+                await _record_operator_event(vm, action)
                 return vm
             if action == "start" and inspected and inspected.get("lifecycle") == VmLifecycle.RUNNING.value:
                 vm = repo.update_vm(vm_id, {"desired_state": "running", "lifecycle": VmLifecycle.RUNNING.value, "last_error": None}) or vm
                 repo.record_audit(int(account["id"]), f"vm.{action}", vm_id, {"config_revision": vm.get("config_revision")})
+                await _record_operator_event(vm, action)
                 return vm
-            if not vm.get("container_id"):
-                created = docker_manager.create(vm, token)
-                vm = repo.update_vm(vm_id, {"container_id": created["container_id"], "lifecycle": created["lifecycle"]}) or vm
-            if action == "start":
+            if action in {"start", "restart"}:
+                vm = _replace_worker_container(vm, token)
                 repo.update_vm(vm_id, {"lifecycle": VmLifecycle.STARTING.value, "desired_state": "running"})
                 docker_manager.start(vm)
-                vm = repo.update_vm(vm_id, {"lifecycle": VmLifecycle.RUNNING.value}) or vm
+                vm = repo.update_vm(vm_id, {"lifecycle": VmLifecycle.RUNNING.value, "last_error": None}) or vm
             elif action == "stop":
                 if inspected and inspected.get("lifecycle") in {VmLifecycle.CREATED.value, VmLifecycle.STOPPED.value}:
                     repo.update_vm(vm_id, {"lifecycle": VmLifecycle.STOPPED.value, "desired_state": "stopped"})
                     repo.release_resource_leases(vm_id)
                     vm = repo.get_vm(vm_id) or vm
                     repo.record_audit(int(account["id"]), f"vm.{action}", vm_id, {"config_revision": vm.get("config_revision")})
+                    await _record_operator_event(vm, action)
                     return vm
                 repo.update_vm(vm_id, {"lifecycle": VmLifecycle.STOPPING.value, "desired_state": "stopped"})
                 docker_manager.stop(vm)
                 vm = repo.update_vm(vm_id, {"lifecycle": VmLifecycle.STOPPED.value}) or vm
                 repo.release_resource_leases(vm_id)
-            elif action == "restart":
-                repo.update_vm(vm_id, {"desired_state": "running", "lifecycle": VmLifecycle.STARTING.value})
-                if inspected and inspected.get("lifecycle") == VmLifecycle.RUNNING.value:
-                    docker_manager.restart(vm)
-                else:
-                    docker_manager.start(vm)
-                vm = repo.update_vm(vm_id, {"lifecycle": VmLifecycle.RUNNING.value}) or vm
             repo.record_audit(int(account["id"]), f"vm.{action}", vm_id, {"config_revision": vm.get("config_revision")})
+            await _record_operator_event(vm, action)
             return vm
         except DockerUnavailable as exc:
             repo.release_resource_leases(vm_id)
-            repo.update_vm(vm_id, {"lifecycle": VmLifecycle.FAILED.value, "last_error": str(exc)})
+            failed = repo.update_vm(vm_id, {"lifecycle": VmLifecycle.FAILED.value, "last_error": str(exc)}) or vm
+            await _record_operator_event(failed, action, error=str(exc))
             return _problem("docker_unavailable", str(exc), 503)
         except Exception as exc:
             repo.release_resource_leases(vm_id)
-            repo.update_vm(vm_id, {"lifecycle": VmLifecycle.FAILED.value, "last_error": str(exc)})
+            failed = repo.update_vm(vm_id, {"lifecycle": VmLifecycle.FAILED.value, "last_error": str(exc)}) or vm
+            await _record_operator_event(failed, action, error=str(exc))
             return _problem("vm_action_failed", str(exc), 502)
 
     @app.post("/api/v1/vms/{vm_id}/start", dependencies=[Depends(csrf_protect)])
@@ -848,6 +1064,7 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
         command = VmCommand(vm_id=UUID(vm_id), action="apply_map", config_revision=vm["config_revision"], map_version=vm["map_version"])
         app.state.worker_commands.setdefault(vm_id, []).append(command.model_dump(mode="json"))
         repo.record_audit(int(account["id"]), "vm.apply_map", vm_id, {"map_version": vm["map_version"]})
+        await bus.publish_log(vm_id, f"Оператор применил карту {vm['map_version']}")
         return {"ok": True, "vm_id": vm_id, "map_version": vm["map_version"], "config_revision": vm["config_revision"]}
 
     @app.post("/api/v1/maps", dependencies=[Depends(csrf_protect)])
@@ -920,15 +1137,49 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
             return _problem("user_create_failed", str(exc), 409)
 
     @app.get("/api/v1/vms/{vm_id}/logs")
-    async def vm_logs(vm_id: str, tail: int = Query(default=200, ge=1, le=1000), account=Depends(user)):
+    async def vm_logs(vm_id: str, tail: int = Query(default=2000, ge=1, le=5000), account=Depends(user)):
         vm = repo.get_vm(vm_id)
         if vm is None:
             raise HTTPException(404, detail={"code": "not_found", "message": "VM not found"})
-        try:
-            lines = docker_manager.logs(vm, tail=tail)
-            return {"vm_id": vm_id, "lines": lines[-tail:], "tail": tail, "truncated": len(lines) > tail}
-        except Exception as exc:
-            return {"vm_id": vm_id, "lines": [], "tail": tail, "truncated": False, "error": str(exc)}
+        journal = _compose_vm_journal(repo, bus, docker_manager, vm, tail=tail)
+        return {"vm_id": vm_id, "tail": tail, **journal}
+
+    @app.get("/api/v1/vms/{vm_id}/reading")
+    async def vm_reading(vm_id: str, account=Depends(user)):
+        vm = repo.get_vm(vm_id)
+        if vm is None:
+            raise HTTPException(404, detail={"code": "not_found", "message": "VM not found"})
+        sample = bus.latest_tags(vm_id)
+        tags = sample.tags if sample is not None else {}
+        map_record = repo.map_record(vm["map_version"], vm["protocol"])
+        document = (map_record or {}).get("document") if isinstance(map_record, dict) else {}
+        fields = []
+        for field in (document or {}).get("fields") or []:
+            if not isinstance(field, dict) or not field.get("name"):
+                continue
+            name = str(field["name"])
+            fields.append(
+                {
+                    "name": name,
+                    "type": field.get("type"),
+                    "source": field.get("source"),
+                    "address": field.get("address"),
+                    "value": tags.get(name),
+                }
+            )
+        captured_at = None
+        if sample is not None:
+            captured_at = sample.captured_at.isoformat() if hasattr(sample.captured_at, "isoformat") else str(sample.captured_at)
+        return {
+            "vm_id": vm_id,
+            "lifecycle": vm.get("lifecycle"),
+            "last_error": vm.get("last_error"),
+            "map_version": vm.get("map_version"),
+            "captured_at": captured_at,
+            "quality": str(getattr(sample, "quality", "") or "") if sample is not None else None,
+            "tags": tags,
+            "fields": fields,
+        }
 
     @app.get("/api/v1/resources")
     async def resources(account=Depends(admin)):
@@ -1128,6 +1379,28 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
         except HTTPException as exc:
             return RedirectResponse("/login" if exc.status_code == 401 else "/dashboard", status_code=303)
 
+    def _vms_page_context(account: dict[str, Any], *, selected_vm_id: str = "") -> dict[str, Any]:
+        groups = _approved_resource_groups(repo) if account.get("role") == "admin" else {
+            "serial_resources": [],
+            "tcp_resources": [],
+            "can_resources": [],
+            "gpio_resources": [],
+            "storage_resources": [],
+        }
+        return {
+            "user": account,
+            "vms": repo.list_vms(),
+            "maps": repo.list_maps() if account.get("role") == "admin" else [],
+            "selected_vm_id": selected_vm_id,
+            "active_protocol": "simulator",
+            "reader": {},
+            "storage": {},
+            "buffer": {},
+            "selected_read_ids": [],
+            "current_storage_id": "",
+            **groups,
+        }
+
     @app.get("/dashboard", response_class=HTMLResponse)
     async def dashboard(request: Request):
         try:
@@ -1142,7 +1415,7 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
             account = current_user(request, repo, cfg)
         except HTTPException:
             return RedirectResponse("/login", status_code=303)
-        return templates.TemplateResponse(request=request, name="vms.html", context={"user": account, "vms": repo.list_vms()})
+        return templates.TemplateResponse(request=request, name="vms.html", context=_vms_page_context(account))
 
     @app.get("/vms/{vm_id}", response_class=HTMLResponse)
     async def vm_page(vm_id: str, request: Request):
@@ -1153,34 +1426,14 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
         vm = repo.get_vm(vm_id)
         if vm is None:
             return RedirectResponse("/vms", status_code=303)
-        try:
-            lines = docker_manager.logs(vm, tail=200) if vm.get("container_id") else []
-        except Exception:
-            lines = []
-        return templates.TemplateResponse(request=request, name="vm_detail.html", context={"user": account, "vm": vm, "lines": lines, "map_record": repo.map_record(vm["map_version"], vm["protocol"])})
+        return templates.TemplateResponse(request=request, name="vms.html", context=_vms_page_context(account, selected_vm_id=vm_id))
 
     @app.get("/admin/vms", response_class=HTMLResponse)
     async def admin_vms_page(request: Request):
         account = _require_admin_html(request)
         if isinstance(account, RedirectResponse):
             return account
-        groups = _approved_resource_groups(repo)
-        return templates.TemplateResponse(
-            request=request,
-            name="admin_vms.html",
-            context={
-                "user": account,
-                "vms": repo.list_vms(),
-                "maps": repo.list_maps(),
-                "active_protocol": "simulator",
-                "reader": {},
-                "storage": {},
-                "buffer": {},
-                "selected_read_ids": [],
-                "current_storage_id": "",
-                **groups,
-            },
-        )
+        return RedirectResponse("/vms", status_code=303)
 
     @app.get("/admin/vms/{vm_id}/edit", response_class=HTMLResponse)
     async def edit_vm_page(vm_id: str, request: Request):
@@ -1189,7 +1442,7 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
             return account
         vm = repo.get_vm(vm_id)
         if vm is None:
-            return RedirectResponse("/admin/vms", status_code=303)
+            return RedirectResponse("/vms", status_code=303)
         groups = _approved_resource_groups(repo)
         read_ids = [
             str(item.get("resource_id"))
@@ -1255,14 +1508,7 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
         account = _require_admin_html(request)
         if isinstance(account, RedirectResponse):
             return account
-        log_items = []
-        for vm in repo.list_vms():
-            try:
-                lines = docker_manager.logs(vm, tail=200) if vm.get("container_id") else []
-                log_items.append({"vm": vm, "lines": lines, "error": None})
-            except Exception as exc:
-                log_items.append({"vm": vm, "lines": [], "error": str(exc)})
-        return templates.TemplateResponse(request=request, name="logs.html", context={"user": account, "logs": log_items})
+        return RedirectResponse("/vms", status_code=303)
 
     return app
 

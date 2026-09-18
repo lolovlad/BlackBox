@@ -20,6 +20,7 @@ class FakeContainer:
         self.running = False
         env_list = [f"{key}={value}" for key, value in (environment or {}).items()]
         self.attrs = {"State": {"Status": "created", "Health": {"Status": "healthy"}, "Error": ""}, "Config": {"Env": env_list}}
+        self.devices = []
 
     def reload(self):
         return None
@@ -50,6 +51,7 @@ class FakeContainers:
 
     def create(self, image, name=None, **kwargs):
         item = FakeContainer(name or f"anon-{len(self.items)}", environment=kwargs.get("environment"))
+        item.devices = list(kwargs.get("devices") or [])
         self.items[item.name] = item
         return item
 
@@ -78,7 +80,10 @@ def _client(tmp_path: Path) -> TestClient:
         bootstrap_password="admin-password",
         docker_enabled=True,
     )
-    return TestClient(create_app(cfg, docker_client=FakeDocker()))
+    docker = FakeDocker()
+    client = TestClient(create_app(cfg, docker_client=docker))
+    client.fake_docker = docker
+    return client
 
 
 SIM_DOCUMENT = {
@@ -125,7 +130,26 @@ def test_hub_login_crud_and_role_guard(tmp_path: Path):
         assert started.status_code == 200
         assert started.json()["lifecycle"] == "running"
         assert client.get("/api/v1/vms").json()["items"][0]["name"] == "sim-1"
-        assert client.get(f"/api/v1/vms/{vm_id}/logs").json()["lines"]
+        logs = client.get(f"/api/v1/vms/{vm_id}/logs").json()
+        assert logs["lines"]
+        blob = "\n".join(logs["lines"]).lower()
+        assert "старт" in blob
+        assert "worker ready" in blob
+        assert any(item.get("kind") == "lifecycle" for item in logs["entries"])
+        stopped = client.post(f"/api/v1/vms/{vm_id}/stop", headers={"X-CSRF-Token": csrf})
+        assert stopped.status_code == 200
+        after_stop = client.get(f"/api/v1/vms/{vm_id}/logs").json()
+        stop_blob = "\n".join(after_stop["lines"]).lower()
+        assert "останов" in stop_blob
+        restarted = client.post(f"/api/v1/vms/{vm_id}/restart", headers={"X-CSRF-Token": csrf})
+        assert restarted.status_code == 200
+        after_restart = client.get(f"/api/v1/vms/{vm_id}/logs").json()
+        restart_blob = "\n".join(after_restart["lines"]).lower()
+        assert "перезапуск" in restart_blob
+        reading = client.get(f"/api/v1/vms/{vm_id}/reading").json()
+        assert reading["vm_id"] == vm_id
+        assert "fields" in reading
+        assert "tags" in reading
 
 
 def test_modbus_vm_persists_reader_and_storage_settings(tmp_path: Path, monkeypatch):
@@ -239,6 +263,62 @@ def test_scan_lists_forced_physical_resources_for_each_protocol(tmp_path: Path, 
         assert "USB serial (ttyUSB0)" in html or "ttyUSB0" in html
 
 
+def test_device_mappings_include_serial_aliases_and_reader_port():
+    from services.hub.docker_manager import DockerManager
+
+    mapped = DockerManager.device_mappings(
+        {
+            "read_resources": [
+                {
+                    "path": "/dev/ttyAMA10",
+                    "metadata": {"aliases": ["/dev/serial0", "/dev/ttyAMA10"]},
+                }
+            ],
+            "config": {"reader": {"port": "/dev/ttyAMA10"}},
+        }
+    )
+    assert "/dev/ttyAMA10:/dev/ttyAMA10:rwm" in mapped
+    assert "/dev/serial0:/dev/serial0:rwm" in mapped
+    assert not any("/dev/tty:" in item or item.startswith("/dev/tty:") for item in mapped)
+
+
+def test_rtu_worker_container_gets_new_uart_after_port_change(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("BB_DISCOVERY_SERIAL_PATHS", "/dev/ttyUSB0,/dev/ttyAMA10")
+    with _client(tmp_path) as client:
+        assert client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin-password"}).status_code == 200
+        csrf = client.cookies.get("bb_csrf")
+        client.post("/api/v1/resources/scan", headers={"X-CSRF-Token": csrf})
+        assert client.post("/api/v1/resources/serial:/dev/ttyUSB0/approve", headers={"X-CSRF-Token": csrf}).status_code == 200
+        assert client.post("/api/v1/resources/serial:/dev/ttyAMA10/approve", headers={"X-CSRF-Token": csrf}).status_code == 200
+        _publish_map(client, csrf, protocol="modbus_rtu")
+        created = client.post(
+            "/api/v1/vms",
+            headers={"X-CSRF-Token": csrf},
+            json={
+                "name": "rtu-port-change",
+                "protocol": "modbus_rtu",
+                "map_version": "deif-gempac-v1",
+                "read_resources": [{"resource_id": "serial:/dev/ttyUSB0"}],
+            },
+        )
+        assert created.status_code == 200, created.text
+        vm_id = created.json()["id"]
+        started = client.post(f"/api/v1/vms/{vm_id}/start", headers={"X-CSRF-Token": csrf})
+        assert started.status_code == 200, started.text
+        container = client.fake_docker.containers.get(f"bb-vm-{vm_id}")
+        assert any("ttyUSB0" in item for item in container.devices)
+        patched = client.patch(
+            f"/api/v1/vms/{vm_id}",
+            headers={"X-CSRF-Token": csrf},
+            json={"read_resources": [{"resource_id": "serial:/dev/ttyAMA10"}]},
+        )
+        assert patched.status_code == 200, patched.text
+        assert patched.json()["config"]["reader"]["port"] == "/dev/ttyAMA10"
+        container = client.fake_docker.containers.get(f"bb-vm-{vm_id}")
+        assert any("ttyAMA10" in item for item in container.devices)
+        assert not any("ttyUSB0" in item for item in container.devices)
+
+
 def test_modbus_tcp_vm_persists_host_and_port(tmp_path: Path):
     with _client(tmp_path) as client:
         assert client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin-password"}).status_code == 200
@@ -277,7 +357,11 @@ def test_modbus_tcp_vm_persists_host_and_port(tmp_path: Path):
 def test_admin_vm_form_has_protocol_specific_settings(tmp_path: Path):
     with _client(tmp_path) as client:
         client.post("/login", data={"username": "admin", "password": "admin-password"})
-        html = client.get("/admin/vms").text
+        html = client.get("/vms").text
+        assert 'data-vm-workspace' in html
+        assert 'bb-vm-card' in html or 'Нет виртуальных машин' in html
+        assert 'Добавить' in html
+        assert 'id="create-vm"' in html
         assert 'data-protocol-panel="simulator"' in html
         assert 'data-protocol-panel="modbus_rtu"' in html
         assert 'data-protocol-panel="modbus_tcp"' in html
@@ -288,11 +372,12 @@ def test_admin_vm_form_has_protocol_specific_settings(tmp_path: Path):
         assert 'name="can_bitrate"' in html
         assert 'name="storage_resource_id"' in html
         assert 'name="min_free_mb"' in html
+        assert 'name="description"' in html
         assert 'bb-field-hint' in html
-        assert 'Как настроить ВМ' in html
         assert 'bb-protocol-pick' in html
         assert 'name="preset_id"' not in html
         assert 'name="read_resource_id"' not in html
+        assert 'Админ ВМ' not in html
 
 
 def test_exclusive_read_resource_conflict_is_rejected_on_second_start(tmp_path: Path, monkeypatch):
@@ -323,7 +408,7 @@ def test_html_pages_render_with_current_starlette(tmp_path: Path):
         assert client.get("/login").status_code == 200
         login_html = client.get("/login").text
         assert "AGK" in login_html
-        assert "2.0.10" in login_html
+        assert "2.0.13" in login_html
         assert "bb-login" in login_html
         app_js = login_html.find("/static/app.js")
         alpine_js = login_html.find("/static/vendor/alpine.min.js")
@@ -342,21 +427,27 @@ def test_html_pages_render_with_current_starlette(tmp_path: Path):
             "/dashboard",
             "/vms",
             f"/vms/{vm['id']}",
-            "/admin/vms",
             f"/admin/vms/{vm['id']}/edit",
             "/admin/maps",
             "/admin/resources",
-            "/admin/logs",
         ]
         for path in pages:
             response = client.get(path)
             assert response.status_code == 200, (path, response.text)
             assert "<html" in response.text.lower()
             assert "AGK" in response.text
-            assert "2.0.10" in response.text
-            if path in {"/dashboard", "/vms", "/admin/vms", f"/vms/{vm['id']}", f"/admin/vms/{vm['id']}/edit"}:
+            assert "2.0.13" in response.text
+            if path in {"/vms", f"/vms/{vm['id']}", f"/admin/vms/{vm['id']}/edit"}:
                 assert 'data-vm-action="delete"' in response.text
                 assert "Удалить" in response.text
+            if path in {"/vms", f"/vms/{vm['id']}"}:
+                assert "bb-vm-card" in response.text
+                assert 'data-vm-action="start"' in response.text
+                assert "bb-icon-btn-play" in response.text
+        for path in ("/admin/vms", "/admin/logs"):
+            redirected = client.get(path, follow_redirects=False)
+            assert redirected.status_code == 303, path
+            assert redirected.headers.get("location") == "/vms"
 
 
 def test_admin_deletes_vm_container_and_related_files(tmp_path: Path):
