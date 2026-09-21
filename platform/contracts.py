@@ -57,6 +57,9 @@ class TagSample(Contract):
     captured_at: datetime
     map_version: str = Field(min_length=1, max_length=128)
     tags: dict[str, TagValue] = Field(default_factory=dict)
+    analog: dict[str, TagValue] = Field(default_factory=dict)
+    discrete: dict[str, bool] = Field(default_factory=dict)
+    alerts: list[str] = Field(default_factory=list)
     quality: Quality = Quality.GOOD
     protocol: VmProtocol
     source: str | None = Field(default=None, max_length=128)

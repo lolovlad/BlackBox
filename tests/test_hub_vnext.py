@@ -150,6 +150,170 @@ def test_hub_login_crud_and_role_guard(tmp_path: Path):
         assert reading["vm_id"] == vm_id
         assert "fields" in reading
         assert "tags" in reading
+        assert "analog" in reading and "discrete" in reading and "alerts" in reading
+        assert reading["diagnosis"]["code"] == "no_sample"
+
+
+def test_read_timeout_keeps_vm_running_and_preserves_error(tmp_path: Path):
+    with _client(tmp_path) as client:
+        assert client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin-password"}).status_code == 200
+        csrf = client.cookies.get("bb_csrf")
+        _publish_map(client, csrf)
+        created = client.post(
+            "/api/v1/vms",
+            json={"name": "sim-timeout", "protocol": "simulator", "map_version": "default-v1"},
+            headers={"X-CSRF-Token": csrf},
+        ).json()
+        vm_id = created["id"]
+        assert client.post(f"/api/v1/vms/{vm_id}/start", headers={"X-CSRF-Token": csrf}).status_code == 200
+        app = client._transport.app  # type: ignore[attr-defined]
+        token = app.state.worker_tokens[vm_id]
+        headers = {"X-Worker-Token": token}
+        reported = client.post(
+            "/api/v1/internal/workers/error",
+            json={
+                "vm_id": vm_id,
+                "code": "read_failed",
+                "message": "Modbus request hr failed after 3 retries — No communication with the instrument (no answer)",
+                "timestamp": "2026-09-21T14:35:13Z",
+            },
+            headers=headers,
+        )
+        assert reported.status_code == 200, reported.text
+        state = client.get(f"/api/v1/vms/{vm_id}").json()
+        assert state["lifecycle"] == "running"
+        assert "No communication" in state["last_error"]
+        journal = "\n".join(client.get(f"/api/v1/vms/{vm_id}/logs").json()["lines"])
+        assert "Чтение не удалось" in journal
+        assert "running → failed" not in journal
+        heartbeat = client.post(
+            "/api/v1/internal/workers/heartbeat",
+            json={"vm_id": vm_id, "worker_id": "worker", "timestamp": "2026-09-21T14:35:14Z", "seq": 2, "health": "unhealthy"},
+            headers=headers,
+        )
+        assert heartbeat.status_code == 200
+        after_hb = client.get(f"/api/v1/vms/{vm_id}").json()
+        assert after_hb["lifecycle"] == "running"
+        assert "No communication" in after_hb["last_error"]
+        batch = RawBatch(
+            vm_id=UUID(vm_id),
+            protocol=VmProtocol.SIMULATOR,
+            map_version="default-v1",
+            seq_start=1,
+            samples=[RawSample(seq=1, captured_at="2026-09-21T14:36:00Z", sources={"sim": [4, 1, 8]})],
+        )
+        ingested = client.post("/api/v1/internal/workers/batches", json=batch.model_dump(mode="json"), headers=headers)
+        assert ingested.status_code == 200, ingested.text
+        recovered = client.get(f"/api/v1/vms/{vm_id}").json()
+        assert not recovered.get("last_error")
+
+
+def test_reading_splits_channels_and_separates_link_from_device_alerts(tmp_path: Path):
+    document = {
+        "requests": [
+            {"name": "hr", "fc": 3, "address": 0, "count": 20},
+            {"name": "coils", "fc": 1, "address": 0, "count": 4},
+        ],
+        "fields": [
+            {"name": "RPM", "type": "uint16", "source": "hr", "address": 0, "kind": "analog"},
+            {"name": "Engine_running", "type": "bool", "source": "coils", "address": 0, "kind": "discrete"},
+            {
+                "name": "active_alarms",
+                "type": "bitfield",
+                "source": "hr",
+                "address": 19,
+                "kind": "alert",
+                "bits": {"0": "BUS High Volt", "1": "Overspeed"},
+            },
+        ],
+    }
+    with _client(tmp_path) as client:
+        assert client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin-password"}).status_code == 200
+        csrf = client.cookies.get("bb_csrf")
+        _publish_map(client, csrf, version="channels-v1", document=document)
+        vm = client.post(
+            "/api/v1/vms",
+            json={"name": "channels", "protocol": "simulator", "map_version": "channels-v1"},
+            headers={"X-CSRF-Token": csrf},
+        ).json()
+        vm_id = vm["id"]
+        assert client.post(f"/api/v1/vms/{vm_id}/start", headers={"X-CSRF-Token": csrf}).status_code == 200
+        app = client._transport.app  # type: ignore[attr-defined]
+        token = app.state.worker_tokens[vm_id]
+        headers = {"X-Worker-Token": token}
+        silent = client.post(
+            "/api/v1/internal/workers/error",
+            json={
+                "vm_id": vm_id,
+                "code": "read_failed",
+                "message": "Modbus request hr failed after 3 retries — No communication with the instrument (no answer)",
+                "timestamp": "2026-09-21T14:35:13Z",
+            },
+            headers=headers,
+        )
+        assert silent.status_code == 200, silent.text
+        before_link = client.get(f"/api/v1/vms/{vm_id}/reading").json()
+        assert before_link["diagnosis"]["code"] == "no_answer"
+        assert before_link["diagnosis"]["can_read_alerts"] is False
+        holding = [0] * 20
+        holding[0] = 1500
+        holding[19] = 1
+        good = RawBatch(
+            vm_id=UUID(vm_id),
+            protocol=VmProtocol.SIMULATOR,
+            map_version="channels-v1",
+            seq_start=1,
+            samples=[RawSample(seq=1, captured_at="2026-09-21T14:36:00Z", sources={"hr": holding, "coils": [1, 0, 0, 0]})],
+        )
+        assert client.post("/api/v1/internal/workers/batches", json=good.model_dump(mode="json"), headers=headers).status_code == 200
+        live = client.get(f"/api/v1/vms/{vm_id}/reading").json()
+        assert live["diagnosis"]["code"] == "device_alerts"
+        assert live["diagnosis"]["can_read_alerts"] is True
+        analog = {row["name"]: row["value"] for row in live["analog"]}
+        discrete = {row["name"]: row["value"] for row in live["discrete"]}
+        alerts = {row["name"]: row["active"] for row in live["alerts"]}
+        assert analog["RPM"] == 1500
+        assert discrete["Engine_running"] is True
+        assert alerts["BUS High Volt"] is True
+        assert alerts["Overspeed"] is False
+        journal = "\n".join(client.get(f"/api/v1/vms/{vm_id}/logs").json()["lines"])
+        assert "Алерт прибора: BUS High Volt" in journal
+        lost = RawBatch(
+            vm_id=UUID(vm_id),
+            protocol=VmProtocol.SIMULATOR,
+            map_version="channels-v1",
+            seq_start=2,
+            samples=[RawSample(seq=2, captured_at="2026-09-21T14:37:00Z", sources={}, quality="bad")],
+        )
+        client.post(
+            "/api/v1/internal/workers/error",
+            json={
+                "vm_id": vm_id,
+                "code": "read_failed",
+                "message": "Modbus request hr failed after 3 retries — No communication with the instrument (no answer)",
+                "timestamp": "2026-09-21T14:37:00Z",
+            },
+            headers=headers,
+        )
+        assert client.post("/api/v1/internal/workers/batches", json=lost.model_dump(mode="json"), headers=headers).status_code == 200
+        stale = client.get(f"/api/v1/vms/{vm_id}/reading").json()
+        assert stale["diagnosis"]["code"] == "no_answer"
+        assert stale["alerts_stale"] is True
+        assert stale["quality"] == "bad"
+        assert {row["name"]: row["value"] for row in stale["analog"]}["RPM"] == 1500
+        assert {row["name"]: row["active"] for row in stale["alerts"]}["BUS High Volt"] is True
+        zeros = RawBatch(
+            vm_id=UUID(vm_id),
+            protocol=VmProtocol.SIMULATOR,
+            map_version="channels-v1",
+            seq_start=3,
+            samples=[RawSample(seq=3, captured_at="2026-09-21T14:38:00Z", sources={"hr": [0] * 20, "coils": [0, 0, 0, 0]})],
+        )
+        assert client.post("/api/v1/internal/workers/batches", json=zeros.model_dump(mode="json"), headers=headers).status_code == 200
+        quiet = client.get(f"/api/v1/vms/{vm_id}/reading").json()
+        assert quiet["diagnosis"]["code"] == "ok"
+        assert {row["name"]: row["value"] for row in quiet["analog"]}["RPM"] == 0
+        assert all(not row["active"] for row in quiet["alerts"])
 
 
 def test_modbus_vm_persists_reader_and_storage_settings(tmp_path: Path, monkeypatch):
@@ -367,6 +531,8 @@ def test_admin_vm_form_has_protocol_specific_settings(tmp_path: Path):
         assert 'data-protocol-panel="modbus_tcp"' in html
         assert 'data-protocol-panel="can"' in html
         assert 'name="serial_resource_id"' in html
+        assert "Найти устройства" in html
+        assert "Проверить чтение" in html
         assert 'name="host"' in html
         assert 'name="tcp_port"' in html
         assert 'name="can_bitrate"' in html
@@ -402,13 +568,147 @@ def test_exclusive_read_resource_conflict_is_rejected_on_second_start(tmp_path: 
         assert blocked.json()["code"] == "resource_conflict"
 
 
+def test_scan_candidates_and_create_auto_approves_serial(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("BB_DISCOVERY_SERIAL_PATHS", "/dev/ttyUSB0")
+    with _client(tmp_path) as client:
+        client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin-password"})
+        csrf = client.cookies.get("bb_csrf")
+        scanned = client.post("/api/v1/resources/scan?network=false", headers={"X-CSRF-Token": csrf})
+        assert scanned.status_code == 200, scanned.text
+        serials = scanned.json()["candidates"]["modbus_rtu"]
+        assert any(item["resource_id"] == "serial:/dev/ttyUSB0" for item in serials)
+        listed = client.get("/api/v1/resources/candidates", params={"protocol": "modbus_rtu"}).json()["items"]
+        assert any(item["resource_id"] == "serial:/dev/ttyUSB0" for item in listed)
+        before = {item["resource_id"]: item["approved"] for item in client.get("/api/v1/resources").json()["items"]}
+        assert before.get("serial:/dev/ttyUSB0") is False
+        _publish_map(client, csrf, protocol="modbus_rtu")
+        created = client.post(
+            "/api/v1/vms",
+            headers={"X-CSRF-Token": csrf},
+            json={
+                "name": "auto-serial",
+                "protocol": "modbus_rtu",
+                "map_version": "deif-gempac-v1",
+                "read_resources": [{"resource_id": "serial:/dev/ttyUSB0"}],
+                "config": {"reader": {"port": "/dev/ttyUSB0"}},
+            },
+        )
+        assert created.status_code == 200, created.text
+        after = {item["resource_id"]: item["approved"] for item in client.get("/api/v1/resources").json()["items"]}
+        assert after.get("serial:/dev/ttyUSB0") is True
+
+
+def test_probe_simulator_returns_split_channels(tmp_path: Path):
+    with _client(tmp_path) as client:
+        client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin-password"})
+        csrf = client.cookies.get("bb_csrf")
+        _publish_map(client, csrf)
+        probe = client.post(
+            "/api/v1/vms/probe",
+            headers={"X-CSRF-Token": csrf},
+            json={"protocol": "simulator", "map_version": "default-v1", "config": {"reader": {"poll_interval_sec": 0.12}}},
+        )
+        assert probe.status_code == 200, probe.text
+        body = probe.json()
+        assert body["ok"] is True
+        assert body["diagnosis"]["code"] in {"ok", "device_alerts"}
+        analog = {row["name"]: row["value"] for row in body["analog"]}
+        discrete = {row["name"]: row["value"] for row in body["discrete"]}
+        assert analog["counter"] == 1
+        assert analog["analog_1"] == 0.5
+        assert discrete["digital_1"] is True
+
+
+def test_probe_rtu_reads_map_or_explains_silence(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("BB_DISCOVERY_SERIAL_PATHS", "/dev/ttyUSB0")
+    with _client(tmp_path) as client:
+        client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin-password"})
+        csrf = client.cookies.get("bb_csrf")
+        client.post("/api/v1/resources/scan?network=false", headers={"X-CSRF-Token": csrf})
+        _publish_map(client, csrf, protocol="modbus_rtu")
+        silent = client.post(
+            "/api/v1/vms/probe",
+            headers={"X-CSRF-Token": csrf},
+            json={
+                "protocol": "modbus_rtu",
+                "map_version": "deif-gempac-v1",
+                "read_resources": [{"resource_id": "serial:/dev/ttyUSB0"}],
+                "config": {"reader": {"port": "/dev/ttyUSB0", "slave_id": 1, "baudrate": 9600}},
+            },
+        )
+        assert silent.status_code == 200, silent.text
+        assert silent.json()["ok"] is False
+        assert silent.json()["diagnosis"]["code"] == "no_answer"
+        assert silent.json()["diagnosis"]["can_read_alerts"] is False
+
+        def fake_read(reader, requests):
+            holding = [0] * 90
+            holding[38] = 1500
+            holding[19] = 1
+            coils = [0] * 32
+            coils[0] = 1
+            return {"holding": holding, "coils": coils}, None
+
+        monkeypatch.setattr("services.hub.probe.read_rtu_sources", fake_read)
+        live = client.post(
+            "/api/v1/vms/probe",
+            headers={"X-CSRF-Token": csrf},
+            json={
+                "protocol": "modbus_rtu",
+                "map_version": "deif-gempac-v1",
+                "read_resources": [{"resource_id": "serial:/dev/ttyUSB0"}],
+                "config": {"reader": {"port": "/dev/ttyUSB0", "slave_id": 1, "baudrate": 9600}},
+            },
+        )
+        assert live.status_code == 200, live.text
+        body = live.json()
+        assert body["ok"] is True
+        analog = {row["name"]: row["value"] for row in body["analog"]}
+        discrete = {row["name"]: row["value"] for row in body["discrete"]}
+        alerts = {row["name"]: row["active"] for row in body["alerts"]}
+        assert analog["RPM"] == 1500
+        assert discrete["Engine_running"] is True
+        assert alerts["BUS High Volt"] is True
+        assert body["diagnosis"]["code"] == "device_alerts"
+
+
+def test_probe_busy_when_serial_is_leased(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("BB_DISCOVERY_SERIAL_PATHS", "/dev/ttyUSB0")
+    with _client(tmp_path) as client:
+        client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin-password"})
+        csrf = client.cookies.get("bb_csrf")
+        client.post("/api/v1/resources/scan?network=false", headers={"X-CSRF-Token": csrf})
+        _publish_map(client, csrf, protocol="modbus_rtu")
+        payload = {
+            "protocol": "modbus_rtu",
+            "map_version": "deif-gempac-v1",
+            "read_resources": [{"resource_id": "serial:/dev/ttyUSB0"}],
+            "config": {"reader": {"port": "/dev/ttyUSB0"}},
+        }
+        vm = client.post("/api/v1/vms", headers={"X-CSRF-Token": csrf}, json={"name": "holder", **payload}).json()
+        assert client.post(f"/api/v1/vms/{vm['id']}/start", headers={"X-CSRF-Token": csrf}).status_code == 200
+        probe = client.post(
+            "/api/v1/vms/probe",
+            headers={"X-CSRF-Token": csrf},
+            json={
+                "protocol": "modbus_rtu",
+                "map_version": "deif-gempac-v1",
+                "read_resources": [{"resource_id": "serial:/dev/ttyUSB0"}],
+                "config": {"reader": {"port": "/dev/ttyUSB0"}},
+            },
+        )
+        assert probe.status_code == 200, probe.text
+        assert probe.json()["diagnosis"]["code"] == "busy"
+        assert probe.json()["ok"] is False
+
+
 def test_html_pages_render_with_current_starlette(tmp_path: Path):
     """The Starlette TemplateResponse request/name order must stay explicit."""
     with _client(tmp_path) as client:
         assert client.get("/login").status_code == 200
         login_html = client.get("/login").text
         assert "AGK" in login_html
-        assert "2.0.13" in login_html
+        assert '2.0.16' in login_html
         assert "bb-login" in login_html
         app_js = login_html.find("/static/app.js")
         alpine_js = login_html.find("/static/vendor/alpine.min.js")
@@ -436,7 +736,7 @@ def test_html_pages_render_with_current_starlette(tmp_path: Path):
             assert response.status_code == 200, (path, response.text)
             assert "<html" in response.text.lower()
             assert "AGK" in response.text
-            assert "2.0.13" in response.text
+            assert "2.0.16" in response.text
             if path in {"/vms", f"/vms/{vm['id']}", f"/admin/vms/{vm['id']}/edit"}:
                 assert 'data-vm-action="delete"' in response.text
                 assert "Удалить" in response.text
@@ -444,6 +744,11 @@ def test_html_pages_render_with_current_starlette(tmp_path: Path):
                 assert "bb-vm-card" in response.text
                 assert 'data-vm-action="start"' in response.text
                 assert "bb-icon-btn-play" in response.text
+                assert "Аналоги" in response.text
+                assert "Дискреты" in response.text
+                assert "Алерты прибора" in response.text
+                assert "Найти устройства" in response.text
+                assert "Проверить чтение" in response.text
         for path in ("/admin/vms", "/admin/logs"):
             redirected = client.get(path, follow_redirects=False)
             assert redirected.status_code == 303, path

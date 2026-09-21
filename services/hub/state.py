@@ -17,6 +17,7 @@ class EventBus:
         self._history: deque[EventEnvelope] = deque(maxlen=log_limit)
         self._latest_status: dict[str, VmStatus] = {}
         self._latest_tags: dict[str, TagSample] = {}
+        self._latest_good_tags: dict[str, TagSample] = {}
         self._logs: dict[str, deque[dict[str, Any]]] = defaultdict(lambda: deque(maxlen=log_limit))
         self._alarms: deque[dict[str, Any]] = deque(maxlen=log_limit)
 
@@ -37,7 +38,11 @@ class EventBus:
         return await self.publish("vm_status", status.model_dump(mode="json"))
 
     async def publish_tags(self, sample: TagSample) -> EventEnvelope:
-        self._latest_tags[str(sample.vm_id)] = sample
+        key = str(sample.vm_id)
+        self._latest_tags[key] = sample
+        quality = getattr(sample.quality, "value", sample.quality)
+        if quality != "bad":
+            self._latest_good_tags[key] = sample
         return await self.publish("tags", sample.model_dump(mode="json"))
 
     async def publish_log(self, vm_id: str, line: str, *, level: str = "info") -> EventEnvelope:
@@ -51,6 +56,9 @@ class EventBus:
 
     def latest_tags(self, vm_id: str) -> TagSample | None:
         return self._latest_tags.get(str(vm_id))
+
+    def latest_good_tags(self, vm_id: str) -> TagSample | None:
+        return self._latest_good_tags.get(str(vm_id))
 
     def snapshot(self) -> dict[str, Any]:
         return {
@@ -76,4 +84,5 @@ class EventBus:
         key = str(vm_id)
         self._latest_status.pop(key, None)
         self._latest_tags.pop(key, None)
+        self._latest_good_tags.pop(key, None)
         self._logs.pop(key, None)

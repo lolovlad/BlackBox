@@ -64,9 +64,18 @@ class WorkerClient:
     def register(self) -> dict:
         return self.post("/api/v1/internal/workers/register", WorkerRegister(vm_id=UUID(self.vm_id), worker_id=self.worker_id, protocol=self.protocol, capabilities=["batch", "heartbeat"]).model_dump(mode="json"))
 
-    def heartbeat(self) -> dict:
+    def heartbeat(self, *, health: str = "healthy") -> dict:
         self.seq += 1
-        return self.post("/api/v1/internal/workers/heartbeat", WorkerHeartbeat(vm_id=UUID(self.vm_id), worker_id=self.worker_id, timestamp=datetime.now(timezone.utc), seq=self.seq).model_dump(mode="json"))
+        return self.post(
+            "/api/v1/internal/workers/heartbeat",
+            WorkerHeartbeat(
+                vm_id=UUID(self.vm_id),
+                worker_id=self.worker_id,
+                timestamp=datetime.now(timezone.utc),
+                seq=self.seq,
+                health=health,  # type: ignore[arg-type]
+            ).model_dump(mode="json"),
+        )
 
     def commands(self) -> list[dict]:
         return list(self.get(f"/api/v1/internal/workers/{self.vm_id}/commands").get("items", []))

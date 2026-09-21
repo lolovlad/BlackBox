@@ -79,6 +79,7 @@ class ModbusTcpReader:
 
     def read(self, requests: list[dict[str, Any]]) -> dict[str, list[Any]]:
         output: dict[str, list[Any]] = {}
+        self.last_failures: list[tuple[str, Exception]] = []
         for request in requests:
             name = str(request.get("name", "holding"))
             function = int(request.get("fc", 3))
@@ -95,7 +96,13 @@ class ModbusTcpReader:
                     if attempt + 1 < self.retries:
                         time.sleep(self.retry_delay)
             else:
-                raise RuntimeError(f"Modbus TCP request {name} failed after {self.retries} retries") from last_error
+                output[name] = []
+                if last_error is not None:
+                    self.last_failures.append((name, last_error))
+        succeeded = [name for name, values in output.items() if values]
+        if self.last_failures and not succeeded:
+            name, last_error = self.last_failures[0]
+            raise RuntimeError(f"Modbus TCP request {name} failed after {self.retries} retries") from last_error
         return output
 
 
@@ -173,8 +180,19 @@ def run() -> int:
                 address_offset=int(cfg.get("address_offset", 1)),
             )
         try:
-            client.batch(reader.read(requests or [{"name": "holding", "fc": 3, "address": 0, "count": 1}]), map_version)
-            last_error = ""
+            sources = reader.read(requests or [{"name": "holding", "fc": 3, "address": 0, "count": 1}])
+            failures = getattr(reader, "last_failures", None) or []
+            if failures:
+                if str(failures[0][1]) != last_error:
+                    try:
+                        client.report_error("read_failed", failures[0][1])
+                    except Exception:
+                        pass
+                    last_error = str(failures[0][1])
+                client.batch(sources, map_version, quality="degraded")
+            else:
+                client.batch(sources, map_version)
+                last_error = ""
         except Exception as exc:
             if str(exc) != last_error:
                 try:
@@ -186,6 +204,12 @@ def run() -> int:
                 client.batch({}, map_version, quality="bad")
             except Exception:
                 pass
+            try:
+                client.heartbeat(health="unhealthy")
+            except Exception:
+                pass
+            time.sleep(float(_reader_config(config).get("poll_interval_sec", os.getenv("BB_INTERVAL", "1"))))
+            continue
         try:
             client.heartbeat()
         except Exception:

@@ -235,6 +235,172 @@
     };
   }
 
+  function resourceOptionLabel(item) {
+    const parts = [item.name || item.resource_id];
+    const where = item.path || item.address;
+    if (where) parts.push(where);
+    let text = parts.join(' — ');
+    if (item.approved === false) text += ' · не подтверждён';
+    if (item.leased_name) text += ' · занят ' + item.leased_name;
+    return text;
+  }
+
+  function fillResourceSelect(select, items, dataKey, dataField) {
+    if (!select) return;
+    const keep = select.value;
+    const placeholderText = (select.querySelector('option[value=""]') || {}).textContent || '— выберите —';
+    select.innerHTML = '';
+    const blank = document.createElement('option');
+    blank.value = '';
+    blank.textContent = placeholderText;
+    select.appendChild(blank);
+    (items || []).forEach(function (item) {
+      const option = document.createElement('option');
+      option.value = item.resource_id;
+      const dataValue = item[dataField] || item.path || item.address || item.name || '';
+      if (dataKey && dataValue) option.dataset[dataKey] = dataValue;
+      option.textContent = resourceOptionLabel(item);
+      select.appendChild(option);
+    });
+    if (keep && Array.from(select.options).some(function (option) { return option.value === keep; })) {
+      select.value = keep;
+    } else if ((items || []).length === 1) {
+      select.value = items[0].resource_id;
+    }
+  }
+
+  function applyCandidates(form, protocol, candidates) {
+    const grouped = candidates || {};
+    fillResourceSelect(form.querySelector('[name="serial_resource_id"]'), grouped.modbus_rtu, 'path', 'path');
+    fillResourceSelect(form.querySelector('[name="tcp_resource_id"]'), grouped.modbus_tcp, 'address', 'address');
+    fillResourceSelect(form.querySelector('[name="can_resource_id"]'), grouped.can, 'interface', 'name');
+    syncSerialPort(form);
+    syncTcpEndpoint(form);
+    syncCanInterface(form);
+    const status = form.querySelector('[data-probe-status]');
+    const items = grouped[protocol] || [];
+    if (status && protocol !== 'simulator') {
+      status.textContent = items.length ? ('Найдено: ' + items.length) : 'Подходящих устройств нет';
+    }
+  }
+
+  function formatProbeValue(value) {
+    if (value === true) return 'вкл';
+    if (value === false) return 'выкл';
+    if (value === null || value === undefined || value === '') return '—';
+    return String(value);
+  }
+
+  function renderProbeResult(box, body) {
+    const diagnosis = body.diagnosis || {};
+    box.hidden = false;
+    box.className = 'bb-probe-result is-' + (diagnosis.link || (body.ok ? 'up' : 'down'));
+    box.replaceChildren();
+    const title = document.createElement('strong');
+    title.textContent = diagnosis.title || (body.ok ? 'Есть ответ' : 'Нет ответа');
+    box.appendChild(title);
+    if (diagnosis.detail) {
+      const detail = document.createElement('p');
+      detail.textContent = diagnosis.detail;
+      box.appendChild(detail);
+    }
+    const analog = (body.analog || []).slice(0, 8).map(function (row) {
+      return row.name + '=' + formatProbeValue(row.value);
+    }).join(' · ');
+    const discrete = (body.discrete || []).slice(0, 6).map(function (row) {
+      return row.name + ' ' + formatProbeValue(row.value);
+    }).join(' · ');
+    const alerts = (body.alerts || []).filter(function (row) { return row.active; }).map(function (row) { return row.name; });
+    if (analog) {
+      const line = document.createElement('p');
+      line.textContent = 'Аналоги: ' + analog;
+      box.appendChild(line);
+    }
+    if (discrete) {
+      const line = document.createElement('p');
+      line.textContent = 'Дискреты: ' + discrete;
+      box.appendChild(line);
+    }
+    if (alerts.length) {
+      const line = document.createElement('p');
+      line.textContent = 'Алерты: ' + alerts.join(', ');
+      box.appendChild(line);
+    } else if (body.ok && (body.alerts || []).length) {
+      const line = document.createElement('p');
+      line.textContent = 'Активных алертов прибора нет';
+      box.appendChild(line);
+    }
+  }
+
+  function bindProbe(form) {
+    if (!form) return;
+    const scanBtn = form.querySelector('[data-probe-scan]');
+    const readBtn = form.querySelector('[data-probe-read]');
+    const status = form.querySelector('[data-probe-status]');
+    const result = form.querySelector('[data-probe-result]');
+    const protocolOf = function () {
+      return (form.querySelector('[name="protocol"]:checked') || form.querySelector('[name="protocol"]'))?.value || form.dataset.vmProtocol || 'simulator';
+    };
+    const syncButtons = function () {
+      if (scanBtn) scanBtn.hidden = protocolOf() === 'simulator';
+    };
+    form.addEventListener('change', function (event) {
+      if (event.target && event.target.name === 'protocol') syncButtons();
+    });
+    syncButtons();
+    if (scanBtn) {
+      scanBtn.addEventListener('click', async function () {
+        const protocol = protocolOf();
+        scanBtn.disabled = true;
+        if (status) status.textContent = 'Сканирование…';
+        try {
+          const body = await mutate('/api/v1/resources/scan?network=' + (protocol === 'modbus_tcp' ? 'true' : 'false'), { method: 'POST' });
+          applyCandidates(form, protocol, body.candidates);
+          toast('Устройства обновлены', 'ok');
+        } catch (error) {
+          if (status) status.textContent = error.message;
+          toast(error.message, 'error');
+        } finally {
+          scanBtn.disabled = false;
+        }
+      });
+    }
+    if (readBtn) {
+      readBtn.addEventListener('click', async function () {
+        const protocol = protocolOf();
+        const mapField = form.querySelector('[name="map_version"]');
+        if (!mapField || !mapField.value) {
+          toast('Сначала выберите карту', 'error');
+          return;
+        }
+        readBtn.disabled = true;
+        if (status) status.textContent = 'Читаю прибор…';
+        if (result) result.hidden = true;
+        try {
+          const body = await mutate('/api/v1/vms/probe', {
+            method: 'POST',
+            headers: headers({ 'Content-Type': 'application/json' }),
+            body: JSON.stringify({
+              protocol: protocol,
+              map_version: mapField.value,
+              read_resources: readResourcesFromForm(form, protocol),
+              config: runtimeConfigFromForm(form),
+              vm_id: form.dataset.vmId || null,
+            }),
+          });
+          if (status) status.textContent = (body.diagnosis && body.diagnosis.title) || (body.ok ? 'Есть ответ' : 'Нет ответа');
+          if (result) renderProbeResult(result, body);
+          toast(body.ok ? 'Прибор ответил' : ((body.diagnosis && body.diagnosis.title) || 'Нет ответа'), body.ok ? 'ok' : 'error');
+        } catch (error) {
+          if (status) status.textContent = error.message;
+          toast(error.message, 'error');
+        } finally {
+          readBtn.disabled = false;
+        }
+      });
+    }
+  }
+
   const createForm = document.getElementById('create-vm');
   if (createForm) {
     createForm.addEventListener('change', function (event) {
@@ -248,6 +414,7 @@
     });
     syncCreateMapOptions();
     bindProtocolForm(createForm, createProtocolValue());
+    bindProbe(createForm);
   }
   const createMapSelect = document.getElementById('create-map-version');
   if (createMapSelect) {
@@ -264,7 +431,10 @@
     loadMapPreview(editMapSelect, document.getElementById('edit-map-preview'), document.getElementById('edit-map-preview-status'));
   }
   const editForm = document.getElementById('edit-vm');
-  if (editForm) bindProtocolForm(editForm, editForm.dataset.vmProtocol || 'simulator');
+  if (editForm) {
+    bindProtocolForm(editForm, editForm.dataset.vmProtocol || 'simulator');
+    bindProbe(editForm);
+  }
 
   window.bbMapsPage = function bbMapsPage() {
     const labels = { simulator: 'Simulator', modbus_rtu: 'Modbus RTU', modbus_tcp: 'Modbus TCP', can: 'CAN' };
@@ -582,9 +752,15 @@
       entries: [],
       tags: {},
       fields: [],
+      analog: [],
+      discrete: [],
+      alerts: [],
+      diagnosis: {},
+      alertsStale: false,
       quality: '',
       capturedAt: '',
       loading: false,
+      readQuery: '',
       lifecycles: lifecycles,
       errors: errors,
       vmIndex: index,
@@ -598,10 +774,33 @@
         return labels[value] || value;
       },
       formatClock: formatClock,
+      qualityLabel: function (value) {
+        if (value === 'good') return 'Нормальное';
+        if (value === 'bad') return 'Нет ответа';
+        if (value === 'degraded') return 'Неполное';
+        return value ? String(value) : 'Нет данных';
+      },
       formatValue: function (value) {
         if (value === null || value === undefined || value === '') return '—';
         if (typeof value === 'object') return JSON.stringify(value);
         return String(value);
+      },
+      applyReading: function (reading) {
+        this.tags = reading.tags || {};
+        this.fields = reading.fields || [];
+        this.analog = reading.analog || [];
+        this.discrete = reading.discrete || [];
+        this.alerts = reading.alerts || [];
+        this.diagnosis = reading.diagnosis || {};
+        this.alertsStale = Boolean(reading.alerts_stale);
+        this.quality = reading.quality || '';
+        this.capturedAt = reading.captured_at || '';
+        if (reading.lifecycle) {
+          this.lifecycles = Object.assign({}, this.lifecycles, { [this.selected]: reading.lifecycle });
+        }
+        if (reading.last_error !== undefined) {
+          this.errors = Object.assign({}, this.errors, { [this.selected]: reading.last_error || '' });
+        }
       },
       get selectedMeta() {
         const vm = this.vmIndex[this.selected] || {};
@@ -621,16 +820,25 @@
       get selectedError() {
         return this.errors[this.selected] || '';
       },
-      get readingRows() {
-        if (this.fields && this.fields.length) return this.fields;
-        const tags = this.tags || {};
-        return Object.keys(tags).map(function (name) {
-          return { name: name, value: tags[name], type: '', source: '' };
+      get analogRows() { return this.filterRows(this.analog); },
+      get discreteRows() { return this.filterRows(this.discrete); },
+      get alertRows() { return this.filterRows(this.alerts, ['name']); },
+      get activeAlertHint() {
+        const count = (this.alerts || []).filter(function (row) { return row.active; }).length;
+        return count ? ('· ' + count) : '';
+      },
+      filterRows: function (rows, keys) {
+        const query = (this.readQuery || '').trim().toLowerCase();
+        const items = rows || [];
+        if (!query) return items;
+        const fields = keys || ['name', 'label', 'source', 'type'];
+        return items.filter(function (row) {
+          return fields.map(function (key) { return row[key] || ''; }).join(' ').toLowerCase().indexOf(query) >= 0;
         });
       },
       openVm: function (id, persist) {
+        if (this.selected !== id) this.tab = 'log';
         this.selected = id;
-        this.tab = 'log';
         if (persist !== false) {
           sessionStorage.setItem('bb-vm-selected', id);
           if (location.pathname !== '/vms/' + id) history.replaceState({}, '', '/vms/' + id);
@@ -642,6 +850,13 @@
         this.entries = [];
         this.tags = {};
         this.fields = [];
+        this.analog = [];
+        this.discrete = [];
+        this.alerts = [];
+        this.diagnosis = {};
+        this.alertsStale = false;
+        this.quality = '';
+        this.capturedAt = '';
         sessionStorage.removeItem('bb-vm-selected');
         if (location.pathname.indexOf('/vms/') === 0) history.replaceState({}, '', '/vms');
       },
@@ -660,16 +875,7 @@
           const logs = await fetch('/api/v1/vms/' + this.selected + '/logs?tail=2000').then(function (response) { return response.json(); });
           this.entries = logs.entries || [];
           const reading = await fetch('/api/v1/vms/' + this.selected + '/reading').then(function (response) { return response.json(); });
-          this.tags = reading.tags || {};
-          this.fields = reading.fields || [];
-          this.quality = reading.quality || '';
-          this.capturedAt = reading.captured_at || '';
-          if (reading.lifecycle) {
-            this.lifecycles = Object.assign({}, this.lifecycles, { [this.selected]: reading.lifecycle });
-          }
-          if (reading.last_error !== undefined) {
-            this.errors = Object.assign({}, this.errors, { [this.selected]: reading.last_error || '' });
-          }
+          this.applyReading(reading);
           this.$nextTick(this.scrollJournal.bind(this));
         } catch (_e) {
           this.entries = [];
@@ -726,15 +932,10 @@
           this.errors = Object.assign({}, this.errors, errorPatch);
         }
         if (message.topic === 'tags' && vmId === this.selected) {
-          this.tags = payload.tags || {};
-          this.quality = payload.quality || '';
-          this.capturedAt = payload.captured_at || '';
-          if (this.fields && this.fields.length) {
-            const tags = this.tags;
-            this.fields = this.fields.map(function (field) {
-              return Object.assign({}, field, { value: tags[field.name] });
-            });
-          }
+          const self = this;
+          fetch('/api/v1/vms/' + this.selected + '/reading').then(function (response) { return response.json(); }).then(function (reading) {
+            self.applyReading(reading);
+          }).catch(function () {});
         }
         if (message.topic === 'logs' && vmId === this.selected) {
           const entry = logEntryFromPayload(payload);

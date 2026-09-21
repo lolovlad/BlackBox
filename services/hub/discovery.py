@@ -712,6 +712,37 @@ def discover_resources(
     ]
 
 
+PROTOCOL_RESOURCE_KIND = {
+    "modbus_rtu": ResourceKind.SERIAL.value,
+    "modbus_tcp": ResourceKind.TCP.value,
+    "can": ResourceKind.CAN.value,
+    "gpio": ResourceKind.GPIO.value,
+}
+
+
+def hub_serial_path(port: str, *, dev_root: Path | None = None) -> str:
+    """Path Hub itself can open: ``/host-dev/ttyAMA10`` in Docker, ``/dev/...`` on the host."""
+    raw = str(port or "").strip()
+    if not raw:
+        return raw
+    root = Path(dev_root) if dev_root is not None else discovery_dev_root()
+    linux = as_linux_dev_path(raw, dev_root=root)
+    name = Path(linux).name
+    mapped = root / name
+    for candidate in (mapped, Path(linux), Path(raw)):
+        try:
+            if candidate.exists():
+                return str(candidate)
+        except OSError:
+            continue
+    return str(mapped) if root.exists() else linux
+
+
+def operator_serial_path(path: str, *, dev_root: Path | None = None) -> str:
+    """Show the host /dev node in UI errors, not the Hub bind-mount."""
+    return as_linux_dev_path(path, dev_root=dev_root)
+
+
 def discovery_summary(items: list[dict[str, Any]]) -> dict[str, int]:
     present = [item for item in items if item.get("available", True)]
     return {

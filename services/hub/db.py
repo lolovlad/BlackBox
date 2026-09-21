@@ -498,6 +498,11 @@ class HubRepository:
                 )
         return self.list_resources()
 
+    def list_resource_leases(self) -> dict[str, str]:
+        with self.connect() as c:
+            rows = c.execute("SELECT resource_id, vm_id FROM resource_leases").fetchall()
+        return {str(row["resource_id"]): str(row["vm_id"]) for row in rows}
+
     def approve_resource(self, resource_id: str, user_id: int | None = None) -> bool:
         with self.connect() as c:
             cur = c.execute("UPDATE discovered_resources SET approved=1,approved_by=?,approved_at=? WHERE resource_id=?", (user_id, datetime.now(timezone.utc).isoformat(), resource_id))

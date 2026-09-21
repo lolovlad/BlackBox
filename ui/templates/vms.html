@@ -121,8 +121,8 @@
     </div>
     <div class="bb-inspector-body">
       <div class="bb-journal-wrap" x-show="tab === 'log'">
-        <p class="bb-muted" x-show="loading">Загрузка журнала…</p>
         <div class="bb-journal" x-ref="journal">
+          <p class="bb-journal-empty" x-show="loading">Загрузка журнала…</p>
           <template x-for="(entry, index) in entries" :key="entry.timestamp + index">
             <div class="bb-log-row" :class="'is-' + entry.level + ' is-' + entry.kind">
               <span class="bb-log-time" x-text="entry.clock"></span>
@@ -134,26 +134,63 @@
         </div>
       </div>
       <div class="bb-read-wrap" x-show="tab === 'read'">
-        <p class="bb-read-status">
-          <span x-show="quality" x-text="'Качество: ' + quality"></span>
-          <span x-show="capturedAt" x-text="formatClock(capturedAt)"></span>
-        </p>
-        <p class="bb-error" x-show="selectedError" x-text="selectedError"></p>
-        <table class="bb-read-table" x-show="readingRows.length">
-          <thead>
-            <tr><th>Тег</th><th>Значение</th><th>Источник</th></tr>
-          </thead>
-          <tbody>
-            <template x-for="row in readingRows" :key="row.name">
-              <tr>
-                <td x-text="row.name"></td>
-                <td class="bb-mono" x-text="formatValue(row.value)"></td>
-                <td class="bb-muted" x-text="row.source || row.type || ''"></td>
-              </tr>
-            </template>
-          </tbody>
-        </table>
-        <p class="bb-muted" x-show="!readingRows.length">Нет прочитанных значений. Запустите ВМ, чтобы увидеть события карты.</p>
+        <div class="bb-read-toolbar">
+          <span class="bb-quality" :class="'is-' + (diagnosis.link || quality || 'unknown')" x-text="(diagnosis && diagnosis.title) || qualityLabel(quality)"></span>
+          <span class="bb-muted" x-show="capturedAt" x-text="formatClock(capturedAt)"></span>
+          <label class="bb-read-search">
+            <i class="bi bi-search"></i>
+            <input type="search" x-model="readQuery" placeholder="Фильтр">
+          </label>
+        </div>
+        <p class="bb-read-banner" :class="{ 'is-error': diagnosis.code === 'no_answer' || diagnosis.code === 'no_sample', 'is-ok': diagnosis.code === 'ok', 'is-warn': diagnosis.code === 'device_alerts' || diagnosis.code === 'partial' }" x-show="diagnosis.detail" x-text="diagnosis.detail"></p>
+        <p class="bb-muted" x-show="alertsStale">Ниже — последний успешный опрос. Сейчас связи нет, значения могут устареть. Алерты прибора в этом состоянии не обновляются.</p>
+        <div class="bb-read-scroll">
+          <section class="bb-channel">
+            <h3>Аналоги</h3>
+            <table class="bb-read-table" x-show="analogRows.length">
+              <thead><tr><th>Тег</th><th>Значение</th></tr></thead>
+              <tbody>
+                <template x-for="row in analogRows" :key="'a-' + row.name">
+                  <tr>
+                    <td><strong x-text="row.name"></strong><span class="bb-read-label" x-show="row.label && row.label !== row.name" x-text="row.label"></span></td>
+                    <td class="bb-mono" x-text="formatValue(row.value)"></td>
+                  </tr>
+                </template>
+              </tbody>
+            </table>
+            <p class="bb-muted" x-show="!analogRows.length">Нет аналоговых полей в карте.</p>
+          </section>
+          <section class="bb-channel">
+            <h3>Дискреты</h3>
+            <table class="bb-read-table" x-show="discreteRows.length">
+              <thead><tr><th>Тег</th><th>Состояние</th></tr></thead>
+              <tbody>
+                <template x-for="row in discreteRows" :key="'d-' + row.name">
+                  <tr>
+                    <td><strong x-text="row.name"></strong><span class="bb-read-label" x-show="row.label && row.label !== row.name" x-text="row.label"></span></td>
+                    <td><span class="bb-disc" :class="row.value === true ? 'is-on' : 'is-off'" x-text="row.value === true ? 'вкл' : (row.value === false ? 'выкл' : '—')"></span></td>
+                  </tr>
+                </template>
+              </tbody>
+            </table>
+            <p class="bb-muted" x-show="!discreteRows.length">Нет дискретных полей в карте.</p>
+          </section>
+          <section class="bb-channel">
+            <h3>Алерты прибора <span class="bb-muted" x-text="activeAlertHint"></span></h3>
+            <table class="bb-read-table" x-show="alertRows.length">
+              <thead><tr><th>Сообщение</th><th>Статус</th></tr></thead>
+              <tbody>
+                <template x-for="row in alertRows" :key="'e-' + row.name">
+                  <tr :class="row.active ? 'is-alert-on' : ''">
+                    <td x-text="row.name"></td>
+                    <td><span class="bb-disc" :class="row.active ? 'is-on' : 'is-off'" x-text="row.active ? 'активен' : 'нет'"></span></td>
+                  </tr>
+                </template>
+              </tbody>
+            </table>
+            <p class="bb-muted" x-show="!alertRows.length">В карте нет bitfield-алертов (active_alarms).</p>
+          </section>
+        </div>
       </div>
     </div>
   </aside>

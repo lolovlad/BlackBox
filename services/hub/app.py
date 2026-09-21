@@ -18,20 +18,21 @@ from fastapi.templating import Jinja2Templates
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, ValidationError
 
-from bb_platform.contracts import AlarmEvent, MapDocument, RawBatch, ResourceKind, TagSample, VmCommand, VmLifecycle, VmProtocol, VmStatus, WorkerCommandAck, WorkerError, WorkerHeartbeat, WorkerRegister
-from bb_platform.parser import adapt_legacy_map, parse_batch
+from bb_platform.contracts import AlarmEvent, MapDocument, Quality, RawBatch, ResourceKind, TagSample, VmCommand, VmLifecycle, VmProtocol, VmStatus, WorkerCommandAck, WorkerError, WorkerHeartbeat, WorkerRegister
+from bb_platform.parser import adapt_legacy_map, diagnose_read, field_channel, parse_batch
 
 from .config import HubConfig
 from .db import HubRepository
-from .discovery import KIND_LABELS, discover_resources, discovery_summary, is_usable_can_interface, is_usable_serial_port, tcp_hints_from_vms
+from .discovery import KIND_LABELS, PROTOCOL_RESOURCE_KIND, discover_resources, discovery_summary, is_usable_can_interface, is_usable_serial_port, tcp_hints_from_vms
 from .docker_manager import DockerManager, DockerUnavailable
+from .probe import run_probe
 from .registry import PROTOCOLS, protocol_spec
 from .security import ACCESS_COOKIE, CSRF_COOKIE, REFRESH_COOKIE, _decode, csrf_protect, current_user, issue_tokens, set_auth_cookies
 from .state import EventBus
 from .storage import ParquetStore, StorageUnavailable, purge_vm_directories
 from .vm_config import normalize_runtime_config
 
-HUB_VERSION = "2.0.13"
+HUB_VERSION = "2.0.16"
 HUB_VENDOR = "AGK"
 
 PROTOCOL_LABELS = {
@@ -71,6 +72,9 @@ OPERATOR_LOG_LABELS = {
     "stop": "остановка",
     "restart": "перезапуск",
 }
+# Poll/protocol faults must not flip the VM to failed: the container is still
+# running, and the next heartbeat would immediately record failed → running.
+PROTOCOL_ERROR_CODES = {"read_failed", "reader_unavailable"}
 
 
 class LoginRequest(BaseModel):
@@ -110,6 +114,14 @@ class MapUploadRequest(BaseModel):
     version: str = Field(min_length=1, max_length=128)
     preset_id: str | None = None
     document: dict[str, Any]
+
+
+class ProbeRequest(BaseModel):
+    protocol: VmProtocol
+    map_version: str = Field(min_length=1, max_length=128)
+    read_resources: list[dict[str, Any]] = Field(default_factory=list)
+    config: dict[str, Any] = Field(default_factory=dict)
+    vm_id: str | None = None
 
 
 class UserCreateRequest(BaseModel):
@@ -304,6 +316,47 @@ def _approved_resources(repo: HubRepository, resources: list[dict[str, Any]], *,
     return resolved
 
 
+def _bind_read_resources(repo: HubRepository, resources: list[dict[str, Any]], account_id: int | None, *, exclude_vm_id: str | None = None) -> list[dict[str, Any]]:
+    """Approve a discovered device when an admin selects it for a VM."""
+    for item in resources or []:
+        if not isinstance(item, dict) or not item.get("resource_id"):
+            continue
+        resource_id = str(item["resource_id"])
+        descriptor = repo.resource_by_id(resource_id)
+        if descriptor and descriptor.get("available") and not descriptor.get("approved"):
+            repo.approve_resource(resource_id, account_id)
+    return _approved_resources(repo, resources or [], exclude_vm_id=exclude_vm_id)
+
+
+def _candidates_payload(repo: HubRepository) -> dict[str, list[dict[str, Any]]]:
+    leases = repo.list_resource_leases()
+    names = {str(vm["id"]): vm.get("name") or vm["id"] for vm in repo.list_vms()}
+    grouped: dict[str, list[dict[str, Any]]] = {"modbus_rtu": [], "modbus_tcp": [], "can": [], "gpio": []}
+    kind_to_protocol = {kind: protocol for protocol, kind in PROTOCOL_RESOURCE_KIND.items()}
+    for item in repo.list_resources():
+        if not item.get("available"):
+            continue
+        protocol = kind_to_protocol.get(str(item.get("kind") or ""))
+        if protocol not in grouped:
+            continue
+        leased = leases.get(str(item["resource_id"]))
+        grouped[protocol].append(
+            {
+                "resource_id": item["resource_id"],
+                "kind": item["kind"],
+                "name": item["name"],
+                "path": item.get("path"),
+                "address": item.get("address"),
+                "approved": bool(item.get("approved")),
+                "available": True,
+                "metadata": item.get("metadata") or {},
+                "leased_by": leased,
+                "leased_name": names.get(leased) if leased else None,
+            }
+        )
+    return grouped
+
+
 def _approved_storage_resource(repo: HubRepository, resource_id: str | None) -> str:
     resource_id = resource_id or "storage:data"
     descriptor = repo.resource_by_id(resource_id)
@@ -410,13 +463,18 @@ def _validate_reader_allowlist(repo: HubRepository, protocol: str, runtime_confi
 
 
 def _approved_resource_groups(repo: HubRepository) -> dict[str, list[dict[str, Any]]]:
-    approved = [item for item in repo.list_resources() if item.get("approved") and item.get("available")]
+    candidates = _candidates_payload(repo)
+    storage = [
+        item
+        for item in repo.list_resources()
+        if item.get("kind") == ResourceKind.STORAGE.value and item.get("approved") and item.get("available")
+    ]
     return {
-        "serial_resources": [item for item in approved if item.get("kind") == ResourceKind.SERIAL.value],
-        "tcp_resources": [item for item in approved if item.get("kind") == ResourceKind.TCP.value],
-        "can_resources": [item for item in approved if item.get("kind") == ResourceKind.CAN.value],
-        "gpio_resources": [item for item in approved if item.get("kind") == ResourceKind.GPIO.value],
-        "storage_resources": [item for item in approved if item.get("kind") == ResourceKind.STORAGE.value],
+        "serial_resources": candidates["modbus_rtu"],
+        "tcp_resources": candidates["modbus_tcp"],
+        "can_resources": candidates["can"],
+        "gpio_resources": candidates["gpio"],
+        "storage_resources": storage,
     }
 
 
@@ -485,6 +543,7 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
         app.state.storage_stores = {}
         app.state.ingest_pending = {}
         app.state.ingest_queue = asyncio.Queue(maxsize=max(1, cfg.queue_size))
+        app.state.vm_alerts = {}
         stop_ingest = asyncio.Event()
 
         def store_for_vm(vm: dict[str, Any], runtime_config: dict[str, Any]) -> ParquetStore:
@@ -557,6 +616,48 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
                 raise
             for sample in parsed:
                 await bus.publish_tags(sample)
+                quality_value = getattr(sample.quality, "value", sample.quality)
+                if quality_value == Quality.BAD.value:
+                    continue
+                vm_key = str(sample.vm_id)
+                previous = {str(item) for item in app.state.vm_alerts.get(vm_key, [])}
+                current = {str(item) for item in sample.alerts}
+                for name in sorted(current - previous):
+                    await bus.publish(
+                        "alarms",
+                        AlarmEvent(
+                            vm_id=sample.vm_id,
+                            timestamp=sample.captured_at,
+                            severity="warning",
+                            code="device_alert",
+                            message=name,
+                            active=True,
+                            payload={"kind": "alert"},
+                        ).model_dump(mode="json"),
+                    )
+                    await bus.publish_log(vm_key, f"Алерт прибора: {name}", level="error")
+                for name in sorted(previous - current):
+                    await bus.publish(
+                        "alarms",
+                        AlarmEvent(
+                            vm_id=sample.vm_id,
+                            timestamp=sample.captured_at,
+                            severity="info",
+                            code="device_alert",
+                            message=name,
+                            active=False,
+                            payload={"kind": "alert"},
+                        ).model_dump(mode="json"),
+                    )
+                    await bus.publish_log(vm_key, f"Алерт снят: {name}")
+                app.state.vm_alerts[vm_key] = sorted(current)
+            last_quality = parsed[-1].quality if parsed else None
+            if parsed and last_quality == Quality.GOOD:
+                current = repo.get_vm(str(batch.vm_id))
+                if current and current.get("last_error"):
+                    cleared = repo.update_vm(str(batch.vm_id), {"last_error": None})
+                    if cleared:
+                        await bus.publish_status(_status_from_vm(cleared, health="healthy"))
             return {"ok": True, "duplicate": False, "count": len(parsed), "last_seq": parsed[-1].seq}
 
         async def ingest_loop() -> None:
@@ -661,9 +762,14 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
                                 await asyncio.to_thread(docker_manager.stop, vm)
                                 inspected = await asyncio.to_thread(docker_manager.inspect, vm)
                                 actual = inspected.get("lifecycle")
-                            changed = actual != vm.get("lifecycle") or inspected.get("error") != vm.get("last_error")
-                            if changed:
-                                updated = repo.update_vm(vm["id"], {"lifecycle": inspected["lifecycle"], "last_error": inspected.get("error")})
+                            values: dict[str, Any] = {}
+                            if actual != vm.get("lifecycle"):
+                                values["lifecycle"] = actual
+                            docker_error = inspected.get("error") or None
+                            if docker_error and docker_error != vm.get("last_error"):
+                                values["last_error"] = docker_error
+                            if values:
+                                updated = repo.update_vm(vm["id"], values)
                                 if updated:
                                     await bus.publish_status(_status_from_vm(updated, health=inspected.get("health", "unknown")))
                         except Exception as exc:
@@ -801,7 +907,7 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
         if repo.map_by_version(payload.map_version, payload.protocol.value) is None:
             raise HTTPException(422, detail={"code": "map_not_found", "message": "Map version not found"})
         read_input = payload.read_resources if payload.read_resources is not None else (payload.resources or [])
-        resources = _approved_resources(repo, read_input)
+        resources = _bind_read_resources(repo, read_input, int(account["id"]))
         _validate_reader_allowlist(repo, payload.protocol.value, runtime_config, resources)
         storage_id = _approved_storage_resource(repo, payload.storage_resource_id or runtime_config["storage"]["target_resource_id"])
         runtime_config["storage"]["target_resource_id"] = storage_id
@@ -834,6 +940,68 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
         )
         return vm
 
+    @app.post("/api/v1/vms/probe", dependencies=[Depends(csrf_protect)])
+    async def probe_vm(payload: ProbeRequest, account=Depends(admin)):
+        try:
+            runtime_config = normalize_runtime_config(payload.config, protocol=payload.protocol.value)
+        except ValidationError as exc:
+            raise HTTPException(422, detail={"code": "invalid_vm_config", "message": "Invalid VM reader/storage configuration", "details": exc.errors()}) from exc
+        document_payload = repo.map_by_version(payload.map_version, payload.protocol.value)
+        if document_payload is None:
+            raise HTTPException(422, detail={"code": "map_not_found", "message": "Сначала выберите карту этого протокола"})
+        reader = runtime_config.setdefault("reader", {})
+        selected = payload.read_resources[0] if payload.read_resources else None
+        descriptor = None
+        if isinstance(selected, dict) and selected.get("resource_id"):
+            descriptor = repo.resource_by_id(str(selected["resource_id"]))
+            if descriptor is None or not descriptor.get("available"):
+                raise HTTPException(409, detail={"code": "resource_not_found", "message": "Сначала нажмите «Найти устройства» и выберите порт из списка"})
+            if payload.protocol == VmProtocol.MODBUS_RTU and descriptor.get("kind") == ResourceKind.SERIAL.value:
+                reader["port"] = descriptor.get("path")
+            elif payload.protocol == VmProtocol.MODBUS_TCP and descriptor.get("kind") == ResourceKind.TCP.value:
+                address = str(descriptor.get("address") or descriptor.get("path") or "")
+                host, sep, port = address.rpartition(":")
+                if host and sep and port.isdigit():
+                    reader["host"] = host
+                    reader["tcp_port"] = int(port)
+                elif address:
+                    reader["host"] = address
+            elif payload.protocol == VmProtocol.CAN and descriptor.get("kind") == ResourceKind.CAN.value:
+                reader["can_interface"] = descriptor.get("name")
+            leases = repo.list_resource_leases()
+            owner = leases.get(str(descriptor["resource_id"]))
+            if owner and owner != str(payload.vm_id or ""):
+                owner_vm = repo.get_vm(owner) or {}
+                return {
+                    "ok": False,
+                    "quality": "bad",
+                    "last_error": f"resource leased by {owner}",
+                    "diagnosis": {
+                        "code": "busy",
+                        "title": "Устройство занято",
+                        "detail": f"Сейчас его держит ВМ «{owner_vm.get('name') or owner}». Остановите её или выберите другой порт.",
+                        "link": "down",
+                        "cause": "port",
+                        "can_read_alerts": False,
+                    },
+                    "analog": [],
+                    "discrete": [],
+                    "alerts": [],
+                    "active_alerts": [],
+                    "device": {"resource_id": descriptor["resource_id"], "path": descriptor.get("path"), "leased_by": owner},
+                }
+        if payload.protocol == VmProtocol.MODBUS_RTU and not str(reader.get("port") or "").strip():
+            raise HTTPException(422, detail={"code": "read_resource_required", "message": "Выберите serial-порт или нажмите «Найти устройства»"})
+        if payload.protocol == VmProtocol.MODBUS_TCP and not str(reader.get("host") or "").strip():
+            raise HTTPException(422, detail={"code": "read_resource_required", "message": "Укажите IP прибора"})
+        if payload.protocol == VmProtocol.CAN and not str(reader.get("can_interface") or "").strip():
+            raise HTTPException(422, detail={"code": "read_resource_required", "message": "Выберите CAN-интерфейс или нажмите «Найти устройства»"})
+        result = await asyncio.to_thread(run_probe, protocol=payload.protocol.value, reader=reader, map_document=MapDocument(**document_payload))
+        if descriptor:
+            result["device"] = {**(result.get("device") or {}), "resource_id": descriptor["resource_id"], "name": descriptor.get("name")}
+        repo.record_audit(int(account["id"]), "vm.probe", payload.vm_id, {"protocol": payload.protocol.value, "ok": result.get("ok"), "code": (result.get("diagnosis") or {}).get("code")})
+        return result
+
     @app.get("/api/v1/vms/{vm_id}")
     async def get_vm(vm_id: str, account=Depends(user)):
         vm = repo.get_vm(vm_id)
@@ -842,7 +1010,12 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
         if docker_manager.client is not None and vm.get("container_id"):
             try:
                 state = await asyncio.to_thread(docker_manager.inspect, vm)
-                vm = repo.update_vm(vm_id, {"lifecycle": state["lifecycle"], "container_id": state["container_id"], "last_error": state.get("error")}) or vm
+                values: dict[str, Any] = {"container_id": state["container_id"]}
+                if state.get("lifecycle"):
+                    values["lifecycle"] = state["lifecycle"]
+                if state.get("error"):
+                    values["last_error"] = state["error"]
+                vm = repo.update_vm(vm_id, values) or vm
             except Exception:
                 pass
         return vm
@@ -857,7 +1030,7 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
             values["read_resources"] = values.pop("resources")
         values.pop("resources", None)
         if "read_resources" in values:
-            values["read_resources"] = _approved_resources(repo, values["read_resources"], exclude_vm_id=vm_id)
+            values["read_resources"] = _bind_read_resources(repo, values["read_resources"], int(account["id"]), exclude_vm_id=vm_id)
         if "map_version" in values and repo.map_by_version(values["map_version"], current_vm["protocol"] if current_vm else None) is None:
             raise HTTPException(422, detail={"code": "map_not_found", "message": "Map version not found"})
         if "config" in values or "storage_resource_id" in payload.model_dump(exclude_none=True):
@@ -942,6 +1115,7 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
         app.state.worker_tokens.pop(vm_id, None)
         app.state.worker_commands.pop(vm_id, None)
         app.state.log_seen.pop(vm_id, None)
+        app.state.vm_alerts.pop(vm_id, None)
         app.state.ingest_pending.pop(vm_id, None)
         for key in [item for item in list(app.state.storage_stores) if str(item).endswith(f"|{vm_id}")]:
             store_item = app.state.storage_stores.pop(key, None)
@@ -1150,48 +1324,116 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
         if vm is None:
             raise HTTPException(404, detail={"code": "not_found", "message": "VM not found"})
         sample = bus.latest_tags(vm_id)
-        tags = sample.tags if sample is not None else {}
+        if sample is not None and getattr(sample.quality, "value", sample.quality) == Quality.BAD.value:
+            live = bus.latest_good_tags(vm_id)
+        else:
+            live = sample
+        tags = dict(live.tags) if live is not None else {}
+        analog_values = dict(live.analog) if live is not None else {}
+        discrete_values = dict(live.discrete) if live is not None else {}
+        alert_names = list(live.alerts) if live is not None else []
         map_record = repo.map_record(vm["map_version"], vm["protocol"])
         document = (map_record or {}).get("document") if isinstance(map_record, dict) else {}
+        analog_rows: list[dict[str, Any]] = []
+        discrete_rows: list[dict[str, Any]] = []
+        alert_catalog: list[dict[str, Any]] = []
         fields = []
+        quality = str(getattr(sample, "quality", "") or "") if sample is not None else None
+        use_tag_fallback = quality != Quality.BAD.value
         for field in (document or {}).get("fields") or []:
             if not isinstance(field, dict) or not field.get("name"):
                 continue
+            if field.get("system") or field.get("is_system") or field.get("internal"):
+                continue
             name = str(field["name"])
-            fields.append(
-                {
-                    "name": name,
-                    "type": field.get("type"),
-                    "source": field.get("source"),
-                    "address": field.get("address"),
-                    "value": tags.get(name),
-                }
-            )
+            label = field.get("display_name") or name
+            channel = field_channel(field)
+            if channel == "analog":
+                value = analog_values[name] if name in analog_values else (tags.get(name) if use_tag_fallback else None)
+            elif channel == "discrete":
+                if name in discrete_values:
+                    value = discrete_values[name]
+                elif use_tag_fallback:
+                    value = bool(tags.get(name))
+                else:
+                    value = None
+            else:
+                value = tags.get(name) if use_tag_fallback else None
+            row = {
+                "name": name,
+                "label": label,
+                "kind": channel,
+                "type": field.get("type"),
+                "source": field.get("source"),
+                "address": field.get("address"),
+                "value": value,
+            }
+            fields.append(row)
+            if channel == "analog":
+                analog_rows.append(row)
+            elif channel == "discrete":
+                discrete_rows.append(row)
+            else:
+                labels = field.get("bits") if isinstance(field.get("bits"), dict) else {}
+                if labels:
+                    active = {str(item) for item in alert_names}
+                    for bit, alarm_name in labels.items():
+                        text = str(alarm_name)
+                        alert_catalog.append({"name": text, "bit": str(bit), "active": text in active, "source": name})
+                elif isinstance(value, list):
+                    for item in value or []:
+                        alert_catalog.append({"name": str(item), "bit": None, "active": True, "source": name})
+        seen_alerts = {item["name"] for item in alert_catalog}
+        for name in alert_names:
+            if name not in seen_alerts:
+                alert_catalog.append({"name": name, "bit": None, "active": True, "source": "active_alarms"})
         captured_at = None
         if sample is not None:
             captured_at = sample.captured_at.isoformat() if hasattr(sample.captured_at, "isoformat") else str(sample.captured_at)
+        diagnosis = diagnose_read(
+            quality=quality,
+            last_error=vm.get("last_error"),
+            alerts=alert_names,
+            has_sample=sample is not None,
+        )
         return {
             "vm_id": vm_id,
             "lifecycle": vm.get("lifecycle"),
             "last_error": vm.get("last_error"),
             "map_version": vm.get("map_version"),
             "captured_at": captured_at,
-            "quality": str(getattr(sample, "quality", "") or "") if sample is not None else None,
+            "quality": quality,
             "tags": tags,
             "fields": fields,
+            "analog": analog_rows,
+            "discrete": discrete_rows,
+            "alerts": alert_catalog,
+            "active_alerts": alert_names,
+            "alerts_stale": bool(
+                sample is not None
+                and quality == Quality.BAD.value
+                and live is not None
+            ),
+            "diagnosis": diagnosis,
         }
 
     @app.get("/api/v1/resources")
     async def resources(account=Depends(admin)):
         return {"items": repo.list_resources()}
 
+    @app.get("/api/v1/resources/candidates")
+    async def resource_candidates(protocol: str | None = None, account=Depends(admin)):
+        grouped = _candidates_payload(repo)
+        items = grouped.get(str(protocol or ""), None)
+        return {"items": items if items is not None else [row for rows in grouped.values() for row in rows], "candidates": grouped}
+
     @app.post("/api/v1/resources/scan", dependencies=[Depends(csrf_protect)])
-    async def scan_resources(account=Depends(admin)):
-        items = repo.upsert_resources(_discover_resources(cfg.data_root, repo, probe_network=True))
+    async def scan_resources(network: bool = Query(default=True), account=Depends(admin)):
+        items = repo.upsert_resources(_discover_resources(cfg.data_root, repo, probe_network=network))
         repo.approve_resource("storage:data", None)
         summary = discovery_summary(items)
-        repo.record_audit(int(account["id"]), "resources.scan", None, {"count": len(items), "summary": summary})
-        return {"items": items, "summary": summary}
+        repo.record_audit(int(account["id"]), "resources.scan", None, {"count": len(items), "summary": summary, "network": network})
+        return {"items": items, "summary": summary, "candidates": _candidates_payload(repo)}
 
     @app.post("/api/v1/resources/{resource_id:path}/approve", dependencies=[Depends(csrf_protect)])
     async def approve_resource(resource_id: str, account=Depends(admin)):
@@ -1250,7 +1492,16 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
     @app.post("/api/v1/internal/workers/heartbeat")
     async def worker_heartbeat(payload: WorkerHeartbeat, request: Request):
         worker_auth(request, str(payload.vm_id))
-        vm = repo.update_vm(str(payload.vm_id), {"lifecycle": VmLifecycle.RUNNING.value, "heartbeat_at": payload.timestamp.isoformat()})
+        current = repo.get_vm(str(payload.vm_id))
+        values: dict[str, Any] = {"heartbeat_at": payload.timestamp.isoformat()}
+        if current and current.get("lifecycle") in {
+            VmLifecycle.PENDING.value,
+            VmLifecycle.CREATED.value,
+            VmLifecycle.STARTING.value,
+            VmLifecycle.UNKNOWN.value,
+        }:
+            values["lifecycle"] = VmLifecycle.RUNNING.value
+        vm = repo.update_vm(str(payload.vm_id), values)
         if vm:
             status = _status_from_vm(vm, health=payload.health, heartbeat_at=payload.timestamp)
             await bus.publish_status(status)
@@ -1295,8 +1546,15 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
     @app.post("/api/v1/internal/workers/error")
     async def worker_error(payload: WorkerError, request: Request):
         worker_auth(request, str(payload.vm_id))
-        await bus.publish_log(str(payload.vm_id), payload.message, level="error")
-        repo.update_vm(str(payload.vm_id), {"last_error": payload.message, "lifecycle": VmLifecycle.FAILED.value})
+        protocol_fault = payload.code in PROTOCOL_ERROR_CODES
+        line = payload.message if not protocol_fault else f"Чтение не удалось: {payload.message}"
+        await bus.publish_log(str(payload.vm_id), line, level="error")
+        values: dict[str, Any] = {"last_error": payload.message}
+        if not protocol_fault:
+            values["lifecycle"] = VmLifecycle.FAILED.value
+        updated = repo.update_vm(str(payload.vm_id), values) or repo.get_vm(str(payload.vm_id))
+        if updated:
+            await bus.publish_status(_status_from_vm(updated, health="unhealthy"))
         return {"ok": True}
 
     @app.websocket("/ws/v1/events")

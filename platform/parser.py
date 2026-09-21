@@ -145,6 +145,9 @@ def adapt_legacy_map(
                         raise ValueError
                 except (TypeError, ValueError) as exc:
                     raise ValueError(f"bitfield bit for {name} must be between 0 and 31") from exc
+        kind = str(field.get("kind") or field.get("channel") or "").strip().lower()
+        if kind and kind not in {"analog", "discrete", "alert"}:
+            raise ValueError(f"field {name} kind must be analog, discrete or alert")
         for numeric_key in ("scale", "offset"):
             if numeric_key in field:
                 try:
@@ -173,6 +176,143 @@ def adapt_legacy_map(
         fields=fields,
         metadata={"source": "legacy"},
     )
+
+
+ALERT_FIELD_NAMES = {"active_alarms", "active_status", "alarms"}
+CHANNEL_KINDS = {"analog", "discrete", "alert"}
+
+
+def field_channel(field: dict[str, Any]) -> str:
+    """Classify a map field the way legacy CSV/DB registration did.
+
+    Analogues are numeric measurements written on every poll. Discretes are
+    boolean coils/status bits. Alerts are instrument alarm messages
+    (bitfields such as ``active_alarms``), never the UART/link failure.
+    """
+    explicit = str(field.get("kind") or field.get("channel") or "").strip().lower()
+    if explicit in CHANNEL_KINDS:
+        return explicit
+    name = str(field.get("name") or "").strip()
+    field_type = str(field.get("type") or "uint16").lower()
+    if field_type == "bitfield" or name in ALERT_FIELD_NAMES:
+        return "alert"
+    if field_type in {"bool", "boolean"} or "bit" in field:
+        return "discrete"
+    return "analog"
+
+
+def split_channels(fields: list[Any], tags: dict[str, Any]) -> tuple[dict[str, Any], dict[str, bool], list[str]]:
+    analog: dict[str, Any] = {}
+    discrete: dict[str, bool] = {}
+    alerts: list[str] = []
+    for field in fields:
+        if not isinstance(field, dict):
+            continue
+        name = str(field.get("name") or "").strip()
+        if not name or field.get("system") or field.get("is_system") or field.get("internal"):
+            continue
+        kind = field_channel(field)
+        value = tags.get(name)
+        if kind == "alert":
+            if isinstance(value, list):
+                alerts.extend(str(item) for item in value if str(item).strip())
+            elif value not in {None, "", False}:
+                alerts.append(str(value))
+        elif kind == "discrete":
+            discrete[name] = bool(value)
+        else:
+            analog[name] = value
+    seen: set[str] = set()
+    unique: list[str] = []
+    for item in alerts:
+        if item in seen:
+            continue
+        seen.add(item)
+        unique.append(item)
+    return analog, discrete, unique
+
+
+def diagnose_read(
+    *,
+    quality: Quality | str | None,
+    last_error: str | None = None,
+    alerts: list[str] | None = None,
+    has_sample: bool = False,
+) -> dict[str, Any]:
+    """Tell an operator whether the fault is the link or the instrument."""
+    alerts = [str(item) for item in (alerts or []) if str(item).strip()]
+    quality_value = getattr(quality, "value", quality)
+    error = str(last_error or "")
+    lowered = error.lower()
+    if not has_sample and not any(
+        token in lowered for token in ("no communication", "no answer", "could not open port", "errno")
+    ):
+        return {
+            "code": "no_sample",
+            "title": "Ещё нет точки чтения",
+            "detail": "ВМ не прислала ни одной выборки. Запустите её и подождите первый опрос.",
+            "link": "unknown",
+            "cause": "none",
+            "can_read_alerts": False,
+        }
+    if not has_sample:
+        quality_value = Quality.BAD.value
+    if quality_value == Quality.BAD.value:
+        cause = "silent"
+        title = "Нет связи с прибором"
+        detail = (
+            "Порт открылся, но slave не ответил. Это не «нет аналогов» и не аварии контроллера. "
+            "Алерты читаются из holding-регистров карты (active_alarms) и сейчас недоступны. "
+            "Проверьте Slave ID, скорость, A/B и питание прибора."
+        )
+        if "could not open port" in lowered or "errno 2" in lowered:
+            cause = "port"
+            title = "Порт недоступен"
+            detail = (
+                "Контейнер не смог открыть выбранный UART. Это ошибка конфигурации порта, "
+                "а не отсутствие измерений и не алерты прибора."
+            )
+        elif "errno 6" in lowered:
+            cause = "port"
+            title = "Выбран служебный TTY"
+            detail = (
+                "Открыт управляющий терминал, а не UART прибора. Выберите порт из сканера "
+                "(например ttyAMA10 / ttyUSB0) и перезапустите ВМ."
+            )
+        return {
+            "code": "no_answer",
+            "title": title,
+            "detail": detail,
+            "link": "down",
+            "cause": cause,
+            "can_read_alerts": False,
+        }
+    if quality_value == Quality.DEGRADED.value:
+        return {
+            "code": "partial",
+            "title": "Связь частичная",
+            "detail": "Часть запросов карты прошла, часть нет. Похоже на несовпадение карты или адреса, а не на полное отсутствие данных.",
+            "link": "partial",
+            "cause": "map",
+            "can_read_alerts": True,
+        }
+    if alerts:
+        return {
+            "code": "device_alerts",
+            "title": "Связь есть, прибор сообщает аварии",
+            "detail": "Чтение прошло. Список ниже — активные алерты из регистров прибора, а не ошибка UART.",
+            "link": "up",
+            "cause": "none",
+            "can_read_alerts": True,
+        }
+    return {
+        "code": "ok",
+        "title": "Связь есть, активных аварий нет",
+        "detail": "Прибор отвечает. Нулевые аналоги — текущие измерения, а не обрыв связи.",
+        "link": "up",
+        "cause": "none",
+        "can_read_alerts": True,
+    }
 
 
 def parse_source_values(
@@ -256,6 +396,10 @@ def parse_batch(batch: RawBatch, map_document: MapDocument) -> list[TagSample]:
             quality = Quality.BAD
         elif sample.quality == Quality.DEGRADED and quality == Quality.GOOD:
             quality = Quality.DEGRADED
+        if sample.quality == Quality.BAD:
+            analog, discrete, alerts = {}, {}, []
+        else:
+            analog, discrete, alerts = split_channels(list(map_document.fields or []), tags)
         if errors:
             tags["_parse_errors"] = errors
         samples.append(
@@ -265,6 +409,9 @@ def parse_batch(batch: RawBatch, map_document: MapDocument) -> list[TagSample]:
                 captured_at=sample.captured_at,
                 map_version=batch.map_version,
                 tags=tags,
+                analog=analog,
+                discrete=discrete,
+                alerts=alerts,
                 quality=quality,
                 protocol=batch.protocol,
             )
@@ -272,4 +419,4 @@ def parse_batch(batch: RawBatch, map_document: MapDocument) -> list[TagSample]:
     return samples
 
 
-__all__ = ["adapt_legacy_map", "parse_batch", "parse_source_values"]
+__all__ = ["adapt_legacy_map", "diagnose_read", "field_channel", "parse_batch", "parse_source_values", "split_channels"]

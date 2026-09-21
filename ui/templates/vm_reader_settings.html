@@ -5,6 +5,12 @@
 {% set serial_resources = serial_resources|default([]) %}
 {% set tcp_resources = tcp_resources|default([]) %}
 {% set can_resources = can_resources|default([]) %}
+<div class="bb-probe-bar" data-probe-bar>
+  <button type="button" class="bb-btn bb-btn-secondary bb-btn-sm" data-probe-scan><i class="bi bi-radar"></i> Найти устройства</button>
+  <button type="button" class="bb-btn bb-btn-secondary bb-btn-sm" data-probe-read><i class="bi bi-plug"></i> Проверить чтение</button>
+</div>
+<p class="bb-probe-status bb-muted" data-probe-status></p>
+<div class="bb-probe-result" data-probe-result hidden></div>
 <div class="bb-protocol-panels">
   <fieldset class="bb-protocol-panel" data-protocol-panel="simulator" {% if active_protocol != 'simulator' %}hidden{% endif %}>
     <legend><i class="bi bi-cpu"></i> Симулятор</legend>
@@ -23,11 +29,11 @@
     <legend><i class="bi bi-usb-plug"></i> Modbus RTU</legend>
     <p class="bb-panel-lead">Нужен физический serial-порт. IP и TCP здесь не используются.</p>
     <div class="bb-settings-grid">
-      {% call field('Serial-порт', 'Одобренный COM/tty из раздела «Ресурсы». Без порта RTU не создаётся.', 'bi-usb-symbol') %}
+      {% call field('Serial-порт', 'Нажмите «Найти устройства» и выберите UART. При создании ВМ порт подтвердится сам.', 'bi-usb-symbol') %}
       <select name="serial_resource_id" required>
         <option value="">— выберите порт —</option>
         {% for r in serial_resources %}
-        <option value="{{ r.resource_id }}" data-path="{{ r.path or '' }}" {% if r.resource_id in selected_read_ids or r.path == reader.get('port') %}selected{% endif %}>{{ r.name }} — {{ r.path }}</option>
+        <option value="{{ r.resource_id }}" data-path="{{ r.path or '' }}" {% if r.resource_id in selected_read_ids or r.path == reader.get('port') %}selected{% endif %}>{{ r.name }} — {{ r.path }}{% if not r.approved %} · не подтверждён{% endif %}{% if r.leased_name %} · занят {{ r.leased_name }}{% endif %}</option>
         {% endfor %}
       </select>
       {% endcall %}
@@ -91,7 +97,7 @@
       <select name="tcp_resource_id">
         <option value="">Указать IP и порт</option>
         {% for r in tcp_resources %}
-        <option value="{{ r.resource_id }}" data-address="{{ r.address or r.path or r.name }}" {% if r.resource_id in selected_read_ids %}selected{% endif %}>{{ r.name }}{% if r.metadata.get('reachable') is sameas false %} · нет ответа{% endif %}</option>
+        <option value="{{ r.resource_id }}" data-address="{{ r.address or r.path or r.name }}" {% if r.resource_id in selected_read_ids %}selected{% endif %}>{{ r.name }}{% if r.metadata.get('reachable') is sameas false %} · нет ответа{% endif %}{% if not r.approved %} · не подтверждён{% endif %}</option>
         {% endfor %}
       </select>
       {% endcall %}
@@ -135,19 +141,15 @@
     <legend><i class="bi bi-broadcast"></i> CAN</legend>
     <p class="bb-panel-lead">Свои поля шины CAN. Serial и TCP здесь не используются.</p>
     <div class="bb-settings-grid">
-      {% call field('Интерфейс', 'Имя SocketCAN, например can0. Сначала одобрите его в «Ресурсах».', 'bi-diagram-3') %}
-      {% if can_resources %}
-      <select name="can_resource_id" required>
+      {% call field('Интерфейс', 'Имя SocketCAN, например can0. Нажмите «Найти устройства», если списка нет.', 'bi-diagram-3') %}
+      <select name="can_resource_id">
         <option value="">— выберите интерфейс —</option>
         {% for r in can_resources %}
-        <option value="{{ r.resource_id }}" data-interface="{{ r.name }}" {% if r.resource_id in selected_read_ids or r.name == reader.get('can_interface') %}selected{% endif %}>{{ r.name }}{% if r.metadata.get('detail') %} — {{ r.metadata.get('detail') }}{% endif %}</option>
+        <option value="{{ r.resource_id }}" data-interface="{{ r.name }}" {% if r.resource_id in selected_read_ids or r.name == reader.get('can_interface') %}selected{% endif %}>{{ r.name }}{% if r.metadata.get('detail') %} — {{ r.metadata.get('detail') }}{% endif %}{% if not r.approved %} · не подтверждён{% endif %}{% if r.leased_name %} · занят {{ r.leased_name }}{% endif %}</option>
         {% endfor %}
       </select>
-      {% else %}
-      <input name="can_interface" value="{{ reader.get('can_interface', 'can0') }}" required>
-      {% endif %}
       {% endcall %}
-      {% if can_resources %}<input type="hidden" name="can_interface" value="{{ reader.get('can_interface', '') }}">{% endif %}
+      <input type="hidden" name="can_interface" value="{{ reader.get('can_interface', '') }}">
       {% call field('Битрейт', 'Скорость шины в бит/с. По умолчанию 250000.', 'bi-speedometer2') %}
       <input name="can_bitrate" type="number" value="{{ reader.get('can_bitrate', 250000) }}" min="10000" max="1000000" required>
       {% endcall %}

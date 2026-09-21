@@ -49,7 +49,7 @@ services:
     networks: [bb-control]
     volumes:
       - blackbox-data:/data
-      - /dev:/host-dev:ro
+      - /dev:/host-dev
       - /sys/class/net:/host/sys/class/net:ro
       - /sys/bus/gpio:/host/sys/bus/gpio:ro
       - /sys/class/gpio:/host/sys/class/gpio:ro

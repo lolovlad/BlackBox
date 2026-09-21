@@ -7,21 +7,21 @@
     {"name": "coils", "fc": 1, "address": 16, "count": 32}
   ],
   "fields": [
-    {"name": "UgenL1L2", "display_name": "U генератора L1-L2", "type": "uint16", "source": "holding", "address": 0, "scale": 1.0},
-    {"name": "UgenL2L3", "display_name": "U генератора L2-L3", "type": "uint16", "source": "holding", "address": 1, "scale": 1.0},
-    {"name": "UgenL3L1", "display_name": "U генератора L3-L1", "type": "uint16", "source": "holding", "address": 2, "scale": 1.0},
-    {"name": "Fgen", "display_name": "Частота генератора", "type": "uint16", "source": "holding", "address": 6, "scale": 0.01, "round": true},
-    {"name": "IL1", "display_name": "Ток L1", "type": "uint16", "source": "holding", "address": 7},
-    {"name": "IL2", "display_name": "Ток L2", "type": "uint16", "source": "holding", "address": 8},
-    {"name": "IL3", "display_name": "Ток L3", "type": "uint16", "source": "holding", "address": 9},
-    {"name": "PF", "display_name": "Коэффициент мощности", "type": "int16", "source": "holding", "address": 10, "expr": "x / 100", "round": true},
-    {"name": "Pgen", "display_name": "Активная мощность", "type": "int16", "source": "holding", "address": 11},
-    {"name": "RPM", "display_name": "Обороты двигателя", "type": "uint16", "source": "holding", "address": 38},
-    {"name": "Egen", "display_name": "Энергия генератора", "type": "uint32_be", "source": "holding", "address": 17},
-    {"name": "Engine_running", "display_name": "Двигатель работает", "type": "bool", "source": "coils", "address": 0},
-    {"name": "CB_Closed", "display_name": "Автомат закрыт", "type": "bool", "source": "coils", "address": 3},
-    {"name": "Warning", "display_name": "Предупреждение", "type": "bool", "source": "coils", "address": 6},
-    {"name": "Shutdown", "display_name": "Аварийный останов", "type": "bool", "source": "coils", "address": 7},
-    {"name": "active_alarms", "display_name": "Активные аварии", "type": "bitfield", "source": "holding", "address": 19, "bits": {"0": "BUS High Volt", "1": "BUS Low Volt", "2": "Over Current", "3": "Overspeed"}}
+    {"name": "UgenL1L2", "display_name": "U генератора L1-L2", "type": "uint16", "source": "holding", "address": 0, "scale": 1.0, "kind": "analog"},
+    {"name": "UgenL2L3", "display_name": "U генератора L2-L3", "type": "uint16", "source": "holding", "address": 1, "scale": 1.0, "kind": "analog"},
+    {"name": "UgenL3L1", "display_name": "U генератора L3-L1", "type": "uint16", "source": "holding", "address": 2, "scale": 1.0, "kind": "analog"},
+    {"name": "Fgen", "display_name": "Частота генератора", "type": "uint16", "source": "holding", "address": 6, "scale": 0.01, "round": true, "kind": "analog"},
+    {"name": "IL1", "display_name": "Ток L1", "type": "uint16", "source": "holding", "address": 7, "kind": "analog"},
+    {"name": "IL2", "display_name": "Ток L2", "type": "uint16", "source": "holding", "address": 8, "kind": "analog"},
+    {"name": "IL3", "display_name": "Ток L3", "type": "uint16", "source": "holding", "address": 9, "kind": "analog"},
+    {"name": "PF", "display_name": "Коэффициент мощности", "type": "int16", "source": "holding", "address": 10, "expr": "x / 100", "round": true, "kind": "analog"},
+    {"name": "Pgen", "display_name": "Активная мощность", "type": "int16", "source": "holding", "address": 11, "kind": "analog"},
+    {"name": "RPM", "display_name": "Обороты двигателя", "type": "uint16", "source": "holding", "address": 38, "kind": "analog"},
+    {"name": "Egen", "display_name": "Энергия генератора", "type": "uint32_be", "source": "holding", "address": 17, "kind": "analog"},
+    {"name": "Engine_running", "display_name": "Двигатель работает", "type": "bool", "source": "coils", "address": 0, "kind": "discrete"},
+    {"name": "CB_Closed", "display_name": "Автомат закрыт", "type": "bool", "source": "coils", "address": 3, "kind": "discrete"},
+    {"name": "Warning", "display_name": "Предупреждение", "type": "bool", "source": "coils", "address": 6, "kind": "discrete"},
+    {"name": "Shutdown", "display_name": "Аварийный останов", "type": "bool", "source": "coils", "address": 7, "kind": "discrete"},
+    {"name": "active_alarms", "display_name": "Активные аварии", "type": "bitfield", "source": "holding", "address": 19, "kind": "alert", "bits": {"0": "BUS High Volt", "1": "BUS Low Volt", "2": "Over Current", "3": "Overspeed"}}
   ]
 }

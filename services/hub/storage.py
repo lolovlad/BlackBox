@@ -83,6 +83,9 @@ class ParquetStore:
                             "protocol": getattr(sample.protocol, "value", sample.protocol),
                             "quality": getattr(sample.quality, "value", sample.quality),
                             "tags_json": json.dumps(sample.tags, ensure_ascii=False, default=str),
+                            "analog_json": json.dumps(sample.analog, ensure_ascii=False, default=str),
+                            "discrete_json": json.dumps(sample.discrete, ensure_ascii=False, default=str),
+                            "alerts_json": json.dumps(sample.alerts, ensure_ascii=False, default=str),
                         }
                         for sample in samples
                     ]

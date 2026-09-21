@@ -6,6 +6,7 @@ from services.hub.discovery import (
     discover_can_resources,
     discover_gpio_resources,
     discover_tcp_resources,
+    hub_serial_path,
     human_bytes,
     is_usable_can_interface,
     is_usable_gpio_chip,
@@ -144,3 +145,10 @@ def test_host_dev_uart_is_published_as_linux_path(tmp_path: Path, monkeypatch):
 def test_human_bytes():
     assert human_bytes(512) == "512 Б"
     assert human_bytes(1536) == "1.5 КБ"
+
+
+def test_hub_serial_path_prefers_bind_mount(tmp_path: Path):
+    node = tmp_path / "ttyAMA10"
+    node.write_text("")
+    assert hub_serial_path("/dev/ttyAMA10", dev_root=tmp_path) == str(node)
+    assert hub_serial_path(str(node), dev_root=tmp_path) == str(node)
