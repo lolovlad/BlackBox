@@ -6,14 +6,24 @@
   <h1 class="bb-page-title">Изменить VM: {{ vm.name }}</h1>
   <form id="edit-vm" class="bb-form bb-vm-form" data-vm-id="{{ vm.id }}" data-vm-protocol="{{ vm.protocol }}">
     <section class="bb-vm-step">
-      <h3 class="bb-vm-step-title"><span class="bb-step-num">1</span> Основные</h3>
-      <div class="bb-settings-grid">
+      <h3 class="bb-vm-step-title"><span class="bb-step-num">1</span> Имя</h3>
+      <div class="bb-settings-stack">
         {% call field('Имя', 'Как ВМ отображается в списке.', 'bi-tag') %}
         <input name="name" value="{{ vm.name }}" required>
         {% endcall %}
         {% call field('Описание', 'Необязательная заметка для стенда.', 'bi-text-left') %}
         <textarea name="description" rows="2">{{ vm.description }}</textarea>
         {% endcall %}
+      </div>
+    </section>
+    <section class="bb-vm-step">
+      <h3 class="bb-vm-step-title"><span class="bb-step-num">2</span> Подключение</h3>
+      <p class="bb-panel-lead">{{ protocol_labels.get(vm.protocol, vm.protocol) }}. Найденные устройства показываются списком.</p>
+      {% include "vm_reader_settings.html" %}
+    </section>
+    <section class="bb-vm-step">
+      <h3 class="bb-vm-step-title"><span class="bb-step-num">3</span> Карта и проверка</h3>
+      <div class="bb-settings-stack">
         {% call field('Карта чтения', 'Версия карты этого протокола.', 'bi-file-earmark-code') %}
         <select name="map_version" id="edit-map-version" required>
           {% for m in maps %}
@@ -22,21 +32,19 @@
         </select>
         {% endcall %}
       </div>
+      <details class="bb-map-preview-panel">
+        <summary><i class="bi bi-braces"></i> Просмотр карты <span id="edit-map-preview-status" class="bb-muted"></span></summary>
+        <pre id="edit-map-preview" class="bb-json-view"></pre>
+      </details>
+      <div class="bb-probe-bar">
+        <button type="button" class="bb-btn bb-btn-secondary" data-probe-read><i class="bi bi-plug"></i> Проверить чтение</button>
+      </div>
+      <div class="bb-probe-result" data-probe-result hidden></div>
     </section>
-    <div class="bb-config-columns">
-      <section class="bb-vm-step">
-        <h3 class="bb-vm-step-title"><span class="bb-step-num">2</span> Подключение</h3>
-        {% include "vm_reader_settings.html" %}
-      </section>
-      <section class="bb-vm-step">
-        <h3 class="bb-vm-step-title"><span class="bb-step-num">3</span> Хранение</h3>
-        {% include "vm_storage_settings.html" %}
-      </section>
-    </div>
-    <details class="bb-map-preview-panel">
-      <summary><i class="bi bi-braces"></i> Просмотр карты <span id="edit-map-preview-status" class="bb-muted"></span></summary>
-      <pre id="edit-map-preview" class="bb-json-view"></pre>
-    </details>
+    <section class="bb-vm-step">
+      <h3 class="bb-vm-step-title"><span class="bb-step-num">4</span> Хранение</h3>
+      {% include "vm_storage_settings.html" %}
+    </section>
     <div class="bb-actions">
       <button type="submit" class="bb-btn"><i class="bi bi-check-lg"></i> Сохранить</button>
       <button type="button" class="bb-btn bb-btn-secondary" data-apply-map="{{ vm.id }}"><i class="bi bi-arrow-repeat"></i> Применить карту</button>

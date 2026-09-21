@@ -531,6 +531,15 @@ def test_admin_vm_form_has_protocol_specific_settings(tmp_path: Path):
         assert 'data-protocol-panel="modbus_tcp"' in html
         assert 'data-protocol-panel="can"' in html
         assert 'name="serial_resource_id"' in html
+        assert 'data-device-list="modbus_rtu"' in html
+        assert '<span class="bb-step-num">1</span> Имя' in html
+        assert '<span class="bb-step-num">2</span> Протокол' in html
+        assert '<span class="bb-step-num">3</span> Подключение' in html
+        assert '<span class="bb-step-num">4</span> Карта и проверка' in html
+        assert '<span class="bb-step-num">5</span> Хранение' in html
+        assert html.find('name="name"') < html.find('name="protocol"')
+        assert html.find('data-probe-scan') < html.find('data-probe-read')
+        assert html.find('data-probe-read') < html.find('name="storage_resource_id"')
         assert "Найти устройства" in html
         assert "Проверить чтение" in html
         assert 'name="host"' in html
@@ -708,7 +717,7 @@ def test_html_pages_render_with_current_starlette(tmp_path: Path):
         assert client.get("/login").status_code == 200
         login_html = client.get("/login").text
         assert "AGK" in login_html
-        assert '2.0.16' in login_html
+        assert '2.0.17' in login_html
         assert "bb-login" in login_html
         app_js = login_html.find("/static/app.js")
         alpine_js = login_html.find("/static/vendor/alpine.min.js")
@@ -736,7 +745,7 @@ def test_html_pages_render_with_current_starlette(tmp_path: Path):
             assert response.status_code == 200, (path, response.text)
             assert "<html" in response.text.lower()
             assert "AGK" in response.text
-            assert "2.0.16" in response.text
+            assert "2.0.17" in response.text
             if path in {"/vms", f"/vms/{vm['id']}", f"/admin/vms/{vm['id']}/edit"}:
                 assert 'data-vm-action="delete"' in response.text
                 assert "Удалить" in response.text

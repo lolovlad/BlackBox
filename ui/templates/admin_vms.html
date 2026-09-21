@@ -1,85 +1,8 @@
 {% extends "base.html" %}
-{% from "_fields.html" import field %}
 {% block title %}Админ ВМ · BlackBox{% endblock %}
 {% block content %}
-<section class="bb-card">
-  <h1 class="bb-page-title">Админ · виртуальные машины</h1>
-  {% include "vm_table.html" %}
-</section>
-
 <section class="bb-card bb-vm-builder">
-  <h2 class="bb-page-title">Создать VM</h2>
-  <details class="bb-setup-guide" open>
-    <summary><i class="bi bi-info-circle"></i> Как настроить ВМ</summary>
-    <ol>
-      <li>Выберите протокол — справа появятся только его поля. Serial и TCP больше не смешиваются.</li>
-      <li>Для RTU укажите физический serial-порт из «Ресурсов». Для TCP — IP и порт прибора. Для CAN — интерфейс и битрейт.</li>
-      <li>Выберите карту чтения этого же протокола.</li>
-      <li>Хранение общее: диск и каталог telemetry. Остальное можно не трогать — стоят рабочие значения по умолчанию.</li>
-    </ol>
-  </details>
-  <form id="create-vm" method="post" class="bb-form bb-vm-form">
-    <section class="bb-vm-step">
-      <h3 class="bb-vm-step-title"><span class="bb-step-num">1</span> Основные</h3>
-      <div class="bb-settings-grid">
-        {% call field('Имя', 'Короткое имя ВМ, как она будет видна в списке.', 'bi-tag') %}
-        <input name="name" required placeholder="rtu-stand-1">
-        {% endcall %}
-        {% call field('Карта чтения', 'JSON-карта регистров этого протокола. Сначала загрузите её в «Карты».', 'bi-file-earmark-code') %}
-        <select name="map_version" id="create-map-version" required>
-          <option value="">— выберите карту —</option>
-          {% for m in maps %}
-          <option value="{{ m.version }}" data-protocol="{{ m.protocol }}">{{ m.version }}{% if m.preset_id %} · {{ m.preset_id }}{% endif %}</option>
-          {% endfor %}
-        </select>
-        {% endcall %}
-      </div>
-      <p id="create-map-hint" class="bb-muted" hidden>Нет карт для этого протокола.</p>
-      <p class="bb-field-head bb-protocol-label"><i class="bi bi-diagram-3"></i> Протокол</p>
-      <div class="bb-protocol-picks" role="radiogroup" aria-label="Протокол">
-        <label class="bb-protocol-pick">
-          <input type="radio" name="protocol" value="simulator" checked>
-          <i class="bi bi-cpu"></i>
-          <strong>Simulator</strong>
-          <small>Тест без прибора</small>
-        </label>
-        <label class="bb-protocol-pick">
-          <input type="radio" name="protocol" value="modbus_rtu">
-          <i class="bi bi-usb-plug"></i>
-          <strong>Modbus RTU</strong>
-          <small>Физический serial</small>
-        </label>
-        <label class="bb-protocol-pick">
-          <input type="radio" name="protocol" value="modbus_tcp">
-          <i class="bi bi-ethernet"></i>
-          <strong>Modbus TCP</strong>
-          <small>IP и порт</small>
-        </label>
-        <label class="bb-protocol-pick">
-          <input type="radio" name="protocol" value="can">
-          <i class="bi bi-broadcast"></i>
-          <strong>CAN</strong>
-          <small>Интерфейс и битрейт</small>
-        </label>
-      </div>
-    </section>
-
-    <div class="bb-config-columns">
-      <section class="bb-vm-step">
-        <h3 class="bb-vm-step-title"><span class="bb-step-num">2</span> Подключение</h3>
-        {% include "vm_reader_settings.html" %}
-      </section>
-      <section class="bb-vm-step">
-        <h3 class="bb-vm-step-title"><span class="bb-step-num">3</span> Хранение</h3>
-        {% include "vm_storage_settings.html" %}
-      </section>
-    </div>
-
-    <details class="bb-map-preview-panel">
-      <summary><i class="bi bi-braces"></i> Просмотр карты <span id="create-map-preview-status" class="bb-muted"></span></summary>
-      <pre id="create-map-preview" class="bb-json-view"></pre>
-    </details>
-    <button type="submit" class="bb-btn"><i class="bi bi-plus-lg"></i> Создать VM</button>
-  </form>
+  <h1 class="bb-page-title">Создать VM</h1>
+  {% include "vm_create_form.html" %}
 </section>
 {% endblock %}

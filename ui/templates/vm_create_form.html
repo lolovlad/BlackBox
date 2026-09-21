@@ -1,25 +1,19 @@
 {% from "_fields.html" import field %}
 <form id="create-vm" method="post" class="bb-form bb-vm-form">
   <section class="bb-vm-step">
-    <h3 class="bb-vm-step-title"><span class="bb-step-num">1</span> Основные</h3>
-    <div class="bb-settings-grid">
+    <h3 class="bb-vm-step-title"><span class="bb-step-num">1</span> Имя</h3>
+    <div class="bb-settings-stack">
       {% call field('Имя', 'Короткое имя ВМ, как она будет видна в списке.', 'bi-tag') %}
       <input name="name" required placeholder="rtu-stand-1">
       {% endcall %}
       {% call field('Описание', 'Необязательная заметка: стенд, шкаф, назначение.', 'bi-text-left') %}
       <textarea name="description" rows="2" placeholder="Стенд DEIF, шкаф А"></textarea>
       {% endcall %}
-      {% call field('Карта чтения', 'JSON-карта регистров этого протокола. Сначала загрузите её в «Карты».', 'bi-file-earmark-code') %}
-      <select name="map_version" id="create-map-version" required>
-        <option value="">— выберите карту —</option>
-        {% for m in maps %}
-        <option value="{{ m.version }}" data-protocol="{{ m.protocol }}">{{ m.version }}{% if m.preset_id %} · {{ m.preset_id }}{% endif %}</option>
-        {% endfor %}
-      </select>
-      {% endcall %}
     </div>
-    <p id="create-map-hint" class="bb-muted" hidden>Нет карт для этого протокола.</p>
-    <p class="bb-field-head bb-protocol-label"><i class="bi bi-diagram-3"></i> Протокол</p>
+  </section>
+
+  <section class="bb-vm-step">
+    <h3 class="bb-vm-step-title"><span class="bb-step-num">2</span> Протокол</h3>
     <div class="bb-protocol-picks" role="radiogroup" aria-label="Протокол">
       <label class="bb-protocol-pick">
         <input type="radio" name="protocol" value="simulator" checked>
@@ -48,21 +42,40 @@
     </div>
   </section>
 
-  <div class="bb-config-columns">
-    <section class="bb-vm-step">
-      <h3 class="bb-vm-step-title"><span class="bb-step-num">2</span> Подключение</h3>
-      {% include "vm_reader_settings.html" %}
-    </section>
-    <section class="bb-vm-step">
-      <h3 class="bb-vm-step-title"><span class="bb-step-num">3</span> Хранение</h3>
-      {% include "vm_storage_settings.html" %}
-    </section>
-  </div>
+  <section class="bb-vm-step">
+    <h3 class="bb-vm-step-title"><span class="bb-step-num">3</span> Подключение</h3>
+    <p class="bb-panel-lead">Найдите устройство и задайте параметры связи. Проверку чтения сделаете на следующем шаге.</p>
+    {% include "vm_reader_settings.html" %}
+  </section>
 
-  <details class="bb-map-preview-panel">
-    <summary><i class="bi bi-braces"></i> Просмотр карты <span id="create-map-preview-status" class="bb-muted"></span></summary>
-    <pre id="create-map-preview" class="bb-json-view"></pre>
-  </details>
+  <section class="bb-vm-step">
+    <h3 class="bb-vm-step-title"><span class="bb-step-num">4</span> Карта и проверка</h3>
+    <div class="bb-settings-stack">
+      {% call field('Карта чтения', 'Карта регистров выбранного протокола. Нужна, чтобы проверить реальное чтение.', 'bi-file-earmark-code') %}
+      <select name="map_version" id="create-map-version" required>
+        <option value="">— выберите карту —</option>
+        {% for m in maps %}
+        <option value="{{ m.version }}" data-protocol="{{ m.protocol }}">{{ m.version }}{% if m.preset_id %} · {{ m.preset_id }}{% endif %}</option>
+        {% endfor %}
+      </select>
+      {% endcall %}
+    </div>
+    <p id="create-map-hint" class="bb-muted" hidden>Нет карт для этого протокола. Загрузите карту во вкладке «Карты».</p>
+    <details class="bb-map-preview-panel">
+      <summary><i class="bi bi-braces"></i> Просмотр карты <span id="create-map-preview-status" class="bb-muted"></span></summary>
+      <pre id="create-map-preview" class="bb-json-view"></pre>
+    </details>
+    <div class="bb-probe-bar">
+      <button type="button" class="bb-btn bb-btn-secondary" data-probe-read><i class="bi bi-plug"></i> Проверить чтение</button>
+    </div>
+    <div class="bb-probe-result" data-probe-result hidden></div>
+  </section>
+
+  <section class="bb-vm-step">
+    <h3 class="bb-vm-step-title"><span class="bb-step-num">5</span> Хранение</h3>
+    {% include "vm_storage_settings.html" %}
+  </section>
+
   <div class="bb-modal-actions">
     <button type="button" class="bb-btn bb-btn-secondary" @click="createOpen = false">Отмена</button>
     <button type="submit" class="bb-btn"><i class="bi bi-plus-lg"></i> Создать VM</button>

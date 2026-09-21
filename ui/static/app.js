@@ -68,11 +68,15 @@
       if (match) visible += 1;
     });
     if (select.selectedOptions[0] && select.selectedOptions[0].hidden) select.value = '';
+    if (!select.value) {
+      const matches = Array.from(select.options).filter(function (opt, index) { return index > 0 && !opt.hidden; });
+      if (matches.length === 1) select.value = matches[0].value;
+    }
     if (hint) hint.hidden = visible > 0;
   }
 
-  function syncProtocolPanels(protocol) {
-    document.querySelectorAll('[data-protocol-panel]').forEach(function (panel) {
+  function syncProtocolPanels(protocol, root) {
+    (root || document).querySelectorAll('[data-protocol-panel]').forEach(function (panel) {
       const active = panel.dataset.protocolPanel === protocol;
       panel.hidden = !active;
       panel.querySelectorAll('input,select,textarea').forEach(function (input) {
@@ -121,7 +125,7 @@
 
   function bindProtocolForm(form, protocol) {
     if (!form) return;
-    syncProtocolPanels(protocol);
+    syncProtocolPanels(protocol, form);
     syncSerialPort(form);
     syncTcpEndpoint(form);
     syncCanInterface(form);
@@ -245,6 +249,13 @@
     return text;
   }
 
+  function deviceSelectName(protocol) {
+    if (protocol === 'modbus_rtu') return 'serial_resource_id';
+    if (protocol === 'modbus_tcp') return 'tcp_resource_id';
+    if (protocol === 'can') return 'can_resource_id';
+    return '';
+  }
+
   function fillResourceSelect(select, items, dataKey, dataField) {
     if (!select) return;
     const keep = select.value;
@@ -269,18 +280,114 @@
     }
   }
 
+  function renderDeviceList(form, protocol, items) {
+    const box = form.querySelector('[data-device-list="' + protocol + '"]');
+    if (!box) return;
+    const selected = form.querySelector('[name="' + deviceSelectName(protocol) + '"]')?.value;
+    box.replaceChildren();
+    if (!items || !items.length) {
+      const empty = document.createElement('p');
+      empty.className = 'bb-muted';
+      empty.textContent = protocol === 'modbus_tcp'
+        ? 'Укажите IP вручную или нажмите «Найти устройства».'
+        : 'Нажмите «Найти устройства» — подходящие порты появятся здесь.';
+      box.appendChild(empty);
+      return;
+    }
+    items.forEach(function (item) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'bb-device-card' + (item.resource_id === selected ? ' is-selected' : '');
+      btn.dataset.resourceId = item.resource_id;
+      const title = document.createElement('strong');
+      title.textContent = item.name || item.resource_id;
+      btn.appendChild(title);
+      const where = item.path || item.address || '';
+      if (where) {
+        const line = document.createElement('span');
+        line.className = 'bb-mono';
+        line.textContent = where;
+        btn.appendChild(line);
+      }
+      if (item.leased_name) {
+        const meta = document.createElement('span');
+        meta.className = 'bb-device-meta';
+        meta.textContent = 'занят ' + item.leased_name;
+        btn.appendChild(meta);
+      } else if (item.approved === false) {
+        const meta = document.createElement('span');
+        meta.className = 'bb-device-meta';
+        meta.textContent = 'подтвердится при создании';
+        btn.appendChild(meta);
+      }
+      box.appendChild(btn);
+    });
+  }
+
+  function selectDevice(form, protocol, resourceId) {
+    const select = form.querySelector('[name="' + deviceSelectName(protocol) + '"]');
+    if (!select) return;
+    select.value = resourceId || '';
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+    const list = form.querySelector('[data-device-list="' + protocol + '"]');
+    if (list) {
+      list.querySelectorAll('.bb-device-card').forEach(function (card) {
+        card.classList.toggle('is-selected', card.dataset.resourceId === select.value);
+      });
+    }
+    if (protocol === 'modbus_rtu') syncSerialPort(form);
+    if (protocol === 'modbus_tcp') syncTcpEndpoint(form);
+    if (protocol === 'can') syncCanInterface(form);
+  }
+
   function applyCandidates(form, protocol, candidates) {
     const grouped = candidates || {};
     fillResourceSelect(form.querySelector('[name="serial_resource_id"]'), grouped.modbus_rtu, 'path', 'path');
     fillResourceSelect(form.querySelector('[name="tcp_resource_id"]'), grouped.modbus_tcp, 'address', 'address');
     fillResourceSelect(form.querySelector('[name="can_resource_id"]'), grouped.can, 'interface', 'name');
+    renderDeviceList(form, 'modbus_rtu', grouped.modbus_rtu);
+    renderDeviceList(form, 'modbus_tcp', grouped.modbus_tcp);
+    renderDeviceList(form, 'can', grouped.can);
     syncSerialPort(form);
     syncTcpEndpoint(form);
     syncCanInterface(form);
-    const status = form.querySelector('[data-probe-status]');
+    const panel = form.querySelector('[data-protocol-panel="' + protocol + '"]');
+    const status = panel ? panel.querySelector('[data-probe-status]') : null;
     const items = grouped[protocol] || [];
     if (status && protocol !== 'simulator') {
       status.textContent = items.length ? ('Найдено: ' + items.length) : 'Подходящих устройств нет';
+    }
+  }
+
+  async function loadDeviceCandidates(form, protocol, forceScan) {
+    if (!form) return;
+    while (form._bbDeviceBusy) {
+      await (form._bbDeviceWait || Promise.resolve());
+    }
+    let unlock = function () {};
+    form._bbDeviceWait = new Promise(function (resolve) { unlock = resolve; });
+    form._bbDeviceBusy = true;
+    const panel = form.querySelector('[data-protocol-panel="' + protocol + '"]');
+    const status = panel ? panel.querySelector('[data-probe-status]') : null;
+    try {
+      if (!form._bbCandidates) {
+        if (status) status.textContent = 'Загрузка устройств…';
+        const listed = await fetch('/api/v1/resources/candidates', { headers: headers() }).then(function (response) { return response.json(); });
+        form._bbCandidates = listed.candidates || {};
+      }
+      const empty = protocol !== 'simulator' && !(form._bbCandidates[protocol] || []).length;
+      if (forceScan || empty) {
+        if (status) status.textContent = 'Сканирование…';
+        const scanned = await mutate('/api/v1/resources/scan?network=' + (protocol === 'modbus_tcp' ? 'true' : 'false'), { method: 'POST' });
+        form._bbCandidates = scanned.candidates || form._bbCandidates;
+      }
+      applyCandidates(form, protocol, form._bbCandidates);
+    } catch (error) {
+      if (status) status.textContent = error.message;
+      throw error;
+    } finally {
+      form._bbDeviceBusy = false;
+      unlock();
     }
   }
 
@@ -333,38 +440,34 @@
   }
 
   function bindProbe(form) {
-    if (!form) return;
-    const scanBtn = form.querySelector('[data-probe-scan]');
-    const readBtn = form.querySelector('[data-probe-read]');
-    const status = form.querySelector('[data-probe-status]');
-    const result = form.querySelector('[data-probe-result]');
+    if (!form || form.dataset.probeBound) return;
+    form.dataset.probeBound = '1';
     const protocolOf = function () {
       return (form.querySelector('[name="protocol"]:checked') || form.querySelector('[name="protocol"]'))?.value || form.dataset.vmProtocol || 'simulator';
     };
-    const syncButtons = function () {
-      if (scanBtn) scanBtn.hidden = protocolOf() === 'simulator';
-    };
-    form.addEventListener('change', function (event) {
-      if (event.target && event.target.name === 'protocol') syncButtons();
+    form.addEventListener('click', function (event) {
+      const card = event.target.closest('.bb-device-card');
+      if (card && form.contains(card)) {
+        const list = card.closest('[data-device-list]');
+        if (list) selectDevice(form, list.dataset.deviceList, card.dataset.resourceId);
+      }
     });
-    syncButtons();
-    if (scanBtn) {
+    form.querySelectorAll('[data-probe-scan]').forEach(function (scanBtn) {
       scanBtn.addEventListener('click', async function () {
         const protocol = protocolOf();
         scanBtn.disabled = true;
-        if (status) status.textContent = 'Сканирование…';
         try {
-          const body = await mutate('/api/v1/resources/scan?network=' + (protocol === 'modbus_tcp' ? 'true' : 'false'), { method: 'POST' });
-          applyCandidates(form, protocol, body.candidates);
+          await loadDeviceCandidates(form, protocol, true);
           toast('Устройства обновлены', 'ok');
         } catch (error) {
-          if (status) status.textContent = error.message;
           toast(error.message, 'error');
         } finally {
           scanBtn.disabled = false;
         }
       });
-    }
+    });
+    const readBtn = form.querySelector('[data-probe-read]');
+    const result = form.querySelector('[data-probe-result]');
     if (readBtn) {
       readBtn.addEventListener('click', async function () {
         const protocol = protocolOf();
@@ -374,7 +477,6 @@
           return;
         }
         readBtn.disabled = true;
-        if (status) status.textContent = 'Читаю прибор…';
         if (result) result.hidden = true;
         try {
           const body = await mutate('/api/v1/vms/probe', {
@@ -388,17 +490,16 @@
               vm_id: form.dataset.vmId || null,
             }),
           });
-          if (status) status.textContent = (body.diagnosis && body.diagnosis.title) || (body.ok ? 'Есть ответ' : 'Нет ответа');
           if (result) renderProbeResult(result, body);
           toast(body.ok ? 'Прибор ответил' : ((body.diagnosis && body.diagnosis.title) || 'Нет ответа'), body.ok ? 'ok' : 'error');
         } catch (error) {
-          if (status) status.textContent = error.message;
           toast(error.message, 'error');
         } finally {
           readBtn.disabled = false;
         }
       });
     }
+    loadDeviceCandidates(form, protocolOf(), false).catch(function () {});
   }
 
   const createForm = document.getElementById('create-vm');
@@ -406,10 +507,13 @@
     createForm.addEventListener('change', function (event) {
       if (event.target && event.target.name === 'protocol') {
         syncCreateMapOptions();
-        syncProtocolPanels(event.target.value);
+        syncProtocolPanels(event.target.value, createForm);
         syncSerialPort(createForm);
         syncTcpEndpoint(createForm);
         syncCanInterface(createForm);
+        loadDeviceCandidates(createForm, event.target.value, false).catch(function () {});
+        const mapSelect = document.getElementById('create-map-version');
+        if (mapSelect) loadMapPreview(mapSelect, document.getElementById('create-map-preview'), document.getElementById('create-map-preview-status'));
       }
     });
     syncCreateMapOptions();
@@ -419,11 +523,6 @@
   const createMapSelect = document.getElementById('create-map-version');
   if (createMapSelect) {
     createMapSelect.addEventListener('change', function () { loadMapPreview(createMapSelect, document.getElementById('create-map-preview'), document.getElementById('create-map-preview-status')); });
-    const firstMap = Array.from(createMapSelect.options).find(function (opt) { return opt.value && !opt.hidden; });
-    if (firstMap) {
-      createMapSelect.value = firstMap.value;
-      loadMapPreview(createMapSelect, document.getElementById('create-map-preview'), document.getElementById('create-map-preview-status'));
-    }
   }
   const editMapSelect = document.getElementById('edit-map-version');
   if (editMapSelect) {
