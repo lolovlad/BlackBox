@@ -1,8 +1,10 @@
 [CmdletBinding()]
 param(
     [Parameter(Position = 0)]
-    [ValidateSet("up", "down", "update", "smoke", "logs", "ps", "help")]
-    [string]$Command = "help"
+    [ValidateSet("up", "down", "update", "smoke", "logs", "ps", "help", "check-read")]
+    [string]$Command = "help",
+    [Parameter(ValueFromRemainingArguments = $true)]
+    [string[]]$Rest
 )
 
 $ErrorActionPreference = "Stop"
@@ -83,7 +85,7 @@ function Invoke-Smoke {
 }
 
 if ($Command -eq "help") {
-    Write-Host "Usage: ./bbctl.ps1 <up|down|update|smoke|logs|ps|help>"
+    Write-Host "Usage: ./bbctl.ps1 <up|down|update|smoke|check-read|logs|ps|help>"
     exit 0
 }
 
@@ -108,4 +110,8 @@ switch ($Command) {
     "smoke" { Invoke-Smoke }
     "logs" { Invoke-Compose logs --follow }
     "ps" { Invoke-Compose ps }
+    "check-read" {
+        $ProbeArgs = if ($Rest -and $Rest.Count -gt 0) { $Rest } else { @("--list") }
+        Invoke-Compose exec -T hub /app/.venv/bin/python -m services.hub.check_read @ProbeArgs
+    }
 }

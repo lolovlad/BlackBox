@@ -2,7 +2,7 @@
 <form id="create-vm" method="post" class="bb-form bb-vm-form">
   <section class="bb-vm-step">
     <h3 class="bb-vm-step-title"><span class="bb-step-num">1</span> Имя</h3>
-    <div class="bb-settings-stack">
+    <div class="bb-settings-grid">
       {% call field('Имя', 'Короткое имя ВМ, как она будет видна в списке.', 'bi-tag') %}
       <input name="name" required placeholder="rtu-stand-1">
       {% endcall %}
@@ -44,7 +44,7 @@
 
   <section class="bb-vm-step">
     <h3 class="bb-vm-step-title"><span class="bb-step-num">3</span> Подключение</h3>
-    <p class="bb-panel-lead">Найдите устройство и задайте параметры связи. Проверку чтения сделаете на следующем шаге.</p>
+    <p class="bb-panel-lead">Выберите найденное устройство и параметры связи.</p>
     {% include "vm_reader_settings.html" %}
   </section>
 
@@ -75,9 +75,4 @@
     <h3 class="bb-vm-step-title"><span class="bb-step-num">5</span> Хранение</h3>
     {% include "vm_storage_settings.html" %}
   </section>
-
-  <div class="bb-modal-actions">
-    <button type="button" class="bb-btn bb-btn-secondary" @click="createOpen = false">Отмена</button>
-    <button type="submit" class="bb-btn"><i class="bi bi-plus-lg"></i> Создать VM</button>
-  </div>
 </form>

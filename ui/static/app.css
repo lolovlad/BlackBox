@@ -1683,37 +1683,111 @@
 .bb-quality.is-partial { background: #fff3d6; color: var(--bb-warn); }
 
 .bb-vm-create-panel {
-  width: min(720px, 100%);
-  height: min(860px, calc(100vh - 2.2rem));
-  grid-template-rows: auto 1fr;
+  width: min(880px, 100%);
+  height: min(92vh, 980px);
+  grid-template-rows: auto 1fr auto;
   min-height: 0;
+}
+
+.bb-vm-create-panel .bb-studio-head {
+  padding: 1.15rem 1.5rem 1.05rem;
+}
+
+.bb-vm-create-panel .bb-studio-head h2 {
+  font-size: 1.35rem;
 }
 
 .bb-vm-create-body {
   min-height: 0;
   overflow: auto;
-  padding: 0 1.15rem 0;
+  padding: 1.15rem 1.5rem 1.35rem;
   display: flex;
   flex-direction: column;
 }
 
+.bb-vm-create-body .bb-vm-form {
+  gap: 1.35rem;
+}
+
+.bb-vm-create-body .bb-vm-form > .bb-vm-step {
+  gap: 0.95rem;
+  padding-bottom: 1.25rem;
+}
+
+.bb-vm-create-body .bb-vm-step-title {
+  font-size: 1.08rem;
+}
+
+.bb-vm-create-body .bb-step-num {
+  width: 1.85rem;
+  height: 1.85rem;
+  font-size: 0.88rem;
+}
+
+.bb-vm-create-body .bb-field-hint {
+  display: none;
+}
+
 .bb-vm-create-body .bb-settings-grid {
   grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1rem 1.1rem;
 }
+
+.bb-vm-create-body .bb-form input,
+.bb-vm-create-body .bb-form select,
+.bb-vm-create-body .bb-form textarea {
+  padding: 0.72rem 0.9rem;
+  min-height: 2.7rem;
+  border-radius: 10px;
+}
+
+.bb-vm-create-body .bb-form textarea {
+  min-height: 4.6rem;
+}
+
+.bb-vm-create-body .bb-protocol-picks {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.8rem;
+}
+
+.bb-vm-create-body .bb-protocol-pick {
+  min-height: 5.6rem;
+  padding: 1rem 1.05rem;
+  gap: 0.3rem;
+  border-radius: 16px;
+}
+
+.bb-vm-create-body .bb-protocol-pick i { font-size: 1.45rem; }
+.bb-vm-create-body .bb-protocol-pick strong { font-size: 0.98rem; }
+.bb-vm-create-body .bb-protocol-pick small { font-size: 0.8rem; }
+
+.bb-vm-create-body .bb-device-list {
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 220px), 1fr));
+  gap: 0.7rem;
+  margin-bottom: 1.05rem;
+}
+
+.bb-vm-create-body .bb-device-card {
+  min-height: 4.5rem;
+  padding: 0.9rem 1rem;
+  border-radius: 14px;
+}
+
+.bb-vm-create-body .bb-device-card strong { font-size: 0.95rem; }
+.bb-vm-create-body .bb-device-card .bb-mono { font-size: 0.8rem; }
 
 .bb-vm-create-body .bb-map-preview-panel .bb-json-view {
-  min-height: 7rem;
-  max-height: 12rem;
+  min-height: 8rem;
+  max-height: 14rem;
 }
 
-.bb-vm-create-body .bb-modal-actions {
-  position: sticky;
-  bottom: 0;
-  z-index: 2;
-  margin: 0.35rem -1.15rem 0;
-  padding: 0.85rem 1.15rem 1rem;
-  background: #fff;
+.bb-vm-create-foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.6rem;
+  padding: 0.95rem 1.5rem 1.1rem;
   border-top: 1px solid var(--bb-border);
+  background: #fff;
 }
 
 .bb-modal-actions {
@@ -1721,6 +1795,12 @@
   justify-content: flex-end;
   gap: 0.5rem;
   margin-top: 1rem;
+}
+
+@media (min-width: 720px) {
+  .bb-vm-create-body .bb-protocol-picks {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
 }
 
 @media (max-width: 640px) {

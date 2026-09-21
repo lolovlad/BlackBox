@@ -39,13 +39,14 @@ usage() {
 Usage: ./bbctl <command>
 
 Commands:
-  up       Build and start the current lab profile
-  down     Stop the current lab profile
-  update   Stash local tracked changes, pull, rebuild, start and smoke-test
-  smoke    Run the Hub login/VM/Parquet/WebSocket acceptance smoke test
-  logs     Follow service logs
-  ps       Show Compose service state
-  help     Show this help
+  up         Build and start the current lab profile
+  down       Stop the current lab profile
+  update     Stash local tracked changes, pull, rebuild, start and smoke-test
+  smoke      Run the Hub login/VM/Parquet/WebSocket acceptance smoke test
+  check-read Probe UART + Modbus RTU holding read (legacy DEIF FC3)
+  logs       Follow service logs
+  ps         Show Compose service state
+  help       Show this help
 
 Environment:
   BB_PROFILE    Compose profile (default: dev)
@@ -146,6 +147,14 @@ case "$command" in
   ps)
     require_docker
     compose ps
+    ;;
+  check-read)
+    require_docker
+    shift
+    if [ "$#" -eq 0 ]; then
+      set -- --list
+    fi
+    compose exec -T hub /app/.venv/bin/python -m services.hub.check_read "$@"
     ;;
   *)
     echo "ERROR: unknown command: $command" >&2

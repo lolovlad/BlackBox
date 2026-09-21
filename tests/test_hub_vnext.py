@@ -542,6 +542,8 @@ def test_admin_vm_form_has_protocol_specific_settings(tmp_path: Path):
         assert html.find('data-probe-read') < html.find('name="storage_resource_id"')
         assert "Найти устройства" in html
         assert "Проверить чтение" in html
+        assert 'bb-vm-create-foot' in html
+        assert 'form="create-vm"' in html
         assert 'name="host"' in html
         assert 'name="tcp_port"' in html
         assert 'name="can_bitrate"' in html
@@ -717,7 +719,7 @@ def test_html_pages_render_with_current_starlette(tmp_path: Path):
         assert client.get("/login").status_code == 200
         login_html = client.get("/login").text
         assert "AGK" in login_html
-        assert '2.0.17' in login_html
+        assert '2.0.18' in login_html
         assert "bb-login" in login_html
         app_js = login_html.find("/static/app.js")
         alpine_js = login_html.find("/static/vendor/alpine.min.js")
@@ -745,7 +747,7 @@ def test_html_pages_render_with_current_starlette(tmp_path: Path):
             assert response.status_code == 200, (path, response.text)
             assert "<html" in response.text.lower()
             assert "AGK" in response.text
-            assert "2.0.17" in response.text
+            assert "2.0.18" in response.text
             if path in {"/vms", f"/vms/{vm['id']}", f"/admin/vms/{vm['id']}/edit"}:
                 assert 'data-vm-action="delete"' in response.text
                 assert "Удалить" in response.text
@@ -1007,6 +1009,23 @@ def test_admin_can_delete_unused_map_but_not_assigned_map(tmp_path: Path):
         missing = client.delete("/api/v1/maps/drop-v1", params={"protocol": "simulator"}, headers={"X-CSRF-Token": csrf})
         assert missing.status_code == 404
         assert client.delete("/api/v1/maps/keep-v1", headers={"X-CSRF-Token": csrf}).status_code == 422
+
+
+def test_check_read_classifies_serial_faults_and_lists_nodes(tmp_path: Path):
+    from services.hub.check_read import classify_error, list_serial_nodes, pdu_address
+
+    assert pdu_address(1, 1) == 1
+    assert classify_error(FileNotFoundError(2, "No such file"))[0] == "port_missing"
+    timeout = TimeoutError("Modbus request hr failed after 3 retries")
+    timeout.__cause__ = OSError("No communication with the instrument (no answer)")
+    assert classify_error(timeout)[0] == "no_answer"
+    checksum = RuntimeError("Checksum error in rtu mode")
+    assert classify_error(checksum)[0] == "checksum"
+    (tmp_path / "ttyAMA10").write_text("")
+    (tmp_path / "ttyUSB0").write_text("")
+    names = {path.name for path in list_serial_nodes(roots=[tmp_path])}
+    assert names == {"ttyAMA10", "ttyUSB0"}
+    assert "check-read" in (Path(__file__).resolve().parent.parent / "bbctl").read_text(encoding="utf-8")
 
 
 def test_refresh_rotation_and_logout(tmp_path: Path):
