@@ -212,7 +212,12 @@ def test_values_charts_and_alarm_journal_for_many_sources(tmp_path: Path) -> Non
         assert data_page.find('bb-vm-tabs') < data_page.find('id="bb-data-table"')
         charts = client.get("/charts").text
         assert "echarts.min.js" in charts
-        assert "Построить график" in charts
+        assert 'id="bb-chart-form"' in charts
+        assert charts.find('id="bb-chart-form"') < charts.find('name="vm_id"')
+        assert charts.find('bb-vm-tabs') < charts.find('id="bb-echarts"')
+        assert "Обновить график" in charts
+        assert "Выберите источники" not in charts
+        assert "Аварии" not in charts
 
         with client.websocket_connect("/ws/v1/events") as socket:
             snapshot = socket.receive_json()

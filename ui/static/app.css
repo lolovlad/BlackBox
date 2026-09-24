@@ -1899,6 +1899,7 @@
 .bb-vm-tabs { margin-bottom: 1rem; }
 #bb-data { overflow-anchor: none; }
 #bb-data .bb-table-wrap { overflow-anchor: none; }
+#bb-charts { overflow-anchor: none; }
 .bb-tab {
   display: inline-flex;
   gap: 0.35rem;
@@ -2019,6 +2020,13 @@
 .bb-monitor-disk-head { display: flex; justify-content: space-between; gap: 0.5rem; }
 .bb-field-tools { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-bottom: 0.6rem; }
 .bb-field-tools input { flex: 1; min-width: 160px; font: inherit; padding: 0.4rem 0.55rem; border: 1px solid var(--bb-border); border-radius: 8px; }
-.bb-echarts { width: 100%; height: 520px; }
-.bb-chart-card { margin-top: 1rem; }
+.bb-echarts {
+  width: 100%;
+  height: min(640px, calc(100vh - 260px));
+  min-height: 420px;
+  border: 1px solid var(--bb-border);
+  border-radius: 10px;
+  background: #fff;
+}
+#bb-chart-view { margin-top: 0.2rem; }
 
