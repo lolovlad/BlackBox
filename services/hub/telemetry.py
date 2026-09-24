@@ -9,7 +9,7 @@ from datetime import datetime, time, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
-from bb_platform.parser import field_channel
+from bb_platform.parser import field_channel, field_label
 
 from .storage import ParquetStore, StorageUnavailable
 
@@ -340,7 +340,7 @@ def _fields_from_document(document: dict[str, Any] | None) -> tuple[list[dict[st
         if not name or field.get("system") or field.get("is_system") or field.get("internal"):
             continue
         kind = field_channel(field)
-        label = str(field.get("label") or field.get("title") or field.get("description") or name)
+        label = field_label(field, name)
         item = {"key": name, "label": label}
         if kind == "analog":
             analog.append(item)

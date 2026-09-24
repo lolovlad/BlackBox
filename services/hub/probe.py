@@ -9,7 +9,7 @@ from typing import Any, Callable
 from uuid import uuid4
 
 from bb_platform.contracts import MapDocument, Quality, RawBatch, RawSample, VmProtocol
-from bb_platform.parser import diagnose_read, field_channel, parse_batch
+from bb_platform.parser import diagnose_read, field_channel, field_label, parse_batch
 
 from .discovery import hub_serial_path, operator_serial_path
 from .link import measure_tcp_link
@@ -41,7 +41,7 @@ def channel_payload(fields: list[Any], sample_tags: dict[str, Any], analog: dict
         if field.get("system") or field.get("is_system") or field.get("internal"):
             continue
         name = str(field["name"])
-        label = field.get("display_name") or name
+        label = field_label(field, name)
         channel = field_channel(field)
         row = {"name": name, "label": label, "kind": channel, "value": analog.get(name, discrete.get(name, sample_tags.get(name)))}
         if channel == "analog":

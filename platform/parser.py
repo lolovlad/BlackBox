@@ -295,6 +295,19 @@ ALERT_FIELD_NAMES = {"active_alarms", "active_status", "alarms"}
 CHANNEL_KINDS = {"analog", "discrete", "alert"}
 
 
+def field_label(field: dict[str, Any], fallback: str | None = None) -> str:
+    """Human-readable name from a map field: display_name first, then legacy keys."""
+    name = str(fallback if fallback is not None else field.get("name") or "").strip()
+    for key in ("display_name", "label", "title", "ru_name", "description"):
+        value = field.get(key)
+        if value is None:
+            continue
+        text = str(value).strip()
+        if text:
+            return text
+    return name
+
+
 def field_channel(field: dict[str, Any]) -> str:
     """Classify a map field the way legacy CSV/DB registration did.
 
@@ -532,4 +545,4 @@ def parse_batch(batch: RawBatch, map_document: MapDocument) -> list[TagSample]:
     return samples
 
 
-__all__ = ["adapt_legacy_map", "diagnose_read", "field_channel", "parse_batch", "parse_source_values", "split_channels"]
+__all__ = ["adapt_legacy_map", "diagnose_read", "field_channel", "field_label", "parse_batch", "parse_source_values", "split_channels"]

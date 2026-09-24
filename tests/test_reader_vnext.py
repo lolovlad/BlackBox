@@ -10,7 +10,7 @@ from uuid import uuid4
 import pytest
 
 from bb_platform.contracts import Quality, RawBatch, RawSample, VmProtocol
-from bb_platform.parser import adapt_legacy_map, diagnose_read, field_channel, parse_batch, split_channels
+from bb_platform.parser import adapt_legacy_map, diagnose_read, field_channel, field_label, parse_batch, split_channels
 from services.hub.vm_config import normalize_runtime_config
 from workers.modbus_rtu.main import ModbusReader
 from workers.modbus_tcp.main import ModbusTcpReader
@@ -154,6 +154,12 @@ def test_modbus_tcp_reader_applies_legacy_address_offset():
     reader._request = lambda function, address, count: calls.append((function, address, count)) or [1]  # type: ignore[method-assign]
     assert reader.read([{"name": "holding", "fc": 3, "address": 10, "count": 1}]) == {"holding": [1]}
     assert calls == [(3, 9, 1)]
+
+
+def test_field_label_prefers_map_display_name():
+    assert field_label({"name": "UgenL1L2", "display_name": "U генератора L1-L2"}) == "U генератора L1-L2"
+    assert field_label({"name": "RPM", "label": "Обороты"}) == "Обороты"
+    assert field_label({"name": "Pgen"}) == "Pgen"
 
 
 def test_field_channel_follows_legacy_registration():

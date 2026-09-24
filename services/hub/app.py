@@ -20,7 +20,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, ValidationError
 
 from bb_platform.contracts import AlarmEvent, MapDocument, Quality, RawBatch, ResourceKind, TagSample, VmCommand, VmLifecycle, VmProtocol, VmStatus, WorkerCommandAck, WorkerError, WorkerHeartbeat, WorkerRegister
-from bb_platform.parser import adapt_legacy_map, diagnose_read, field_channel, parse_batch
+from bb_platform.parser import adapt_legacy_map, diagnose_read, field_channel, field_label, parse_batch
 
 from .config import HubConfig
 from .connection import PROFILES, connection_profile, inventory_kinds
@@ -1432,7 +1432,7 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
             if field.get("system") or field.get("is_system") or field.get("internal"):
                 continue
             name = str(field["name"])
-            label = field.get("display_name") or name
+            label = field_label(field, name)
             channel = field_channel(field)
             if channel == "analog":
                 value = analog_values[name] if name in analog_values else (tags.get(name) if use_tag_fallback else None)

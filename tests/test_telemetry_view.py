@@ -20,8 +20,8 @@ CHANNEL_DOCUMENT = {
         {"name": "coils", "fc": 1, "address": 0, "count": 4},
     ],
     "fields": [
-        {"name": "RPM", "type": "uint16", "source": "hr", "address": 0, "kind": "analog", "label": "Обороты"},
-        {"name": "Engine_running", "type": "bool", "source": "coils", "address": 0, "kind": "discrete", "label": "Двигатель"},
+        {"name": "RPM", "type": "uint16", "source": "hr", "address": 0, "kind": "analog", "display_name": "Обороты"},
+        {"name": "Engine_running", "type": "bool", "source": "coils", "address": 0, "kind": "discrete", "display_name": "Двигатель"},
         {
             "name": "active_alarms",
             "type": "bitfield",
@@ -191,6 +191,8 @@ def test_values_charts_and_alarm_journal_for_many_sources(tmp_path: Path) -> Non
 
         catalog = client.get("/api/v1/telemetry/catalog", params=[("vm_id", vm_ids[0]), ("vm_id", vm_ids[1])]).json()
         assert {item["name"] for item in catalog["sources"]} == {"gen-1", "gen-2"}
+        analog_labels = {field["key"]: field["label"] for source in catalog["sources"] for field in source["analog"]}
+        assert analog_labels["RPM"] == "Обороты"
 
         series = client.get(
             "/api/v1/telemetry/series",
@@ -227,6 +229,37 @@ def test_values_charts_and_alarm_journal_for_many_sources(tmp_path: Path) -> Non
         assert snapshot["type"] == "snapshot"
         assert "system" in snapshot["payload"]
         assert "tags" in snapshot["payload"]
+
+
+def test_catalog_uses_map_display_names(tmp_path: Path) -> None:
+    document = {
+        "requests": [
+            {"name": "hr", "fc": 3, "address": 0, "count": 2},
+            {"name": "coils", "fc": 1, "address": 0, "count": 4},
+        ],
+        "fields": [
+            {"name": "UgenL1L2", "display_name": "U генератора L1-L2", "type": "uint16", "source": "hr", "address": 0, "kind": "analog"},
+            {"name": "Engine_running", "display_name": "Двигатель работает", "type": "bool", "source": "coils", "address": 0, "kind": "discrete"},
+        ],
+    }
+    with _client(tmp_path) as client:
+        assert client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin-password"}).status_code == 200
+        csrf = client.cookies.get("bb_csrf")
+        _publish_map(client, csrf, version="labels-v1", document=document)
+        created = client.post(
+            "/api/v1/vms",
+            json={"name": "gen-labels", "protocol": "simulator", "map_version": "labels-v1"},
+            headers={"X-CSRF-Token": csrf},
+        )
+        assert created.status_code == 200, created.text
+        vm_id = created.json()["id"]
+        catalog = client.get("/api/v1/telemetry/catalog", params=[("vm_id", vm_id)]).json()
+        analog = {item["key"]: item["label"] for item in catalog["sources"][0]["analog"]}
+        discrete = {item["key"]: item["label"] for item in catalog["sources"][0]["discrete"]}
+        assert analog["UgenL1L2"] == "U генератора L1-L2"
+        assert discrete["Engine_running"] == "Двигатель работает"
+        series = client.get("/api/v1/telemetry/series", params=[("table", "analog"), ("vm_id", vm_id), ("column", "UgenL1L2")]).json()
+        assert any("U генератора L1-L2" in str(value) for value in series["column_labels"].values())
 
 
 def _ingest(client: TestClient, vm_id: str, *, seq: int, when: str, rpm: int, alarm_bit: int, running: int) -> None:
