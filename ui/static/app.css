@@ -1907,6 +1907,7 @@
   border: 1px solid var(--bb-border);
   border-radius: 999px;
   background: #fff;
+  cursor: pointer;
 }
 .bb-row-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; margin: 0.8rem 0; }
 .bb-table-wrap { overflow: auto; border: 1px solid var(--bb-border); border-radius: 10px; }

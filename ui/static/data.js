@@ -9,22 +9,31 @@
   let catalog = [];
   let refreshTimer = null;
   let openPicker = false;
+  let activeFetch = null;
+  let loadToken = 0;
   const columnPick = JSON.parse(localStorage.getItem('bb-data-columns') || '{}');
-
-  const savedVm = localStorage.getItem('bb-data-vm');
-  if (savedVm) {
-    const saved = root.querySelector('input[name="vm_id"][value="' + cssEscape(savedVm) + '"]');
-    if (saved) saved.checked = true;
-  }
-  const savedTab = localStorage.getItem('bb-data-tab');
-  if (savedTab === 'analog' || savedTab === 'discrete' || savedTab === 'alarms') {
-    const tabInput = form.querySelector('input[name="active_tab"][value="' + savedTab + '"]');
-    if (tabInput) tabInput.checked = true;
-  }
 
   function cssEscape(value) {
     if (window.CSS && CSS.escape) return CSS.escape(String(value));
     return String(value).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+  }
+
+  function setRadio(name, value) {
+    const nodes = form.querySelectorAll('input[name="' + name + '"]');
+    let matched = false;
+    nodes.forEach(function (node) {
+      const on = node.value === value;
+      node.checked = on;
+      if (on) matched = true;
+    });
+    if (!matched && nodes[0]) nodes[0].checked = true;
+  }
+
+  const savedVm = localStorage.getItem('bb-data-vm');
+  if (savedVm) setRadio('vm_id', savedVm);
+  const savedTab = localStorage.getItem('bb-data-tab');
+  if (savedTab === 'analog' || savedTab === 'discrete' || savedTab === 'alarms') {
+    setRadio('active_tab', savedTab);
   }
 
   function esc(value) {
@@ -34,7 +43,7 @@
   }
 
   function vmId() {
-    const node = root.querySelector('input[name="vm_id"]:checked');
+    const node = form.querySelector('input[name="vm_id"]:checked');
     return node ? node.value : '';
   }
 
@@ -61,7 +70,7 @@
     return count + ' столбцов';
   }
 
-  function params() {
+  function params(stamp) {
     const query = new URLSearchParams();
     const id = vmId();
     if (id) query.append('vm_id', id);
@@ -75,6 +84,7 @@
     if (tab() === 'analog' || tab() === 'discrete') {
       currentPick().keys.forEach(function (key) { query.append('column', key); });
     }
+    query.set('_', stamp || String(Date.now()));
     return query;
   }
 
@@ -101,7 +111,8 @@
 
   function fields() {
     const active = tab();
-    const source = catalog.find(function (item) { return item.id === vmId(); }) || catalog[0];
+    const id = vmId();
+    const source = catalog.find(function (item) { return item.id === id; }) || catalog[0];
     const seen = new Map();
     ((source && source[active]) || []).forEach(function (field) {
       if (field && field.key && !seen.has(field.key)) seen.set(field.key, field.label || field.key);
@@ -153,45 +164,58 @@
       '<div class="bb-row-actions"><button type="button" class="bb-btn bb-btn-ghost" data-page="prev"' + (payload.page <= 1 ? ' disabled' : '') + '>Назад</button><button type="button" class="bb-btn bb-btn-ghost" data-page="next"' + (payload.page >= payload.total_pages ? ' disabled' : '') + '>Вперёд</button><span class="bb-hint">' + esc(title) + '</span></div>';
   }
 
-  async function loadCatalog() {
+  async function reloadView(options) {
+    const keepPlace = options && options.keepPlace;
+    const saved = keepPlace ? place() : null;
+    if (refreshTimer) {
+      clearTimeout(refreshTimer);
+      refreshTimer = null;
+    }
+    if (activeFetch) activeFetch.abort();
+    const ctl = new AbortController();
+    activeFetch = ctl;
+    const token = ++loadToken;
     const id = vmId();
     if (!id) {
       catalog = [];
       renderFields();
-      return;
-    }
-    const query = new URLSearchParams();
-    query.append('vm_id', id);
-    const response = await fetch('/api/v1/telemetry/catalog?' + query.toString());
-    if (!response.ok) throw new Error('catalog');
-    const payload = await response.json();
-    catalog = payload.sources || [];
-    renderFields();
-  }
-
-  async function loadTable(options) {
-    const keepPlace = options && options.keepPlace;
-    const saved = keepPlace ? place() : null;
-    if (!vmId()) {
       tableHost.innerHTML = '<p class="bb-hint">Выберите машину.</p>';
       return;
     }
+    if (!keepPlace) tableHost.innerHTML = '<p class="bb-hint">Загрузка таблицы…</p>';
     tableHost.setAttribute('aria-busy', 'true');
-    const response = await fetch('/api/v1/telemetry/rows?' + params().toString());
-    if (!response.ok) {
-      tableHost.innerHTML = '<p class="bb-hint">Не удалось прочитать измерения.</p>';
+    const stamp = String(Date.now());
+    const headers = { 'Cache-Control': 'no-store', Pragma: 'no-cache' };
+    const fetchOpts = { cache: 'no-store', headers: headers, signal: ctl.signal };
+    try {
+      const catalogQuery = new URLSearchParams();
+      catalogQuery.append('vm_id', id);
+      catalogQuery.set('_', stamp);
+      const catalogRes = await fetch('/api/v1/telemetry/catalog?' + catalogQuery.toString(), fetchOpts);
+      if (token !== loadToken) return;
+      if (!catalogRes.ok) throw new Error('catalog');
+      catalog = (await catalogRes.json()).sources || [];
+      if (token !== loadToken) return;
+      renderFields();
+      const tableRes = await fetch('/api/v1/telemetry/rows?' + params(stamp).toString(), fetchOpts);
+      if (token !== loadToken) return;
+      if (!tableRes.ok) throw new Error('rows');
+      renderTable(await tableRes.json());
+      tableHost.removeAttribute('aria-busy');
       restore(saved);
-      return;
+    } catch (error) {
+      if (error && error.name === 'AbortError') return;
+      if (token !== loadToken) return;
+      tableHost.innerHTML = '<p class="bb-hint">Не удалось загрузить таблицу.</p>';
+    } finally {
+      if (activeFetch === ctl) activeFetch = null;
     }
-    renderTable(await response.json());
-    tableHost.removeAttribute('aria-busy');
-    restore(saved);
   }
 
   function schedule() {
     if (!liveMode()) return;
     if (refreshTimer) clearTimeout(refreshTimer);
-    refreshTimer = setTimeout(function () { loadTable({ keepPlace: true }); }, 400);
+    refreshTimer = setTimeout(function () { reloadView({ keepPlace: true }); }, 400);
   }
 
   function chooseColumn(key) {
@@ -208,19 +232,35 @@
     openPicker = true;
     page = 1;
     renderFields();
-    loadTable();
+    reloadView();
   }
 
-  root.addEventListener('change', function (event) {
+  let vmClickAt = 0;
+
+  function applyVm(id) {
+    if (!id) return;
+    setRadio('vm_id', id);
+    localStorage.setItem('bb-data-vm', id);
+    openPicker = false;
+    page = 1;
+    reloadView();
+  }
+
+  form.addEventListener('click', function (event) {
+    const label = event.target instanceof Element ? event.target.closest('.bb-vm-tabs .bb-tab') : null;
+    if (!label || !form.contains(label)) return;
+    const input = label.querySelector('input[name="vm_id"]');
+    if (!input) return;
+    vmClickAt = Date.now();
+    applyVm(input.value);
+  });
+
+  form.addEventListener('change', function (event) {
     const target = event.target;
     if (!(target instanceof HTMLInputElement || target instanceof HTMLSelectElement)) return;
     if (target.name === 'vm_id') {
-      localStorage.setItem('bb-data-vm', target.value);
-      openPicker = false;
-      page = 1;
-      loadCatalog().then(function () { return loadTable(); }).catch(function () {
-        tableHost.innerHTML = '<p class="bb-hint">Не удалось загрузить список полей.</p>';
-      });
+      if (Date.now() - vmClickAt < 400) return;
+      applyVm(target.value);
       return;
     }
     if (target.name === 'active_tab') {
@@ -228,12 +268,12 @@
       openPicker = false;
       page = 1;
       renderFields();
-      loadTable();
+      reloadView();
       return;
     }
     if (target.name === 'date_from' || target.name === 'date_to' || target.name === 'sort') {
       page = 1;
-      loadTable();
+      reloadView();
     }
   });
 
@@ -259,7 +299,7 @@
     renderFields();
   });
 
-  document.getElementById('bb-data-refresh').addEventListener('click', function () { loadTable(); });
+  document.getElementById('bb-data-refresh').addEventListener('click', function () { reloadView(); });
   document.getElementById('bb-data-export').addEventListener('click', function () {
     const query = params();
     query.delete('page');
@@ -270,7 +310,7 @@
     if (!button || button.disabled) return;
     page += button.dataset.page === 'next' ? 1 : -1;
     if (page < 1) page = 1;
-    loadTable();
+    reloadView();
   });
 
   window.addEventListener('bb-hub-event', function (event) {
@@ -285,7 +325,5 @@
     }
   });
 
-  loadCatalog().then(function () { return loadTable(); }).catch(function () {
-    tableHost.innerHTML = '<p class="bb-hint">Не удалось загрузить таблицу.</p>';
-  });
+  reloadView();
 })();

@@ -1,0 +1,5 @@
+# Workers import pydantic (platform contracts) and minimalmodbus (RTU).
+# Pins must match uv.lock; tests/test_worker_image_deps.py enforces that.
+pydantic==2.12.5
+minimalmodbus==2.1.1
+pyserial==3.5

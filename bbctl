@@ -5,6 +5,12 @@ PROJECT_ROOT="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 COMPOSE_FILE="$PROJECT_ROOT/deploy/compose.yaml"
 COMPOSE_OVERRIDE="${BB_COMPOSE_OVERRIDE:-}"
 PROFILE="${BB_PROFILE:-dev}"
+# One BuildKit graph so Hub and worker targets share cached stages.
+# Set COMPOSE_BAKE=false if this Compose plugin rejects Bake.
+if [ -z "${COMPOSE_BAKE:-}" ]; then
+  COMPOSE_BAKE=true
+fi
+export COMPOSE_BAKE
 
 compose() {
   if [ -n "$COMPOSE_OVERRIDE" ]; then
@@ -53,7 +59,22 @@ Environment:
   BB_PROFILE    Compose profile (default: dev)
   BB_HUB_PORT   Hub HTTP port (default: 8080)
   BB_COMPOSE_OVERRIDE  Optional Compose override, e.g. deploy/compose.pi.yaml
+  BB_PULL       Set to 1 to pull newer base images before building
 EOF
+}
+
+build_images() {
+  pull_flag=""
+  if [ "${BB_PULL:-}" = "1" ]; then
+    echo "Pulling newer base images before build (BB_PULL=1)..."
+    pull_flag="--pull"
+  fi
+  # shellcheck disable=SC2086
+  compose_profiles build $pull_flag
+  if [ "$PROFILE" = "legacy" ]; then
+    # shellcheck disable=SC2086
+    compose build $pull_flag
+  fi
 }
 
 require_docker() {
@@ -115,8 +136,8 @@ case "$command" in
     ;;
   up)
     require_docker
-    compose_profiles build
-    compose up --detach --build
+    build_images
+    compose up --detach
     ;;
   down)
     require_docker
@@ -130,7 +151,7 @@ case "$command" in
       git_fast_forward
       BBCTL_UPDATE_APPLY=1 exec "$PROJECT_ROOT/bbctl" update
     fi
-    compose_profiles build --pull
+    build_images
     compose stop
     remove_dynamic_workers
     compose down

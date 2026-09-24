@@ -4,15 +4,14 @@
 {% block content %}
 <section class="bb-card" id="bb-data" data-bb-events data-export-url="/api/v1/telemetry/export">
   <h1 class="bb-page-title">Данные</h1>
-  <p class="bb-page-lead">Сначала машина, затем период, сортировка и вид таблицы. Новые строки на первой странице приходят по WebSocket и не сдвигают просмотр.</p>
-  <div class="bb-tabs bb-vm-tabs" role="tablist" aria-label="Машины">
-    {% for vm in vms %}
-    <label class="bb-tab"><input type="radio" name="vm_id" value="{{ vm.id }}" {% if loop.first %}checked{% endif %}> {{ vm.name }}</label>
-    {% else %}
-    <p class="bb-hint">Виртуальных машин пока нет.</p>
-    {% endfor %}
-  </div>
   <form id="bb-data-form" onsubmit="return false;">
+    <div class="bb-tabs bb-vm-tabs" role="tablist" aria-label="Машины">
+      {% for vm in vms %}
+      <label class="bb-tab"><input type="radio" name="vm_id" value="{{ vm.id }}" {% if loop.first %}checked{% endif %}> {{ vm.name }}</label>
+      {% else %}
+      <p class="bb-hint">Виртуальных машин пока нет.</p>
+      {% endfor %}
+    </div>
     <div class="bb-filter-grid">
       <label class="bb-filter-field">Дата с
         <input type="datetime-local" name="date_from" autocomplete="off">

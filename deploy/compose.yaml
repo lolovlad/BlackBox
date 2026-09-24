@@ -20,7 +20,8 @@ services:
     profiles: ["dev", "prod"]
     build:
       context: .
-      dockerfile: services/hub/Dockerfile
+      dockerfile: deploy/Dockerfile
+      target: hub
     environment:
       BB_HUB_DB_PATH: /data/meta/hub.db
       BB_DATA_ROOT: /data
@@ -68,27 +69,31 @@ services:
     image: blackbox/worker-simulator:dev
     build:
       context: .
-      dockerfile: workers/simulator/Dockerfile
+      dockerfile: deploy/Dockerfile
+      target: worker-simulator
 
   worker-modbus-rtu-image:
     profiles: ["build"]
     image: blackbox/worker-modbus-rtu:dev
     build:
       context: .
-      dockerfile: workers/modbus-rtu/Dockerfile
+      dockerfile: deploy/Dockerfile
+      target: worker-rtu
 
   worker-modbus-tcp-image:
     profiles: ["build"]
     image: blackbox/worker-modbus-tcp:dev
     build:
       context: .
-      dockerfile: workers/modbus-tcp/Dockerfile
+      dockerfile: deploy/Dockerfile
+      target: worker-tcp
 
   legacy-web:
     profiles: ["legacy"]
     build:
       context: .
-      dockerfile: deploy/legacy.Dockerfile
+      dockerfile: deploy/Dockerfile
+      target: legacy
     command:
       - sh
       - -c

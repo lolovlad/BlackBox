@@ -207,6 +207,9 @@ def test_values_charts_and_alarm_journal_for_many_sources(tmp_path: Path) -> Non
         assert "gen-1" in dashboard and "gen-2" in dashboard
         data_page = client.get("/data").text
         assert "Аналоги" in data_page and "Аварии" in data_page and "gen-1" in data_page
+        assert 'id="bb-data-form"' in data_page
+        assert data_page.find('id="bb-data-form"') < data_page.find('name="vm_id"')
+        assert data_page.find('bb-vm-tabs') < data_page.find('id="bb-data-table"')
         charts = client.get("/charts").text
         assert "echarts.min.js" in charts
         assert "Построить график" in charts

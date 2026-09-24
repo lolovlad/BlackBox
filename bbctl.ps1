@@ -8,6 +8,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+if (-not $env:COMPOSE_BAKE) { $env:COMPOSE_BAKE = "true" }
 $ProjectRoot = $PSScriptRoot
 $ComposeFile = Join-Path $ProjectRoot "deploy/compose.yaml"
 $ComposeOverride = if ($env:BB_COMPOSE_OVERRIDE) {
@@ -27,6 +28,18 @@ function Invoke-ComposeProfiles {
     if ($ComposeOverride) { $Files += @("--file", $ComposeOverride) }
     & docker compose --project-directory $ProjectRoot @Files --profile dev --profile build @args
     if ($LASTEXITCODE -ne 0) { throw "docker compose failed with exit code $LASTEXITCODE" }
+}
+
+function Invoke-ImageBuild {
+    $pull = @()
+    if ($env:BB_PULL -eq "1") {
+        Write-Host "Pulling newer base images before build (BB_PULL=1)..."
+        $pull = @("--pull")
+    }
+    Invoke-ComposeProfiles build @pull
+    if ($Profile -eq "legacy") {
+        Invoke-Compose build @pull
+    }
 }
 
 function Assert-Docker {
@@ -86,12 +99,13 @@ function Invoke-Smoke {
 
 if ($Command -eq "help") {
     Write-Host "Usage: ./bbctl.ps1 <up|down|update|smoke|check-read|check-tcp|logs|ps|help>"
+    Write-Host "Set BB_PULL=1 to pull newer base images before building."
     exit 0
 }
 
 Assert-Docker
 switch ($Command) {
-    "up" { Invoke-ComposeProfiles build; Invoke-Compose up --detach --build }
+    "up" { Invoke-ImageBuild; Invoke-Compose up --detach }
     "down" { Invoke-Compose stop; Remove-DynamicWorkers; Invoke-Compose down }
     "update" {
         if ($env:BBCTL_UPDATE_APPLY -ne "1") {
@@ -100,7 +114,7 @@ switch ($Command) {
             & $PSCommandPath update
             exit $LASTEXITCODE
         }
-        Invoke-ComposeProfiles build --pull
+        Invoke-ImageBuild
         Invoke-Compose stop
         Remove-DynamicWorkers
         Invoke-Compose down
