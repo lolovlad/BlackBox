@@ -113,25 +113,37 @@ def websocket_snapshot(client: SmokeClient) -> dict:
 def run(base_url: str, username: str, password: str, data_root: Path) -> None:
     client = SmokeClient(base_url, username, password)
     client.login()
-    name = f"smoke-{secrets.token_hex(4)}"
-    client.request(
-        "/api/v1/maps",
-        method="POST",
-        csrf=True,
-        payload={
-            "protocol": "simulator",
-            "version": "smoke-v1",
-            "document": {
-                "requests": [{"name": "sim", "fc": 3, "address": 0, "count": 3}],
-                "fields": [
-                    {"name": "counter", "type": "uint16", "source": "sim", "address": 0},
-                    {"name": "digital_1", "type": "bool", "source": "sim", "address": 1},
-                    {"name": "analog_1", "type": "expr", "expr": "counter * 0.5", "round": True},
-                ],
+    try:
+        client.request("/api/v1/maps/smoke-v1?protocol=simulator", method="DELETE", csrf=True)
+    except RuntimeError:
+        pass
+    maps = client.request("/api/v1/maps").get("items") or []
+    existing = next((item for item in maps if item.get("protocol") == "simulator" and item.get("version") != "smoke-v1"), None)
+    created_map = None
+    if existing:
+        map_version = str(existing["version"])
+    else:
+        map_version = f"smoke-{secrets.token_hex(4)}"
+        created_map = map_version
+        client.request(
+            "/api/v1/maps",
+            method="POST",
+            csrf=True,
+            payload={
+                "protocol": "simulator",
+                "version": map_version,
+                "document": {
+                    "requests": [{"name": "sim", "fc": 3, "address": 0, "count": 3}],
+                    "fields": [
+                        {"name": "counter", "type": "uint16", "source": "sim", "address": 0},
+                        {"name": "digital_1", "type": "bool", "source": "sim", "address": 1},
+                        {"name": "analog_1", "type": "expr", "expr": "counter * 0.5", "round": True},
+                    ],
+                },
             },
-        },
-    )
-    vm = client.request("/api/v1/vms", method="POST", csrf=True, payload={"name": name, "protocol": "simulator", "map_version": "smoke-v1"})
+        )
+    name = f"smoke-{secrets.token_hex(4)}"
+    vm = client.request("/api/v1/vms", method="POST", csrf=True, payload={"name": name, "protocol": "simulator", "map_version": map_version})
     vm_id = vm["id"]
     try:
         client.request(f"/api/v1/vms/{vm_id}/start", method="POST", csrf=True)
@@ -164,6 +176,11 @@ def run(base_url: str, username: str, password: str, data_root: Path) -> None:
             client.request(f"/api/v1/vms/{vm_id}", method="DELETE", csrf=True)
         except Exception as exc:
             print(f"smoke cleanup delete warning: {exc}")
+        if created_map:
+            try:
+                client.request(f"/api/v1/maps/{created_map}?protocol=simulator", method="DELETE", csrf=True)
+            except Exception as exc:
+                print(f"smoke cleanup map warning: {exc}")
 
 
 def main() -> int:
