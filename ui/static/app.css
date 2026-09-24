@@ -1890,6 +1890,15 @@
 .bb-check-grid { grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); }
 .bb-chk { display: flex; gap: 0.4rem; align-items: flex-start; font-size: 0.92rem; }
 .bb-tabs { display: flex; flex-wrap: wrap; gap: 0.4rem; margin: 0.8rem 0; }
+.bb-tab input { margin: 0; }
+.bb-tab:has(input:checked) {
+  background: #e7eefc;
+  border-color: #2458c5;
+  font-weight: 600;
+}
+.bb-vm-tabs { margin-bottom: 1rem; }
+#bb-data { overflow-anchor: none; }
+#bb-data .bb-table-wrap { overflow-anchor: none; }
 .bb-tab {
   display: inline-flex;
   gap: 0.35rem;

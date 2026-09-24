@@ -4,7 +4,14 @@
 {% block content %}
 <section class="bb-card" id="bb-data" data-bb-events data-export-url="/api/v1/telemetry/export">
   <h1 class="bb-page-title">Данные</h1>
-  <p class="bb-page-lead">Таблицы читают измерения из Parquet. Аварии и GPIO — только моменты начала и окончания, без повторов на каждом опросе. Новые строки на первой странице приходят по WebSocket.</p>
+  <p class="bb-page-lead">Сначала машина, затем период, сортировка и вид таблицы. Новые строки на первой странице приходят по WebSocket и не сдвигают просмотр.</p>
+  <div class="bb-tabs bb-vm-tabs" role="tablist" aria-label="Машины">
+    {% for vm in vms %}
+    <label class="bb-tab"><input type="radio" name="vm_id" value="{{ vm.id }}" {% if loop.first %}checked{% endif %}> {{ vm.name }}</label>
+    {% else %}
+    <p class="bb-hint">Виртуальных машин пока нет.</p>
+    {% endfor %}
+  </div>
   <form id="bb-data-form" onsubmit="return false;">
     <div class="bb-filter-grid">
       <label class="bb-filter-field">Дата с
@@ -20,26 +27,14 @@
         </select>
       </label>
     </div>
-    <fieldset>
-      <legend>Источники</legend>
-      <div class="bb-check-grid">
-        {% for vm in vms %}
-        <label class="bb-chk"><input type="checkbox" name="vm_id" value="{{ vm.id }}" checked> {{ vm.name }}</label>
-        {% else %}
-        <p class="bb-hint">Виртуальных машин пока нет.</p>
-        {% endfor %}
-      </div>
-    </fieldset>
-    <div class="bb-tabs" role="tablist">
+    <div class="bb-tabs" role="tablist" aria-label="Вид таблицы">
       <label class="bb-tab"><input type="radio" name="active_tab" value="analog" checked> Аналоги</label>
       <label class="bb-tab"><input type="radio" name="active_tab" value="discrete"> Дискреты</label>
       <label class="bb-tab"><input type="radio" name="active_tab" value="alarms"> Аварии</label>
-      <label class="bb-tab"><input type="radio" name="active_tab" value="gpio"> GPIO</label>
     </div>
-    <div id="bb-data-fields"></div>
-    <p class="bb-hint" data-tab-hint="alarms" hidden>Вкладка «Аварии»: время, источник, название и состояние. Повтор активного сигнала не создаёт новую строку.</p>
-    <p class="bb-hint" data-tab-hint="gpio" hidden>Вкладка «GPIO»: журнал входов Raspberry. Строка пишется, когда вход становится активным и когда он снимается.</p>
+    <p class="bb-hint" data-tab-hint="alarms" hidden>Время, название и состояние. Повтор активного сигнала не создаёт новую строку.</p>
     <div class="bb-row-actions">
+      <div id="bb-data-fields"></div>
       <button type="button" class="bb-btn" id="bb-data-refresh">Обновить таблицу</button>
       <button type="button" class="bb-btn bb-btn-ghost" id="bb-data-export"><i class="bi bi-download"></i> Экспорт CSV</button>
     </div>
