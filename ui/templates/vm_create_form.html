@@ -44,7 +44,7 @@
 
   <section class="bb-vm-step">
     <h3 class="bb-vm-step-title"><span class="bb-step-num">3</span> Подключение</h3>
-    <p class="bb-panel-lead">Выберите найденное устройство и параметры связи.</p>
+    <p class="bb-panel-lead" data-connection-lead>{{ connection_profiles.get(active_protocol, {}).get('hint', 'Параметры связи зависят от протокола.') }}</p>
     {% include "vm_reader_settings.html" %}
   </section>
 
@@ -65,7 +65,7 @@
       <summary><i class="bi bi-braces"></i> Просмотр карты <span id="create-map-preview-status" class="bb-muted"></span></summary>
       <pre id="create-map-preview" class="bb-json-view"></pre>
     </details>
-    <div class="bb-probe-bar">
+    <div class="bb-probe-bar" data-probe-read-bar>
       <button type="button" class="bb-btn bb-btn-secondary" data-probe-read><i class="bi bi-plug"></i> Проверить чтение</button>
     </div>
     <div class="bb-probe-result" data-probe-result hidden></div>

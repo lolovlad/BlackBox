@@ -18,7 +18,7 @@
     </section>
     <section class="bb-vm-step">
       <h3 class="bb-vm-step-title"><span class="bb-step-num">2</span> Подключение</h3>
-      <p class="bb-panel-lead">{{ protocol_labels.get(vm.protocol, vm.protocol) }}. Найденные устройства показываются списком.</p>
+      <p class="bb-panel-lead" data-connection-lead>{{ connection_profiles.get(vm.protocol, {}).get('hint', protocol_labels.get(vm.protocol, vm.protocol)) }}</p>
       {% include "vm_reader_settings.html" %}
     </section>
     <section class="bb-vm-step">
@@ -36,7 +36,7 @@
         <summary><i class="bi bi-braces"></i> Просмотр карты <span id="edit-map-preview-status" class="bb-muted"></span></summary>
         <pre id="edit-map-preview" class="bb-json-view"></pre>
       </details>
-      <div class="bb-probe-bar">
+      <div class="bb-probe-bar" data-probe-read-bar {% if not connection_profiles.get(vm.protocol, {}).get('probe_read', True) %}hidden{% endif %}>
         <button type="button" class="bb-btn bb-btn-secondary" data-probe-read><i class="bi bi-plug"></i> Проверить чтение</button>
       </div>
       <div class="bb-probe-result" data-probe-result hidden></div>

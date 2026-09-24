@@ -128,6 +128,13 @@ def test_tcp_hints_ignore_loopback_simulator():
     assert hints == ["192.168.10.4:1502"]
 
 
+def test_hub_inventory_excludes_tcp_endpoints(tmp_path: Path):
+    from services.hub.discovery import discover_resources
+
+    items = discover_resources(tmp_path, extra_tcp_endpoints=["10.0.0.8:502"], include_tcp=False)
+    assert all(item.get("kind") != "tcp" for item in items)
+
+
 def test_host_dev_uart_is_published_as_linux_path(tmp_path: Path, monkeypatch):
     from services.hub.discovery import as_linux_dev_path, discover_serial_resources
 

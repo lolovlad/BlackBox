@@ -23,8 +23,9 @@ from bb_platform.contracts import AlarmEvent, MapDocument, Quality, RawBatch, Re
 from bb_platform.parser import adapt_legacy_map, diagnose_read, field_channel, parse_batch
 
 from .config import HubConfig
+from .connection import PROFILES, connection_profile, inventory_kinds
 from .db import HubRepository
-from .discovery import KIND_LABELS, PROTOCOL_RESOURCE_KIND, discover_resources, discovery_summary, is_usable_can_interface, is_usable_serial_port, tcp_hints_from_vms
+from .discovery import KIND_LABELS, PROTOCOL_RESOURCE_KIND, discover_resources, discovery_summary, is_usable_can_interface, is_usable_serial_port
 from .docker_manager import DockerManager, DockerUnavailable
 from .probe import run_probe
 from .registry import PROTOCOLS, protocol_spec
@@ -290,8 +291,8 @@ _is_usable_serial_port = is_usable_serial_port
 
 
 def _discover_resources(data_root: Path, repo: HubRepository | None = None, *, probe_network: bool = False) -> list[dict[str, Any]]:
-    extra_tcp = tcp_hints_from_vms(repo.list_vms()) if repo is not None else []
-    return discover_resources(data_root, extra_tcp_endpoints=extra_tcp, probe_network=probe_network)
+    """Physical inventory only. TCP is a typed endpoint, not a discovered node."""
+    return discover_resources(data_root, include_tcp=False)
 
 
 def _status_from_vm(vm: dict[str, Any], *, health: str = "unknown", heartbeat_at: datetime | None = None) -> VmStatus:
@@ -342,10 +343,25 @@ def _bind_read_resources(repo: HubRepository, resources: list[dict[str, Any]], a
     return _approved_resources(repo, resources or [], exclude_vm_id=exclude_vm_id)
 
 
+def _bind_protocol_read_resources(
+    repo: HubRepository,
+    protocol: str,
+    resources: list[dict[str, Any]],
+    account_id: int | None,
+    *,
+    exclude_vm_id: str | None = None,
+) -> list[dict[str, Any]]:
+    if not connection_profile(protocol).requires_resource:
+        return []
+    return _bind_read_resources(repo, resources, account_id, exclude_vm_id=exclude_vm_id)
+
+
 def _candidates_payload(repo: HubRepository) -> dict[str, list[dict[str, Any]]]:
     leases = repo.list_resource_leases()
     names = {str(vm["id"]): vm.get("name") or vm["id"] for vm in repo.list_vms()}
-    grouped: dict[str, list[dict[str, Any]]] = {"modbus_rtu": [], "modbus_tcp": [], "can": [], "gpio": []}
+    grouped: dict[str, list[dict[str, Any]]] = {
+        protocol: [] for protocol, profile in PROFILES.items() if profile.discovers
+    }
     kind_to_protocol = {kind: protocol for protocol, kind in PROTOCOL_RESOURCE_KIND.items()}
     for item in repo.list_resources():
         if not item.get("available"):
@@ -428,20 +444,21 @@ def _vm_storage_subdirs(vm: dict[str, Any]) -> list[str]:
 
 
 def _validate_reader_allowlist(repo: HubRepository, protocol: str, runtime_config: dict[str, Any], resources: list[dict[str, Any]]) -> None:
-    """Require an approved physical source and bind its path into reader config.
+    """Bind the physical source the protocol actually uses.
 
-    The browser may send a stale default port (``/dev/ttyAMA0``).  The selected
-    approved resource is the only trusted device path.
+    Serial and CAN lease a discovered node. TCP is a host:port the operator
+    types in; there is no inventory of “TCP devices”.
     """
+    profile = connection_profile(protocol)
+    reader = runtime_config.setdefault("reader", {}) if isinstance(runtime_config, dict) else {}
     if protocol == VmProtocol.SIMULATOR.value:
         return
-    reader = runtime_config.setdefault("reader", {}) if isinstance(runtime_config, dict) else {}
-    by_kind = {}
+    by_kind: dict[str, list[dict[str, Any]]] = {}
     for item in resources:
         if isinstance(item, dict) and item.get("kind"):
             by_kind.setdefault(str(item["kind"]), []).append(item)
 
-    if protocol == VmProtocol.MODBUS_RTU.value:
+    if profile.link == "serial":
         serials = by_kind.get(ResourceKind.SERIAL.value, [])
         path = str(serials[0].get("path") or "") if serials else ""
         if not path or not _is_usable_serial_port(path):
@@ -454,25 +471,24 @@ def _validate_reader_allowlist(repo: HubRepository, protocol: str, runtime_confi
             )
         reader["port"] = path
         return
-    if protocol == VmProtocol.MODBUS_TCP.value:
-        tcps = by_kind.get(ResourceKind.TCP.value, [])
-        if tcps:
-            address = str(tcps[0].get("address") or tcps[0].get("path") or tcps[0].get("name") or "")
-            host, sep, port = address.rpartition(":")
-            if host and sep and port.isdigit():
-                reader["host"] = host
-                reader["tcp_port"] = int(port)
-            elif address:
-                reader["host"] = address
-            return
-        if str(reader.get("host", "127.0.0.1")) in {"127.0.0.1", "localhost", "::1"}:
-            return
-        raise HTTPException(409, detail={"code": "read_resource_required", "message": "Сначала найдите и подтвердите TCP-адрес прибора в «Ресурсах»"})
-    if protocol == VmProtocol.CAN.value:
+    if profile.link == "network":
+        host = str(reader.get("host") or "").strip()
+        if not host:
+            raise HTTPException(422, detail={"code": "tcp_endpoint_required", "message": "Укажите IP или hostname прибора"})
+        try:
+            port = int(reader.get("tcp_port") or 502)
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(422, detail={"code": "tcp_endpoint_required", "message": "Укажите TCP-порт прибора"}) from exc
+        if port < 1 or port > 65535:
+            raise HTTPException(422, detail={"code": "tcp_endpoint_required", "message": "TCP-порт должен быть от 1 до 65535"})
+        reader["host"] = host
+        reader["tcp_port"] = port
+        return
+    if profile.link == "can":
         cans = by_kind.get(ResourceKind.CAN.value, [])
         iface = str((cans[0].get("name") if cans else "") or reader.get("can_interface") or "")
         if not cans or not iface or not is_usable_can_interface(iface):
-            raise HTTPException(409, detail={"code": "read_resource_required", "message": "Нужен интерфейс вроде can0. Сначала подтвердите его в «Ресурсах»."})
+            raise HTTPException(409, detail={"code": "read_resource_required", "message": "Нужен интерфейс вроде can0. Сначала найдите его в форме ВМ."})
         reader["can_interface"] = iface
 
 
@@ -484,10 +500,10 @@ def _approved_resource_groups(repo: HubRepository) -> dict[str, list[dict[str, A
         if item.get("kind") == ResourceKind.STORAGE.value and item.get("approved") and item.get("available")
     ]
     return {
-        "serial_resources": candidates["modbus_rtu"],
-        "tcp_resources": candidates["modbus_tcp"],
-        "can_resources": candidates["can"],
-        "gpio_resources": candidates["gpio"],
+        "serial_resources": candidates.get("modbus_rtu", []),
+        "tcp_resources": [],
+        "can_resources": candidates.get("can", []),
+        "gpio_resources": candidates.get("gpio", []),
         "storage_resources": storage,
     }
 
@@ -540,6 +556,7 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
     templates.env.globals["protocol_icons"] = PROTOCOL_ICONS
     templates.env.globals["lifecycle_labels"] = LIFECYCLE_LABELS
     templates.env.globals["vm_connection"] = vm_connection
+    templates.env.globals["connection_profiles"] = {key: profile.as_dict() for key, profile in PROFILES.items()}
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -868,7 +885,18 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
 
     @app.get("/api/v1/protocols")
     async def protocols(account=Depends(user)):
-        return {"items": [{"protocol": spec.protocol.value, "enabled": spec.enabled, "worker_kind": spec.worker_kind, "description": spec.description} for spec in PROTOCOLS]}
+        return {
+            "items": [
+                {
+                    "protocol": spec.protocol.value,
+                    "enabled": spec.enabled,
+                    "worker_kind": spec.worker_kind,
+                    "description": spec.description,
+                    "connection": connection_profile(spec.protocol).as_dict(),
+                }
+                for spec in PROTOCOLS
+            ]
+        }
 
     @app.post("/api/v1/auth/login")
     async def login(payload: LoginRequest):
@@ -933,7 +961,7 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
         if repo.map_by_version(payload.map_version, payload.protocol.value) is None:
             raise HTTPException(422, detail={"code": "map_not_found", "message": "Map version not found"})
         read_input = payload.read_resources if payload.read_resources is not None else (payload.resources or [])
-        resources = _bind_read_resources(repo, read_input, int(account["id"]))
+        resources = _bind_protocol_read_resources(repo, payload.protocol.value, read_input, int(account["id"]))
         _validate_reader_allowlist(repo, payload.protocol.value, runtime_config, resources)
         storage_id = _approved_storage_resource(repo, payload.storage_resource_id or runtime_config["storage"]["target_resource_id"])
         runtime_config["storage"]["target_resource_id"] = storage_id
@@ -975,53 +1003,56 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
         document_payload = repo.map_by_version(payload.map_version, payload.protocol.value)
         if document_payload is None:
             raise HTTPException(422, detail={"code": "map_not_found", "message": "Сначала выберите карту этого протокола"})
+        profile = connection_profile(payload.protocol.value)
+        if not profile.probe_read:
+            raise HTTPException(422, detail={"code": "probe_unsupported", "message": "Для этого протокола нет тестового чтения"})
         reader = runtime_config.setdefault("reader", {})
-        selected = payload.read_resources[0] if payload.read_resources else None
         descriptor = None
-        if isinstance(selected, dict) and selected.get("resource_id"):
-            descriptor = repo.resource_by_id(str(selected["resource_id"]))
-            if descriptor is None or not descriptor.get("available"):
-                raise HTTPException(409, detail={"code": "resource_not_found", "message": "Сначала нажмите «Найти устройства» и выберите порт из списка"})
-            if payload.protocol == VmProtocol.MODBUS_RTU and descriptor.get("kind") == ResourceKind.SERIAL.value:
-                reader["port"] = descriptor.get("path")
-            elif payload.protocol == VmProtocol.MODBUS_TCP and descriptor.get("kind") == ResourceKind.TCP.value:
-                address = str(descriptor.get("address") or descriptor.get("path") or "")
-                host, sep, port = address.rpartition(":")
-                if host and sep and port.isdigit():
-                    reader["host"] = host
-                    reader["tcp_port"] = int(port)
-                elif address:
-                    reader["host"] = address
-            elif payload.protocol == VmProtocol.CAN and descriptor.get("kind") == ResourceKind.CAN.value:
-                reader["can_interface"] = descriptor.get("name")
-            leases = repo.list_resource_leases()
-            owner = leases.get(str(descriptor["resource_id"]))
-            if owner and owner != str(payload.vm_id or ""):
-                owner_vm = repo.get_vm(owner) or {}
-                return {
-                    "ok": False,
-                    "quality": "bad",
-                    "last_error": f"resource leased by {owner}",
-                    "diagnosis": {
-                        "code": "busy",
-                        "title": "Устройство занято",
-                        "detail": f"Сейчас его держит ВМ «{owner_vm.get('name') or owner}». Остановите её или выберите другой порт.",
-                        "link": "down",
-                        "cause": "port",
-                        "can_read_alerts": False,
-                    },
-                    "analog": [],
-                    "discrete": [],
-                    "alerts": [],
-                    "active_alerts": [],
-                    "device": {"resource_id": descriptor["resource_id"], "path": descriptor.get("path"), "leased_by": owner},
-                }
-        if payload.protocol == VmProtocol.MODBUS_RTU and not str(reader.get("port") or "").strip():
-            raise HTTPException(422, detail={"code": "read_resource_required", "message": "Выберите serial-порт или нажмите «Найти устройства»"})
-        if payload.protocol == VmProtocol.MODBUS_TCP and not str(reader.get("host") or "").strip():
-            raise HTTPException(422, detail={"code": "read_resource_required", "message": "Укажите IP прибора"})
-        if payload.protocol == VmProtocol.CAN and not str(reader.get("can_interface") or "").strip():
-            raise HTTPException(422, detail={"code": "read_resource_required", "message": "Выберите CAN-интерфейс или нажмите «Найти устройства»"})
+        if profile.requires_resource:
+            selected = payload.read_resources[0] if payload.read_resources else None
+            if isinstance(selected, dict) and selected.get("resource_id"):
+                descriptor = repo.resource_by_id(str(selected["resource_id"]))
+                if descriptor is None or not descriptor.get("available"):
+                    raise HTTPException(
+                        409,
+                        detail={"code": "resource_not_found", "message": f"Сначала нажмите «{profile.scan_label or 'Найти порты'}» и выберите устройство из списка"},
+                    )
+                if profile.resource_kind and descriptor.get("kind") != profile.resource_kind:
+                    raise HTTPException(409, detail={"code": "resource_kind_mismatch", "message": "Выбранный ресурс не подходит для этого протокола"})
+                if profile.link == "serial":
+                    reader["port"] = descriptor.get("path")
+                elif profile.link == "can":
+                    reader["can_interface"] = descriptor.get("name")
+                elif profile.link == "gpio":
+                    reader["gpio_chip"] = descriptor.get("path") or descriptor.get("name")
+                leases = repo.list_resource_leases()
+                owner = leases.get(str(descriptor["resource_id"]))
+                if owner and owner != str(payload.vm_id or ""):
+                    owner_vm = repo.get_vm(owner) or {}
+                    return {
+                        "ok": False,
+                        "quality": "bad",
+                        "last_error": f"resource leased by {owner}",
+                        "diagnosis": {
+                            "code": "busy",
+                            "title": "Устройство занято",
+                            "detail": f"Сейчас его держит ВМ «{owner_vm.get('name') or owner}». Остановите её или выберите другое устройство.",
+                            "link": "down",
+                            "cause": "port",
+                            "can_read_alerts": False,
+                        },
+                        "analog": [],
+                        "discrete": [],
+                        "alerts": [],
+                        "active_alerts": [],
+                        "device": {"resource_id": descriptor["resource_id"], "path": descriptor.get("path"), "leased_by": owner},
+                    }
+            if profile.link == "serial" and not str(reader.get("port") or "").strip():
+                raise HTTPException(422, detail={"code": "read_resource_required", "message": f"Выберите serial-порт или нажмите «{profile.scan_label}»"})
+            if profile.link == "can" and not str(reader.get("can_interface") or "").strip():
+                raise HTTPException(422, detail={"code": "read_resource_required", "message": f"Выберите CAN-интерфейс или нажмите «{profile.scan_label}»"})
+        elif profile.link == "network" and not str(reader.get("host") or "").strip():
+            raise HTTPException(422, detail={"code": "tcp_endpoint_required", "message": "Укажите IP или hostname прибора"})
         result = await asyncio.to_thread(run_probe, protocol=payload.protocol.value, reader=reader, map_document=MapDocument(**document_payload))
         if descriptor:
             result["device"] = {**(result.get("device") or {}), "resource_id": descriptor["resource_id"], "name": descriptor.get("name")}
@@ -1056,7 +1087,11 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
             values["read_resources"] = values.pop("resources")
         values.pop("resources", None)
         if "read_resources" in values:
-            values["read_resources"] = _bind_read_resources(repo, values["read_resources"], int(account["id"]), exclude_vm_id=vm_id)
+            values["read_resources"] = _bind_protocol_read_resources(
+                repo, current_vm["protocol"], values["read_resources"], int(account["id"]), exclude_vm_id=vm_id
+            )
+        elif not connection_profile(current_vm["protocol"]).requires_resource:
+            values["read_resources"] = []
         if "map_version" in values and repo.map_by_version(values["map_version"], current_vm["protocol"] if current_vm else None) is None:
             raise HTTPException(422, detail={"code": "map_not_found", "message": "Map version not found"})
         if "config" in values or "storage_resource_id" in payload.model_dump(exclude_none=True):
@@ -1442,11 +1477,11 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
         return {"items": items if items is not None else [row for rows in grouped.values() for row in rows], "candidates": grouped}
 
     @app.post("/api/v1/resources/scan", dependencies=[Depends(csrf_protect)])
-    async def scan_resources(network: bool = Query(default=True), account=Depends(admin)):
-        items = repo.upsert_resources(_discover_resources(cfg.data_root, repo, probe_network=network))
+    async def scan_resources(network: bool = Query(default=False), account=Depends(admin)):
+        items = repo.upsert_resources(_discover_resources(cfg.data_root, repo))
         repo.approve_resource("storage:data", None)
         summary = discovery_summary(items)
-        repo.record_audit(int(account["id"]), "resources.scan", None, {"count": len(items), "summary": summary, "network": network})
+        repo.record_audit(int(account["id"]), "resources.scan", None, {"count": len(items), "summary": summary, "network": False})
         return {"items": items, "summary": summary, "candidates": _candidates_payload(repo)}
 
     @app.post("/api/v1/resources/{resource_id:path}/approve", dependencies=[Depends(csrf_protect)])
@@ -1767,7 +1802,7 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
                         "label": KIND_LABELS.get(kind, kind),
                         "devices": [item for item in resources if item.get("kind") == kind],
                     }
-                    for kind in ("serial", "tcp", "can", "gpio")
+                    for kind in inventory_kinds()
                     if any(item.get("kind") == kind for item in resources)
                 ],
                 "read_resources": [r for r in resources if r.get("kind") != ResourceKind.STORAGE.value],

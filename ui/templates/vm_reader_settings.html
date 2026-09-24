@@ -3,10 +3,9 @@
 {% set active_protocol = active_protocol|default('simulator') %}
 {% set selected_read_ids = selected_read_ids|default([]) %}
 {% set serial_resources = serial_resources|default([]) %}
-{% set tcp_resources = tcp_resources|default([]) %}
 {% set can_resources = can_resources|default([]) %}
 <div class="bb-protocol-panels">
-  <fieldset class="bb-protocol-panel" data-protocol-panel="simulator" {% if active_protocol != 'simulator' %}hidden{% endif %}>
+  <fieldset class="bb-protocol-panel" data-protocol-panel="simulator" data-discovers="false" {% if active_protocol != 'simulator' %}hidden{% endif %}>
     <legend class="bb-sr-only">Симулятор</legend>
     <p class="bb-panel-lead">Тестовая ВМ без физического прибора. Генерирует значения по карте.</p>
     <div class="bb-settings-grid">
@@ -19,10 +18,10 @@
     </div>
   </fieldset>
 
-  <fieldset class="bb-protocol-panel" data-protocol-panel="modbus_rtu" {% if active_protocol != 'modbus_rtu' %}hidden{% endif %}>
+  <fieldset class="bb-protocol-panel" data-protocol-panel="modbus_rtu" data-discovers="true" {% if active_protocol != 'modbus_rtu' %}hidden{% endif %}>
     <legend class="bb-sr-only">Modbus RTU</legend>
     <div class="bb-device-toolbar" data-probe-bar>
-      <button type="button" class="bb-btn bb-btn-secondary bb-btn-sm" data-probe-scan><i class="bi bi-radar"></i> Найти устройства</button>
+      <button type="button" class="bb-btn bb-btn-secondary bb-btn-sm" data-probe-scan><i class="bi bi-radar"></i> Найти порты</button>
       <span class="bb-probe-status bb-muted" data-probe-status></span>
     </div>
     <div class="bb-device-list" data-device-list="modbus_rtu">
@@ -34,7 +33,7 @@
         {% if not r.approved %}<span class="bb-device-meta">подтвердится при создании</span>{% endif %}
       </button>
       {% else %}
-      <p class="bb-muted">Выберите протокол — поиск UART запустится сам. Можно нажать «Найти устройства» ещё раз.</p>
+      <p class="bb-muted">Выберите протокол — поиск UART запустится сам. Можно нажать «Найти порты» ещё раз.</p>
       {% endfor %}
     </div>
     <select class="bb-sr-only" name="serial_resource_id" aria-label="Serial-порт">
@@ -95,32 +94,10 @@
     </details>
   </fieldset>
 
-  <fieldset class="bb-protocol-panel" data-protocol-panel="modbus_tcp" {% if active_protocol != 'modbus_tcp' %}hidden{% endif %}>
+  <fieldset class="bb-protocol-panel" data-protocol-panel="modbus_tcp" data-discovers="false" {% if active_protocol != 'modbus_tcp' %}hidden{% endif %}>
     <legend class="bb-sr-only">Modbus TCP</legend>
-    <div class="bb-device-toolbar" data-probe-bar>
-      <button type="button" class="bb-btn bb-btn-secondary bb-btn-sm" data-probe-scan><i class="bi bi-radar"></i> Найти устройства</button>
-      <span class="bb-probe-status bb-muted" data-probe-status></span>
-    </div>
-    <div class="bb-device-list" data-device-list="modbus_tcp">
-      {% for r in tcp_resources %}
-      <button type="button" class="bb-device-card{% if r.resource_id in selected_read_ids %} is-selected{% endif %}" data-resource-id="{{ r.resource_id }}">
-        <strong>{{ r.name }}</strong>
-        <span class="bb-mono">{{ r.address or r.path or r.name }}</span>
-        {% if r.metadata.get('reachable') is sameas false %}<span class="bb-device-meta">нет ответа</span>{% endif %}
-        {% if not r.approved %}<span class="bb-device-meta">подтвердится при создании</span>{% endif %}
-      </button>
-      {% else %}
-      <p class="bb-muted">Нажмите «Найти устройства» или укажите IP вручную ниже.</p>
-      {% endfor %}
-    </div>
-    <select class="bb-sr-only" name="tcp_resource_id" aria-label="TCP endpoint">
-      <option value="">Указать IP и порт</option>
-      {% for r in tcp_resources %}
-      <option value="{{ r.resource_id }}" data-address="{{ r.address or r.path or r.name }}" {% if r.resource_id in selected_read_ids %}selected{% endif %}>{{ r.name }}</option>
-      {% endfor %}
-    </select>
     <div class="bb-settings-grid">
-      {% call field('IP / host', 'Адрес прибора. Можно выбрать найденный endpoint выше.', 'bi-globe') %}
+      {% call field('IP / host', 'Адрес прибора в сети. Поиск устройств не используется.', 'bi-globe') %}
       <input name="host" value="{{ reader.get('host', '127.0.0.1') }}" required>
       {% endcall %}
       {% call field('TCP-порт', 'Порт Modbus TCP. По умолчанию 502.', 'bi-hdd-network') %}
@@ -155,10 +132,10 @@
     </details>
   </fieldset>
 
-  <fieldset class="bb-protocol-panel" data-protocol-panel="can" {% if active_protocol != 'can' %}hidden{% endif %}>
+  <fieldset class="bb-protocol-panel" data-protocol-panel="can" data-discovers="true" {% if active_protocol != 'can' %}hidden{% endif %}>
     <legend class="bb-sr-only">CAN</legend>
     <div class="bb-device-toolbar" data-probe-bar>
-      <button type="button" class="bb-btn bb-btn-secondary bb-btn-sm" data-probe-scan><i class="bi bi-radar"></i> Найти устройства</button>
+      <button type="button" class="bb-btn bb-btn-secondary bb-btn-sm" data-probe-scan><i class="bi bi-radar"></i> Найти интерфейсы</button>
       <span class="bb-probe-status bb-muted" data-probe-status></span>
     </div>
     <div class="bb-device-list" data-device-list="can">

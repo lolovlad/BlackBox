@@ -145,7 +145,7 @@ def probe_can(reader: dict[str, Any]) -> dict[str, Any]:
             diagnosis={
                 "code": "no_answer",
                 "title": "CAN-интерфейс не найден",
-                "detail": "Нажмите «Найти устройства» и выберите can0 (или другой SocketCAN). Это не аварии карты.",
+                "detail": "Нажмите «Найти интерфейсы» и выберите can0 (или другой SocketCAN). Это не аварии карты.",
                 "link": "down",
                 "cause": "port",
                 "can_read_alerts": False,

@@ -697,24 +697,26 @@ def discover_resources(
     data_root: Path,
     extra_tcp_endpoints: Iterable[str] | None = None,
     *,
-    probe_network: bool = True,
+    probe_network: bool = False,
+    include_tcp: bool = False,
     sys_class_net: Path | None = None,
     sys_bus_gpio: Path | None = None,
     sys_class_gpio: Path | None = None,
     proc_net_arp: Path | None = None,
 ) -> list[dict[str, Any]]:
-    return [
+    found = [
         *discover_serial_resources(),
         *discover_gpio_resources(sys_bus_gpio=sys_bus_gpio, sys_class_gpio=sys_class_gpio),
         *discover_can_resources(sys_class_net=sys_class_net),
-        *discover_tcp_resources(extra_tcp_endpoints, probe_network=probe_network, proc_net_arp=proc_net_arp),
         *discover_storage_resources(data_root),
     ]
+    if include_tcp:
+        found.extend(discover_tcp_resources(extra_tcp_endpoints, probe_network=probe_network, proc_net_arp=proc_net_arp))
+    return found
 
 
 PROTOCOL_RESOURCE_KIND = {
     "modbus_rtu": ResourceKind.SERIAL.value,
-    "modbus_tcp": ResourceKind.TCP.value,
     "can": ResourceKind.CAN.value,
     "gpio": ResourceKind.GPIO.value,
 }

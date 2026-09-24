@@ -8,6 +8,7 @@
   <link rel="stylesheet" href="/static/vendor/bootstrap-icons/bootstrap-icons.min.css">
   <link rel="stylesheet" href="/static/app.css?v={{ app_version }}">
   <script src="/static/vendor/htmx.min.js"></script>
+  <script type="application/json" id="bb-connection-profiles">{{ connection_profiles | default({}) | tojson }}</script>
   <script defer src="/static/app.js?v={{ app_version }}"></script>
   <script defer src="/static/vendor/alpine.min.js"></script>
 </head>

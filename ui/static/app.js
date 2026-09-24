@@ -100,20 +100,31 @@
     if (port && option && option.dataset.path) port.value = option.dataset.path;
   }
 
-  function syncTcpEndpoint(form) {
-    const select = enabledField(form, 'tcp_resource_id');
-    const option = selectedOption(select);
-    if (!option || !option.value) return;
-    const address = option.dataset.address || '';
-    const idx = address.lastIndexOf(':');
-    const host = enabledField(form, 'host');
-    const tcpPort = enabledField(form, 'tcp_port');
-    if (idx > 0) {
-      if (host) host.value = address.slice(0, idx);
-      if (tcpPort) tcpPort.value = address.slice(idx + 1);
-    } else if (host && address) {
-      host.value = address;
+  function connectionProfiles() {
+    if (connectionProfiles._cache) return connectionProfiles._cache;
+    const node = document.getElementById('bb-connection-profiles');
+    let parsed = {};
+    if (node && node.textContent) {
+      try { parsed = JSON.parse(node.textContent) || {}; } catch (_e) { parsed = {}; }
     }
+    connectionProfiles._cache = parsed;
+    return parsed;
+  }
+
+  function connectionOf(protocol) {
+    const all = connectionProfiles();
+    return all[protocol] || all.simulator || { discovers: false, probe_read: true, requires_resource: false, hint: '' };
+  }
+
+  function syncConnectionChrome(form, protocol) {
+    if (!form) return;
+    const spec = connectionOf(protocol);
+    const lead = form.querySelector('[data-connection-lead]');
+    if (lead && spec.hint) lead.textContent = spec.hint;
+    const readBar = form.querySelector('[data-probe-read-bar]');
+    if (readBar) readBar.hidden = spec.probe_read === false;
+    const readBtn = form.querySelector('[data-probe-read]');
+    if (readBtn) readBtn.hidden = spec.probe_read === false;
   }
 
   function syncCanInterface(form) {
@@ -127,23 +138,18 @@
     if (!form) return;
     syncProtocolPanels(protocol, form);
     syncSerialPort(form);
-    syncTcpEndpoint(form);
     syncCanInterface(form);
+    syncConnectionChrome(form, protocol);
     const serial = form.querySelector('[name="serial_resource_id"]');
     if (serial) serial.addEventListener('change', function () { syncSerialPort(form); });
-    const tcp = form.querySelector('[name="tcp_resource_id"]');
-    if (tcp) tcp.addEventListener('change', function () { syncTcpEndpoint(form); });
     const can = form.querySelector('[name="can_resource_id"]');
     if (can) can.addEventListener('change', function () { syncCanInterface(form); });
   }
 
   function readResourcesFromForm(form, protocol) {
+    if (!connectionOf(protocol).requires_resource) return [];
     if (protocol === 'modbus_rtu') {
       const value = enabledField(form, 'serial_resource_id')?.value;
-      return value ? [{ resource_id: value }] : [];
-    }
-    if (protocol === 'modbus_tcp') {
-      const value = enabledField(form, 'tcp_resource_id')?.value;
       return value ? [{ resource_id: value }] : [];
     }
     if (protocol === 'can') {
@@ -251,7 +257,6 @@
 
   function deviceSelectName(protocol) {
     if (protocol === 'modbus_rtu') return 'serial_resource_id';
-    if (protocol === 'modbus_tcp') return 'tcp_resource_id';
     if (protocol === 'can') return 'can_resource_id';
     return '';
   }
@@ -288,9 +293,10 @@
     if (!items || !items.length) {
       const empty = document.createElement('p');
       empty.className = 'bb-muted';
-      empty.textContent = protocol === 'modbus_tcp'
-        ? 'Укажите IP вручную или нажмите «Найти устройства».'
-        : 'Нажмите «Найти устройства» — подходящие порты появятся здесь.';
+      const spec = connectionOf(protocol);
+      empty.textContent = spec.scan_label
+        ? ('Нажмите «' + spec.scan_label + '» — подходящие устройства появятся здесь.')
+        : 'Для этого протокола поиск устройств не нужен.';
       box.appendChild(empty);
       return;
     }
@@ -336,31 +342,30 @@
       });
     }
     if (protocol === 'modbus_rtu') syncSerialPort(form);
-    if (protocol === 'modbus_tcp') syncTcpEndpoint(form);
     if (protocol === 'can') syncCanInterface(form);
   }
 
   function applyCandidates(form, protocol, candidates) {
     const grouped = candidates || {};
     fillResourceSelect(form.querySelector('[name="serial_resource_id"]'), grouped.modbus_rtu, 'path', 'path');
-    fillResourceSelect(form.querySelector('[name="tcp_resource_id"]'), grouped.modbus_tcp, 'address', 'address');
     fillResourceSelect(form.querySelector('[name="can_resource_id"]'), grouped.can, 'interface', 'name');
     renderDeviceList(form, 'modbus_rtu', grouped.modbus_rtu);
-    renderDeviceList(form, 'modbus_tcp', grouped.modbus_tcp);
     renderDeviceList(form, 'can', grouped.can);
     syncSerialPort(form);
-    syncTcpEndpoint(form);
     syncCanInterface(form);
+    const spec = connectionOf(protocol);
     const panel = form.querySelector('[data-protocol-panel="' + protocol + '"]');
     const status = panel ? panel.querySelector('[data-probe-status]') : null;
     const items = grouped[protocol] || [];
-    if (status && protocol !== 'simulator') {
+    if (status && spec.discovers) {
       status.textContent = items.length ? ('Найдено: ' + items.length) : 'Подходящих устройств нет';
     }
   }
 
   async function loadDeviceCandidates(form, protocol, forceScan) {
     if (!form) return;
+    const spec = connectionOf(protocol);
+    if (!spec.discovers) return;
     while (form._bbDeviceBusy) {
       await (form._bbDeviceWait || Promise.resolve());
     }
@@ -375,10 +380,10 @@
         const listed = await fetch('/api/v1/resources/candidates', { headers: headers() }).then(function (response) { return response.json(); });
         form._bbCandidates = listed.candidates || {};
       }
-      const empty = protocol !== 'simulator' && !(form._bbCandidates[protocol] || []).length;
+      const empty = !(form._bbCandidates[protocol] || []).length;
       if (forceScan || empty) {
         if (status) status.textContent = 'Сканирование…';
-        const scanned = await mutate('/api/v1/resources/scan?network=' + (protocol === 'modbus_tcp' ? 'true' : 'false'), { method: 'POST' });
+        const scanned = await mutate('/api/v1/resources/scan', { method: 'POST' });
         form._bbCandidates = scanned.candidates || form._bbCandidates;
       }
       applyCandidates(form, protocol, form._bbCandidates);
@@ -455,6 +460,7 @@
     form.querySelectorAll('[data-probe-scan]').forEach(function (scanBtn) {
       scanBtn.addEventListener('click', async function () {
         const protocol = protocolOf();
+        if (!connectionOf(protocol).discovers) return;
         scanBtn.disabled = true;
         try {
           await loadDeviceCandidates(form, protocol, true);
@@ -471,6 +477,7 @@
     if (readBtn) {
       readBtn.addEventListener('click', async function () {
         const protocol = protocolOf();
+        if (connectionOf(protocol).probe_read === false) return;
         const mapField = form.querySelector('[name="map_version"]');
         if (!mapField || !mapField.value) {
           toast('Сначала выберите карту', 'error');
@@ -499,6 +506,7 @@
         }
       });
     }
+    syncConnectionChrome(form, protocolOf());
     loadDeviceCandidates(form, protocolOf(), false).catch(function () {});
   }
 
@@ -509,8 +517,8 @@
         syncCreateMapOptions();
         syncProtocolPanels(event.target.value, createForm);
         syncSerialPort(createForm);
-        syncTcpEndpoint(createForm);
         syncCanInterface(createForm);
+        syncConnectionChrome(createForm, event.target.value);
         loadDeviceCandidates(createForm, event.target.value, false).catch(function () {});
         const mapSelect = document.getElementById('create-map-version');
         if (mapSelect) loadMapPreview(mapSelect, document.getElementById('create-map-preview'), document.getElementById('create-map-preview-status'));
@@ -1207,7 +1215,6 @@
         const summary = result && result.summary ? result.summary : {};
         const parts = [];
         if (summary.serial) parts.push(summary.serial + ' serial');
-        if (summary.tcp) parts.push(summary.tcp + ' TCP');
         if (summary.can) parts.push(summary.can + ' CAN');
         if (summary.gpio) parts.push(summary.gpio + ' GPIO');
         const text = parts.length ? ('Найдено: ' + parts.join(', ')) : 'Подходящих устройств нет';

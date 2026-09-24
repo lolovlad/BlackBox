@@ -391,6 +391,23 @@ def test_controlling_tty_is_not_a_uart():
         assert exc.detail["code"] == "read_resource_required"
 
 
+def test_tcp_allowlist_uses_host_port_without_resources():
+    from fastapi import HTTPException
+
+    from services.hub.app import _validate_reader_allowlist
+
+    reader = {"host": "192.168.1.10", "tcp_port": 1502}
+    _validate_reader_allowlist(None, "modbus_tcp", {"reader": reader}, [])
+    assert reader["host"] == "192.168.1.10"
+    assert reader["tcp_port"] == 1502
+    try:
+        _validate_reader_allowlist(None, "modbus_tcp", {"reader": {"host": "  ", "tcp_port": 502}}, [])
+        raise AssertionError("expected 422")
+    except HTTPException as exc:
+        assert exc.status_code == 422
+        assert exc.detail["code"] == "tcp_endpoint_required"
+
+
 def test_serial_scan_skips_controlling_tty(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("BB_DISCOVERY_SERIAL_PATHS", "/dev/tty,/dev/ttyAMA0")
     with _client(tmp_path) as client:
@@ -414,14 +431,15 @@ def test_scan_lists_forced_physical_resources_for_each_protocol(tmp_path: Path, 
         scanned = client.post("/api/v1/resources/scan", headers={"X-CSRF-Token": csrf})
         payload = scanned.json()
         ids = {item["resource_id"] for item in payload["items"]}
-        assert ids >= {"serial:/dev/ttyUSB0", "can:can0", "gpio:/dev/gpiochip0", "tcp:10.0.0.8:502", "storage:data"}
+        assert ids >= {"serial:/dev/ttyUSB0", "can:can0", "gpio:/dev/gpiochip0", "storage:data"}
+        assert "tcp:10.0.0.8:502" not in ids
         assert payload["summary"]["serial"] >= 1
         assert payload["summary"]["can"] >= 1
         assert payload["summary"]["gpio"] >= 1
-        assert payload["summary"]["tcp"] >= 1
+        assert payload["summary"]["tcp"] == 0
         html = client.get("/admin/resources").text
         assert "Serial · Modbus RTU" in html
-        assert "TCP · Modbus TCP" in html
+        assert "TCP · Modbus TCP" not in html
         assert "CAN" in html
         assert "GPIO" in html
         assert "USB serial (ttyUSB0)" in html or "ttyUSB0" in html
@@ -487,6 +505,11 @@ def test_modbus_tcp_vm_persists_host_and_port(tmp_path: Path):
     with _client(tmp_path) as client:
         assert client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin-password"}).status_code == 200
         csrf = client.cookies.get("bb_csrf")
+        by_proto = {item["protocol"]: item["connection"] for item in client.get("/api/v1/protocols").json()["items"]}
+        assert by_proto["modbus_tcp"]["discovers"] is False
+        assert by_proto["modbus_tcp"]["requires_resource"] is False
+        assert by_proto["modbus_rtu"]["discovers"] is True
+        assert by_proto["modbus_rtu"]["requires_resource"] is True
         version = _publish_map(client, csrf, protocol="modbus_tcp", version="tcp-v1", document=SIM_DOCUMENT)
         created = client.post(
             "/api/v1/vms",
@@ -514,8 +537,11 @@ def test_modbus_tcp_vm_persists_host_and_port(tmp_path: Path):
                 "config": {"reader": {"host": "192.168.1.10", "tcp_port": 502}},
             },
         )
-        assert remote.status_code == 409
-        assert remote.json()["code"] == "read_resource_required"
+        assert remote.status_code == 200, remote.text
+        remote_vm = remote.json()
+        assert remote_vm["config"]["reader"]["host"] == "192.168.1.10"
+        assert remote_vm["config"]["reader"]["tcp_port"] == 502
+        assert remote_vm["read_resources"] == []
 
 
 def test_admin_vm_form_has_protocol_specific_settings(tmp_path: Path):
@@ -531,7 +557,9 @@ def test_admin_vm_form_has_protocol_specific_settings(tmp_path: Path):
         assert 'data-protocol-panel="modbus_tcp"' in html
         assert 'data-protocol-panel="can"' in html
         assert 'name="serial_resource_id"' in html
+        assert 'name="tcp_resource_id"' not in html
         assert 'data-device-list="modbus_rtu"' in html
+        assert 'data-device-list="modbus_tcp"' not in html
         assert '<span class="bb-step-num">1</span> Имя' in html
         assert '<span class="bb-step-num">2</span> Протокол' in html
         assert '<span class="bb-step-num">3</span> Подключение' in html
@@ -540,7 +568,9 @@ def test_admin_vm_form_has_protocol_specific_settings(tmp_path: Path):
         assert html.find('name="name"') < html.find('name="protocol"')
         assert html.find('data-probe-scan') < html.find('data-probe-read')
         assert html.find('data-probe-read') < html.find('name="storage_resource_id"')
-        assert "Найти устройства" in html
+        assert "Найти порты" in html
+        assert "Найти интерфейсы" in html
+        assert "Найти устройства" not in html
         assert "Проверить чтение" in html
         assert 'bb-vm-create-foot' in html
         assert 'form="create-vm"' in html
@@ -758,7 +788,7 @@ def test_html_pages_render_with_current_starlette(tmp_path: Path):
                 assert "Аналоги" in response.text
                 assert "Дискреты" in response.text
                 assert "Алерты прибора" in response.text
-                assert "Найти устройства" in response.text
+                assert "Найти порты" in response.text
                 assert "Проверить чтение" in response.text
         for path in ("/admin/vms", "/admin/logs"):
             redirected = client.get(path, follow_redirects=False)
