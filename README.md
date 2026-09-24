@@ -47,7 +47,7 @@ status, tags and log access. Live status, tags, logs and alarms use
 The internal worker API is under `/api/v1/internal/workers`. Workers send raw
 batches to the bounded ingest queue; the Hub parses them and atomically writes
 ZSTD-compressed Parquet under
-`/data/telemetry/vm_id=<id>/date=<UTC-date>/`. SQLite stores metadata only.
+`/data/telemetry/vm_id=<id>/date=<UTC-date>.parquet` (one file per day). SQLite stores metadata only.
 
 ## Migration status
 

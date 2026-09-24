@@ -34,7 +34,13 @@
       @click="openVm('{{ vm.id }}')"
     >
       <div class="bb-vm-card-top">
-        <span class="bb-vm-proto"><i class="bi {{ protocol_icons.get(protocol, 'bi-hdd-stack') }}"></i> {{ protocol_labels.get(protocol, protocol) }}</span>
+        <div class="bb-vm-card-identity">
+          <span class="bb-vm-proto"><i class="bi {{ protocol_icons.get(protocol, 'bi-hdd-stack') }}"></i> {{ protocol_labels.get(protocol, protocol) }}</span>
+          <span class="bb-vm-link" x-cloak x-show="linkOf('{{ vm.id }}').shows" :title="linkOf('{{ vm.id }}').detail || ''">
+            <span class="bb-link-dot" :class="'is-' + linkOf('{{ vm.id }}').link"></span>
+            <span class="bb-link-rtt" x-show="linkOf('{{ vm.id }}').ping_ms != null" x-text="formatPing(linkOf('{{ vm.id }}'))"></span>
+          </span>
+        </div>
         <span class="bb-badge" :class="'bb-badge-' + (lifecycles['{{ vm.id }}'] || '{{ vm.lifecycle }}')" x-text="lifecycleLabel(lifecycles['{{ vm.id }}'] || '{{ vm.lifecycle }}')">{{ lifecycle_labels.get(vm.lifecycle, vm.lifecycle) }}</span>
       </div>
       <h2 class="bb-vm-card-title">{{ vm.name }}</h2>
@@ -106,7 +112,13 @@
       <div>
         <p class="bb-inspector-kicker" x-text="selectedMeta.protocol"></p>
         <h2 x-text="selectedMeta.name">ВМ</h2>
-        <p class="bb-muted" x-text="selectedMeta.connection"></p>
+        <p class="bb-muted bb-inspector-link">
+          <span class="bb-vm-link" x-cloak x-show="selectedLink.shows">
+            <span class="bb-link-dot" :class="'is-' + selectedLink.link"></span>
+            <span class="bb-link-rtt" x-show="selectedLink.ping_ms != null" x-text="formatPing(selectedLink)"></span>
+          </span>
+          <span x-text="selectedMeta.connection"></span>
+        </p>
       </div>
       <div class="bb-inspector-head-actions">
         {% if user.role == 'admin' %}

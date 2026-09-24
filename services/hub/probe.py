@@ -12,6 +12,7 @@ from bb_platform.contracts import MapDocument, Quality, RawBatch, RawSample, VmP
 from bb_platform.parser import diagnose_read, field_channel, parse_batch
 
 from .discovery import hub_serial_path, operator_serial_path
+from .link import measure_tcp_link
 
 RTURead = Callable[[dict[str, Any], list[dict[str, Any]]], tuple[dict[str, list[Any]], str | None]]
 TCPRead = Callable[[dict[str, Any], list[dict[str, Any]]], tuple[dict[str, list[Any]], str | None]]
@@ -227,12 +228,34 @@ def run_probe(
             sources, last_error = (rtu_read or read_rtu_sources)(reader, requests)
             quality = _quality_from_sources(sources, [last_error] if last_error else None)
         elif protocol == VmProtocol.MODBUS_TCP.value:
+            host = str(reader.get("host") or "")
+            port = int(reader.get("tcp_port") or reader.get("port") or 502)
+            measured = measure_tcp_link(host, port, timeout=min(float(reader.get("timeout_sec") or 0.8), 1.5), use_cache=False)
             device = {
                 "kind": "tcp",
-                "host": reader.get("host"),
-                "tcp_port": reader.get("tcp_port") or reader.get("port"),
+                "host": host,
+                "tcp_port": port,
                 "unit_id": reader.get("unit_id") or reader.get("slave_id"),
+                "ping_ms": measured.get("ping_ms"),
+                "ping_method": measured.get("ping_method"),
+                "tcp_ok": measured.get("tcp_ok"),
             }
+            if not measured.get("tcp_ok"):
+                return _result(
+                    diagnosis={
+                        "code": "no_answer",
+                        "title": measured.get("detail") or "Нет TCP",
+                        "detail": (
+                            f"Пинг: {measured['ping_ms']} мс. " if measured.get("ping_ms") is not None else "Пинг не прошёл. "
+                        ) + "Порт Modbus не открылся — чтение карты не запускалось.",
+                        "link": "down",
+                        "cause": "port",
+                        "can_read_alerts": False,
+                    },
+                    quality="bad",
+                    last_error=str((measured.get("tcp") or {}).get("detail") or measured.get("detail") or "tcp down"),
+                    device=device,
+                )
             sources, last_error = (tcp_read or read_tcp_sources)(reader, requests)
             quality = _quality_from_sources(sources, [last_error] if last_error else None)
         elif protocol == VmProtocol.CAN.value:

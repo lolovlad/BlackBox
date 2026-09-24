@@ -1347,13 +1347,60 @@
   align-items: center;
 }
 
-.bb-vm-proto {
+.bb-vm-card-identity {
   display: inline-flex;
   align-items: center;
-  gap: 0.35rem;
+  gap: 0.45rem;
+  min-width: 0;
+}
+
+.bb-vm-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
   color: var(--bb-slate);
-  font-size: 0.78rem;
+  font-size: 0.75rem;
   font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.bb-link-dot {
+  width: 0.62rem;
+  height: 0.62rem;
+  border-radius: 50%;
+  flex: 0 0 auto;
+  background: #c5cddb;
+  box-shadow: 0 0 0 3px rgba(197, 205, 219, 0.35);
+}
+
+.bb-link-dot.is-up {
+  background: var(--bb-ok);
+  box-shadow: 0 0 0 3px rgba(46, 125, 50, 0.22);
+}
+
+.bb-link-dot.is-down {
+  background: var(--bb-danger);
+  box-shadow: 0 0 0 3px rgba(196, 64, 48, 0.22);
+}
+
+.bb-link-dot.is-partial {
+  background: var(--bb-warn);
+  box-shadow: 0 0 0 3px rgba(196, 140, 32, 0.22);
+}
+
+.bb-link-dot.is-unknown {
+  background: #c5cddb;
+}
+
+.bb-link-rtt {
+  white-space: nowrap;
+}
+
+.bb-inspector-link {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  min-height: 1.2rem;
 }
 
 .bb-vm-card-title {
@@ -1815,4 +1862,73 @@
   .bb-vm-inspector { top: 0; z-index: 45; width: 100%; }
   .bb-log-row { grid-template-columns: 1fr; gap: 0.1rem; margin-bottom: 0.55rem; }
 }
+
+.bb-wide .bb-main,
+.bb-wide .bb-header-inner { max-width: 1440px; }
+
+.bb-filter-grid,
+.bb-check-grid,
+.bb-dash-grid,
+.bb-monitor-grid,
+.bb-monitor-disk-grid {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.bb-filter-grid { grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); margin-bottom: 0.8rem; }
+.bb-filter-field { display: flex; flex-direction: column; gap: 0.3rem; font-size: 0.85rem; }
+.bb-filter-field input,
+.bb-filter-field select {
+  font: inherit;
+  padding: 0.45rem 0.55rem;
+  border: 1px solid var(--bb-border);
+  border-radius: 8px;
+  background: #fff;
+  color: inherit;
+}
+
+.bb-check-grid { grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); }
+.bb-chk { display: flex; gap: 0.4rem; align-items: flex-start; font-size: 0.92rem; }
+.bb-tabs { display: flex; flex-wrap: wrap; gap: 0.4rem; margin: 0.8rem 0; }
+.bb-tab {
+  display: inline-flex;
+  gap: 0.35rem;
+  align-items: center;
+  padding: 0.35rem 0.7rem;
+  border: 1px solid var(--bb-border);
+  border-radius: 999px;
+  background: #fff;
+}
+.bb-row-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; margin: 0.8rem 0; }
+.bb-table-wrap { overflow: auto; border: 1px solid var(--bb-border); border-radius: 10px; }
+.bb-table-wrap table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+.bb-table-wrap th,
+.bb-table-wrap td { padding: 0.45rem 0.6rem; border-bottom: 1px solid var(--bb-border); text-align: left; white-space: nowrap; }
+.bb-table-wrap th { background: #f4f7fb; }
+
+.bb-dash-grid { grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); margin-bottom: 0.8rem; }
+.bb-source-card h2 { margin-top: 0; }
+.bb-analog-list { display: flex; flex-direction: column; gap: 0.45rem; }
+.bb-analog-row { display: grid; grid-template-columns: minmax(90px, 1fr) minmax(80px, 2fr) auto; gap: 0.55rem; align-items: center; }
+.bb-analog-row progress { width: 100%; height: 0.7rem; }
+.bb-discrete-list,
+.bb-alarm-list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 0.35rem; }
+.bb-discrete-list li,
+.bb-alarm-list li { display: flex; justify-content: space-between; gap: 0.75rem; padding: 0.4rem 0.55rem; border-radius: 8px; background: #f6f8fc; }
+.bb-discrete-list li.is-on { background: #e5f6f1; color: var(--bb-ok); }
+.bb-discrete-list li.is-off { background: #f4f6fa; }
+.bb-alarm-time { color: var(--bb-warn); }
+
+.bb-monitor-grid { grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }
+.bb-monitor-item { padding: 0.75rem; border: 1px solid var(--bb-border); border-radius: 10px; background: #f8fafc; }
+.bb-monitor-title { font-size: 0.8rem; color: #52607a; }
+.bb-monitor-value { font-size: 1.25rem; font-weight: 700; margin: 0.2rem 0; }
+.bb-monitor-disks { margin-top: 1rem; }
+.bb-monitor-disk-grid { grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); }
+.bb-monitor-disk { padding: 0.7rem; border: 1px solid var(--bb-border); border-radius: 10px; }
+.bb-monitor-disk-head { display: flex; justify-content: space-between; gap: 0.5rem; }
+.bb-field-tools { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-bottom: 0.6rem; }
+.bb-field-tools input { flex: 1; min-width: 160px; font: inherit; padding: 0.4rem 0.55rem; border: 1px solid var(--bb-border); border-radius: 8px; }
+.bb-echarts { width: 100%; height: 520px; }
+.bb-chart-card { margin-top: 1rem; }
 

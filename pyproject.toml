@@ -29,6 +29,7 @@ dependencies = [
     "argon2-cffi>=23.1.0",
     "docker>=7.1.0",
     "pyarrow>=17.0.0",
+    "duckdb>=1.1.0",
     # Raspberry Pi 5 GPIO backends (Linux only):
     # - Prefer native libgpiod bindings.
     # - Fallback to RPi.GPIO-compatible API implemented via lgpio.

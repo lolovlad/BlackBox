@@ -544,6 +544,47 @@ def test_modbus_tcp_vm_persists_host_and_port(tmp_path: Path):
         assert remote_vm["read_resources"] == []
 
 
+def test_connections_endpoint_exposes_tcp_ping(tmp_path: Path, monkeypatch):
+    from services.hub import app as hub_app
+
+    monkeypatch.setattr(
+        hub_app,
+        "vm_link_status",
+        lambda vm, sample=None: {
+            "vm_id": str(vm.get("id") or ""),
+            "protocol": vm.get("protocol"),
+            "shows_link": vm.get("protocol") == "modbus_tcp",
+            "shows_ping": vm.get("protocol") == "modbus_tcp",
+            "link": "up",
+            "ping_ms": 11.0,
+            "ping_method": "icmp",
+            "detail": "11 мс",
+        },
+    )
+    with _client(tmp_path) as client:
+        assert client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin-password"}).status_code == 200
+        csrf = client.cookies.get("bb_csrf")
+        version = _publish_map(client, csrf, protocol="modbus_tcp", version="tcp-v1", document=SIM_DOCUMENT)
+        created = client.post(
+            "/api/v1/vms",
+            headers={"X-CSRF-Token": csrf},
+            json={
+                "name": "tcp-link",
+                "protocol": "modbus_tcp",
+                "map_version": version,
+                "config": {"reader": {"host": "10.0.0.8", "tcp_port": 502}},
+            },
+        )
+        assert created.status_code == 200, created.text
+        vm_id = created.json()["id"]
+        items = client.get("/api/v1/connections").json()["items"]
+        assert items[0]["vm_id"] == vm_id
+        assert items[0]["shows_ping"] is True
+        assert items[0]["ping_ms"] == 11.0
+        reading = client.get(f"/api/v1/vms/{vm_id}/reading").json()
+        assert reading["connection"]["ping_ms"] == 11.0
+
+
 def test_admin_vm_form_has_protocol_specific_settings(tmp_path: Path):
     with _client(tmp_path) as client:
         client.post("/login", data={"username": "admin", "password": "admin-password"})
@@ -749,7 +790,7 @@ def test_html_pages_render_with_current_starlette(tmp_path: Path):
         assert client.get("/login").status_code == 200
         login_html = client.get("/login").text
         assert "AGK" in login_html
-        assert '2.0.20' in login_html
+        assert '2.0.21' in login_html
         assert "bb-login" in login_html
         app_js = login_html.find("/static/app.js")
         alpine_js = login_html.find("/static/vendor/alpine.min.js")
@@ -777,7 +818,7 @@ def test_html_pages_render_with_current_starlette(tmp_path: Path):
             assert response.status_code == 200, (path, response.text)
             assert "<html" in response.text.lower()
             assert "AGK" in response.text
-            assert "2.0.20" in response.text
+            assert "2.0.21" in response.text
             if path in {"/vms", f"/vms/{vm['id']}", f"/admin/vms/{vm['id']}/edit"}:
                 assert 'data-vm-action="delete"' in response.text
                 assert "Удалить" in response.text
@@ -790,6 +831,7 @@ def test_html_pages_render_with_current_starlette(tmp_path: Path):
                 assert "Алерты прибора" in response.text
                 assert "Найти порты" in response.text
                 assert "Проверить чтение" in response.text
+                assert "bb-link-dot" in response.text
         for path in ("/admin/vms", "/admin/logs"):
             redirected = client.get(path, follow_redirects=False)
             assert redirected.status_code == 303, path

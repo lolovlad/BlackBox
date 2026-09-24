@@ -416,6 +416,12 @@
       detail.textContent = diagnosis.detail;
       box.appendChild(detail);
     }
+    const pingMs = body.device && body.device.ping_ms;
+    if (pingMs !== null && pingMs !== undefined && pingMs !== '') {
+      const ping = document.createElement('p');
+      ping.textContent = 'Пинг: ' + pingMs + ' мс' + (body.device.ping_method === 'icmp' ? ' (ICMP)' : body.device.ping_method === 'tcp' ? ' (TCP)' : '');
+      box.appendChild(ping);
+    }
     const analog = (body.analog || []).slice(0, 8).map(function (row) {
       return row.name + '=' + formatProbeValue(row.value);
     }).join(' · ');
@@ -871,16 +877,48 @@
       lifecycles: lifecycles,
       errors: errors,
       vmIndex: index,
+      links: {},
       boot: function () {
         const self = this;
         if (this.selected) this.openVm(this.selected, false);
         window.addEventListener('bb-hub-event', function (event) { self.onEvent(event.detail); });
         window.addEventListener('bb-vm-action', function (event) { self.onAction(event.detail || {}); });
+        this.refreshLinks();
+        this._linkTimer = setInterval(function () { self.refreshLinks(); }, 5000);
       },
       lifecycleLabel: function (value) {
         return labels[value] || value;
       },
       formatClock: formatClock,
+      formatPing: function (item) {
+        if (!item || item.ping_ms === null || item.ping_ms === undefined) return '';
+        return item.ping_ms + ' мс';
+      },
+      linkOf: function (id) {
+        const vm = this.vmIndex[id] || {};
+        const spec = connectionOf(vm.protocol || '');
+        const live = this.links[id] || {};
+        return {
+          shows: Boolean(spec.shows_link),
+          ping: Boolean(spec.shows_ping),
+          link: live.link || 'unknown',
+          ping_ms: live.ping_ms == null ? null : live.ping_ms,
+          detail: live.detail || '',
+        };
+      },
+      get selectedLink() {
+        return this.linkOf(this.selected);
+      },
+      refreshLinks: async function () {
+        try {
+          const body = await fetch('/api/v1/connections', { headers: headers() }).then(function (response) { return response.json(); });
+          const next = {};
+          (body.items || []).forEach(function (item) {
+            if (item && item.vm_id) next[item.vm_id] = item;
+          });
+          this.links = next;
+        } catch (_e) {}
+      },
       qualityLabel: function (value) {
         if (value === 'good') return 'Нормальное';
         if (value === 'bad') return 'Нет ответа';
@@ -902,6 +940,11 @@
         this.alertsStale = Boolean(reading.alerts_stale);
         this.quality = reading.quality || '';
         this.capturedAt = reading.captured_at || '';
+        if (reading.connection && this.selected) {
+          const patch = {};
+          patch[this.selected] = reading.connection;
+          this.links = Object.assign({}, this.links, patch);
+        }
         if (reading.lifecycle) {
           this.lifecycles = Object.assign({}, this.lifecycles, { [this.selected]: reading.lifecycle });
         }
@@ -1261,7 +1304,8 @@
   document.querySelectorAll('[data-live-logs]').forEach(function (target) {
     logTargets[target.dataset.liveLogs] = target;
   });
-  if ((!live && Object.keys(logTargets).length === 0 && !vmWorkspace) || !window.WebSocket) return;
+  const eventsRoot = document.querySelector('[data-bb-events]');
+  if ((!live && !eventsRoot && Object.keys(logTargets).length === 0 && !vmWorkspace) || !window.WebSocket) return;
 
   // One socket is shared by dashboard, VM details and the admin log tail.
   // The server sends a snapshot first, then deltas; a short reconnect loop

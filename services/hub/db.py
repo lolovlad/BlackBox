@@ -85,6 +85,22 @@ class HubRepository:
                     created_at TEXT NOT NULL,
                     PRIMARY KEY(vm_id, batch_id, seq_start)
                 );
+                CREATE TABLE IF NOT EXISTS alarm_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    vm_id TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    state TEXT NOT NULL,
+                    kind TEXT NOT NULL DEFAULT 'alert',
+                    created_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS alarm_active (
+                    vm_id TEXT NOT NULL,
+                    kind TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    started_at TEXT NOT NULL,
+                    PRIMARY KEY (vm_id, kind, name)
+                );
+                CREATE INDEX IF NOT EXISTS idx_alarm_events_vm ON alarm_events(vm_id, kind, created_at);
                 """
             )
             c.executemany("INSERT OR IGNORE INTO roles(name) VALUES (?)", [("admin",), ("user",)])
@@ -314,8 +330,83 @@ class HubRepository:
             c.execute("DELETE FROM resource_leases WHERE vm_id=?", (vm_id,))
             c.execute("DELETE FROM ingest_batches WHERE vm_id=?", (vm_id,))
             c.execute("DELETE FROM lifecycle_events WHERE vm_id=?", (vm_id,))
+            c.execute("DELETE FROM alarm_events WHERE vm_id=?", (vm_id,))
+            c.execute("DELETE FROM alarm_active WHERE vm_id=?", (vm_id,))
             cur = c.execute("DELETE FROM virtual_machines WHERE id=?", (vm_id,))
         return cur.rowcount > 0
+
+    def sync_alarm_edges(self, vm_id: str, created_at: datetime, active_names: set[str] | list[str], *, kind: str = "alert") -> list[dict[str, Any]]:
+        """Write one row when an alarm starts and one when it ends.
+
+        Repeating the same active set does not insert anything, so a poll
+        loop cannot fill the journal with unchanged values.
+        """
+        moment = created_at if created_at.tzinfo is not None else created_at.replace(tzinfo=timezone.utc)
+        stamp = moment.astimezone(timezone.utc).isoformat()
+        channel = "gpio" if kind == "gpio" else "alert"
+        desired = {str(name).strip() for name in active_names if str(name).strip()}
+        events: list[dict[str, Any]] = []
+        with self.connect() as c:
+            c.execute("BEGIN IMMEDIATE")
+            try:
+                rows = c.execute("SELECT name FROM alarm_active WHERE vm_id=? AND kind=?", (vm_id, channel)).fetchall()
+                current = {str(row["name"]) for row in rows}
+                for name in sorted(desired - current):
+                    c.execute(
+                        "INSERT INTO alarm_events(vm_id,name,state,kind,created_at) VALUES(?,?,?,?,?)",
+                        (vm_id, name, "active", channel, stamp),
+                    )
+                    c.execute(
+                        "INSERT OR REPLACE INTO alarm_active(vm_id,kind,name,started_at) VALUES(?,?,?,?)",
+                        (vm_id, channel, name, stamp),
+                    )
+                    events.append({"vm_id": vm_id, "name": name, "state": "active", "kind": channel, "created_at": stamp})
+                for name in sorted(current - desired):
+                    c.execute(
+                        "INSERT INTO alarm_events(vm_id,name,state,kind,created_at) VALUES(?,?,?,?,?)",
+                        (vm_id, name, "inactive", channel, stamp),
+                    )
+                    c.execute("DELETE FROM alarm_active WHERE vm_id=? AND kind=? AND name=?", (vm_id, channel, name))
+                    events.append({"vm_id": vm_id, "name": name, "state": "inactive", "kind": channel, "created_at": stamp})
+                c.execute("COMMIT")
+            except Exception:
+                c.execute("ROLLBACK")
+                raise
+        return events
+
+    def list_alarm_events(
+        self,
+        vm_ids: list[str] | None,
+        *,
+        kind: str,
+        date_from: str | None = None,
+        date_to: str | None = None,
+        sort_desc: bool = True,
+        offset: int = 0,
+        limit: int = 100,
+    ) -> tuple[list[dict[str, Any]], int]:
+        channel = "gpio" if kind == "gpio" else "alert"
+        clauses = ["kind=?"]
+        args: list[Any] = [channel]
+        if vm_ids:
+            placeholders = ",".join("?" for _ in vm_ids)
+            clauses.append(f"vm_id IN ({placeholders})")
+            args.extend(vm_ids)
+        if date_from:
+            clauses.append("created_at>=?")
+            args.append(date_from)
+        if date_to:
+            clauses.append("created_at<=?")
+            args.append(date_to)
+        where = " AND ".join(clauses)
+        order = "DESC" if sort_desc else "ASC"
+        with self.connect() as c:
+            total = int(c.execute(f"SELECT COUNT(*) FROM alarm_events WHERE {where}", args).fetchone()[0])
+            rows = c.execute(
+                f"SELECT id,vm_id,name,state,kind,created_at FROM alarm_events WHERE {where} ORDER BY created_at {order}, id {order} LIMIT ? OFFSET ?",
+                [*args, max(1, limit), max(0, offset)],
+            ).fetchall()
+        return [dict(row) for row in rows], total
 
     def save_map(self, document: dict[str, Any]) -> None:
         now = datetime.now(timezone.utc).isoformat()

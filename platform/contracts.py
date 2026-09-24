@@ -221,7 +221,7 @@ class ResourceDescriptor(Contract):
 class EventEnvelope(Contract):
     event_id: UUID = Field(default_factory=uuid4)
     seq: int = Field(ge=0)
-    topic: Literal["vm_status", "tags", "logs", "alarms"]
+    topic: Literal["vm_status", "tags", "logs", "alarms", "system"]
     payload: dict[str, Any]
 
 

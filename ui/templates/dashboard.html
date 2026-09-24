@@ -1,15 +1,59 @@
 {% extends "base.html" %}
 {% block title %}Дашборд · BlackBox{% endblock %}
+{% block body_class %}bb-wide{% endblock %}
 {% block content %}
-<section class="bb-card">
-  <h1 class="bb-page-title">Дашборд</h1>
-  {% set running = vms | selectattr('lifecycle', 'equalto', 'running') | list %}
-  {% set failed = vms | selectattr('lifecycle', 'equalto', 'failed') | list %}
-  <div class="bb-stat-row">
-    <div class="bb-stat"><span class="bb-stat-label">Всего ВМ</span><span class="bb-stat-value">{{ vms|length }}</span></div>
-    <div class="bb-stat"><span class="bb-stat-label">Работают</span><span class="bb-stat-value">{{ running|length }}</span></div>
-    <div class="bb-stat"><span class="bb-stat-label">Ошибки</span><span class="bb-stat-value">{{ failed|length }}</span></div>
-  </div>
-  <p><a class="bb-btn" href="/vms"><i class="bi bi-hdd-stack"></i> Открыть виртуальные машины</a></p>
-</section>
+<div id="bb-dashboard" data-bb-events>
+  <section class="bb-card">
+    <h1 class="bb-page-title">Главная панель</h1>
+    <p class="bb-page-lead">Последние значения по каждому источнику. Панели обновляются по WebSocket.</p>
+    <div id="bb-dash-sources" class="bb-check-grid"></div>
+    <div id="bb-dash-fields"></div>
+  </section>
+  <div id="bb-dash-boards"></div>
+
+  <section class="bb-card" id="bb-gpio">
+    <h2>GPIO (Raspberry)</h2>
+    <p class="bb-hint" data-gpio-time>Последнее обновление: нет данных</p>
+    <ul class="bb-discrete-list" data-gpio-list></ul>
+    <p class="bb-hint" data-gpio-empty>Активных GPIO-состояний нет.</p>
+  </section>
+
+  <section class="bb-card" id="bb-monitor">
+    <h2>Мониторинг устройства</h2>
+    <div class="bb-monitor-grid">
+      <article class="bb-monitor-item">
+        <div class="bb-monitor-title">Время устройства</div>
+        <div class="bb-monitor-value" data-monitor="server_time">—</div>
+        <div class="bb-hint">Системное время машины, где запущен Hub</div>
+      </article>
+      <article class="bb-monitor-item">
+        <div class="bb-monitor-title">Диск</div>
+        <div class="bb-monitor-value" data-monitor="disk">—</div>
+        <div class="bb-hint" data-monitor="disk_hint">Данные недоступны</div>
+      </article>
+      <article class="bb-monitor-item">
+        <div class="bb-monitor-title">CPU</div>
+        <div class="bb-monitor-value" data-monitor="cpu">—</div>
+        <div class="bb-hint" data-monitor="cpu_cores">Ядра: —</div>
+        <div class="bb-hint" data-monitor="cpu_fan">Вентилятор CPU: n/a</div>
+      </article>
+      <article class="bb-monitor-item">
+        <div class="bb-monitor-title">RAM</div>
+        <div class="bb-monitor-value" data-monitor="memory">—</div>
+        <div class="bb-hint" data-monitor="memory_hint">Данные недоступны</div>
+      </article>
+      <article class="bb-monitor-item">
+        <div class="bb-monitor-title">Процесс</div>
+        <div class="bb-monitor-value" data-monitor="pid">PID —</div>
+        <div class="bb-hint" data-monitor="uptime">Uptime: n/a</div>
+      </article>
+    </div>
+    <div class="bb-monitor-disks">
+      <h3>Подключенные диски</h3>
+      <div class="bb-monitor-disk-grid" data-monitor="disks"></div>
+    </div>
+  </section>
+</div>
+<script type="application/json" id="bb-dashboard-sources">{{ sources | tojson }}</script>
+<script defer src="/static/live.js?v={{ app_version }}"></script>
 {% endblock %}

@@ -60,6 +60,8 @@ services:
       timeout: 3s
       retries: 5
     restart: unless-stopped
+    cap_add:
+      - NET_RAW
 
   worker-simulator-image:
     profiles: ["build"]

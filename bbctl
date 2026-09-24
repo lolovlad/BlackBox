@@ -44,6 +44,7 @@ Commands:
   update     Stash local tracked changes, pull, rebuild, start and smoke-test
   smoke      Run the Hub login/VM/Parquet/WebSocket acceptance smoke test
   check-read Probe UART + Modbus RTU holding read (legacy DEIF FC3)
+  check-tcp  Probe ICMP/TCP + Modbus TCP holding read
   logs       Follow service logs
   ps         Show Compose service state
   help       Show this help
@@ -155,6 +156,11 @@ case "$command" in
       set -- --list
     fi
     compose exec -T hub /app/.venv/bin/python -m services.hub.check_read "$@"
+    ;;
+  check-tcp)
+    require_docker
+    shift
+    compose exec -T hub /app/.venv/bin/python -m services.hub.check_tcp "$@"
     ;;
   *)
     echo "ERROR: unknown command: $command" >&2

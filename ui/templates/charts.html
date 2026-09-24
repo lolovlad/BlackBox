@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% block title %}Графики · BlackBox{% endblock %}
+{% block body_class %}bb-wide{% endblock %}
+{% block content %}
+<section class="bb-card" id="bb-charts" data-bb-events data-series-url="/api/v1/telemetry/series">
+  <div class="bb-charts-head">
+    <h1 class="bb-page-title">Графики</h1>
+    <p class="bb-page-lead">Выберите источники, таблицу, период и поля. Без дат график строится за текущие сутки и дополняется по WebSocket.</p>
+  </div>
+  <form id="bb-chart-form" onsubmit="return false;">
+    <div class="bb-filter-grid">
+      <label class="bb-filter-field">Таблица
+        <select name="table" id="bb-chart-table">
+          <option value="analog" selected>Аналоги</option>
+          <option value="discrete">Дискреты</option>
+        </select>
+      </label>
+      <label class="bb-filter-field">Дата с
+        <input type="datetime-local" name="date_from" autocomplete="off">
+      </label>
+      <label class="bb-filter-field">Дата по
+        <input type="datetime-local" name="date_to" autocomplete="off">
+      </label>
+    </div>
+    <fieldset>
+      <legend>Источники</legend>
+      <div class="bb-check-grid">
+        {% for vm in vms %}
+        <label class="bb-chk"><input type="checkbox" name="vm_id" value="{{ vm.id }}" checked> {{ vm.name }}</label>
+        {% else %}
+        <p class="bb-hint">Виртуальных машин пока нет.</p>
+        {% endfor %}
+      </div>
+    </fieldset>
+    <div id="bb-chart-fields"></div>
+    <div class="bb-row-actions">
+      <button type="button" class="bb-btn" id="bb-chart-render">Построить график</button>
+      <button type="button" class="bb-btn bb-btn-ghost" id="bb-chart-reset">Сбросить фильтры</button>
+    </div>
+  </form>
+  <section class="bb-card bb-chart-card">
+    <p class="bb-hint" id="bb-chart-meta">График пуст. Выберите поля и нажмите «Построить график».</p>
+    <div id="bb-echarts" class="bb-echarts" hidden></div>
+  </section>
+</section>
+<script defer src="/static/vendor/echarts.min.js?v={{ app_version }}"></script>
+<script defer src="/static/charts.js?v={{ app_version }}"></script>
+{% endblock %}

@@ -14,7 +14,7 @@ from uuid import UUID
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, ValidationError
@@ -27,16 +27,19 @@ from .connection import PROFILES, connection_profile, inventory_kinds
 from .db import HubRepository
 from .discovery import KIND_LABELS, PROTOCOL_RESOURCE_KIND, discover_resources, discovery_summary, is_usable_can_interface, is_usable_serial_port
 from .docker_manager import DockerManager, DockerUnavailable
+from .link import vm_link_status
+from .monitor import collect_system_monitor, gpio_panel
 from .probe import run_probe
 from .registry import PROTOCOLS, protocol_spec
 from .security import ACCESS_COOKIE, CSRF_COOKIE, REFRESH_COOKIE, _decode, csrf_protect, current_user, issue_tokens, set_auth_cookies
 from .state import EventBus
 from .storage import ParquetStore, StorageUnavailable, purge_vm_directories
+from .telemetry import CHART_POINT_CAP, PAGE_SIZE, READ_ROW_CAP, chart_payload, collect_roots, column_defs, describe_sources, format_timestamp, page_table, parse_bound, query_measurements, query_window, rows_as_csv
 from .vm_config import normalize_runtime_config
 
 logger = logging.getLogger("blackbox.hub")
 
-HUB_VERSION = "2.0.20"
+HUB_VERSION = "2.0.21"
 HUB_VENDOR = "AGK"
 
 PROTOCOL_LABELS = {
@@ -651,37 +654,15 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
                 if quality_value == Quality.BAD.value:
                     continue
                 vm_key = str(sample.vm_id)
-                previous = {str(item) for item in app.state.vm_alerts.get(vm_key, [])}
-                current = {str(item) for item in sample.alerts}
-                for name in sorted(current - previous):
-                    await bus.publish(
-                        "alarms",
-                        AlarmEvent(
-                            vm_id=sample.vm_id,
-                            timestamp=sample.captured_at,
-                            severity="warning",
-                            code="device_alert",
-                            message=name,
-                            active=True,
-                            payload={"kind": "alert"},
-                        ).model_dump(mode="json"),
-                    )
-                    await bus.publish_log(vm_key, f"Алерт прибора: {name}", level="error")
-                for name in sorted(previous - current):
-                    await bus.publish(
-                        "alarms",
-                        AlarmEvent(
-                            vm_id=sample.vm_id,
-                            timestamp=sample.captured_at,
-                            severity="info",
-                            code="device_alert",
-                            message=name,
-                            active=False,
-                            payload={"kind": "alert"},
-                        ).model_dump(mode="json"),
-                    )
-                    await bus.publish_log(vm_key, f"Алерт снят: {name}")
-                app.state.vm_alerts[vm_key] = sorted(current)
+                alert_names = {str(item).strip() for item in sample.alerts if str(item).strip()}
+                for event in repo.sync_alarm_edges(vm_key, sample.captured_at, alert_names, kind="alert"):
+                    await _publish_alarm_edge(sample, event)
+                protocol_value = getattr(sample.protocol, "value", sample.protocol)
+                if protocol_value == VmProtocol.GPIO.value:
+                    pins = {str(name) for name, value in sample.discrete.items() if value}
+                    for event in repo.sync_alarm_edges(vm_key, sample.captured_at, pins, kind="gpio"):
+                        await _publish_alarm_edge(sample, event)
+                app.state.vm_alerts[vm_key] = sorted(alert_names)
             last_quality = parsed[-1].quality if parsed else None
             if parsed and last_quality == Quality.GOOD:
                 current = repo.get_vm(str(batch.vm_id))
@@ -709,8 +690,54 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
                     app.state.ingest_pending[vm_key] = max(0, app.state.ingest_pending.get(vm_key, 1) - 1)
                     app.state.ingest_queue.task_done()
 
+        async def _publish_alarm_edge(sample: TagSample, event: dict[str, Any]) -> None:
+            started = event["state"] == "active"
+            kind = str(event.get("kind") or "alert")
+            await bus.publish(
+                "alarms",
+                AlarmEvent(
+                    vm_id=sample.vm_id,
+                    timestamp=sample.captured_at,
+                    severity="warning" if started else "info",
+                    code="gpio_alert" if kind == "gpio" else "device_alert",
+                    message=str(event["name"]),
+                    active=started,
+                    payload={"kind": kind, "state": event["state"]},
+                ).model_dump(mode="json"),
+            )
+            vm_key = str(sample.vm_id)
+            if kind == "gpio":
+                text = f"GPIO активно: {event['name']}" if started else f"GPIO снято: {event['name']}"
+            else:
+                text = f"Алерт прибора: {event['name']}" if started else f"Алерт снят: {event['name']}"
+            await bus.publish_log(vm_key, text, level="error" if started else "info")
+
         ingest_task = asyncio.create_task(ingest_loop())
         stop_reconciler = asyncio.Event()
+        stop_system = asyncio.Event()
+
+        def _system_payload() -> dict[str, Any]:
+            payload = collect_system_monitor(cfg.data_root)
+            vms = repo.list_vms()
+            latest = {str(vm["id"]): sample for vm in vms if (sample := bus.latest_tags(str(vm["id"]))) is not None}
+            gpio = gpio_panel(vms, latest)
+            payload["gpio_items"] = gpio["items"]
+            payload["gpio_time"] = gpio["updated_at"]
+            payload["server_time"] = datetime.now().astimezone().strftime("%d.%m.%Y %H:%M:%S")
+            return payload
+
+        async def system_loop() -> None:
+            while not stop_system.is_set():
+                try:
+                    await bus.publish("system", _system_payload())
+                except Exception:
+                    logger.exception("system monitor publish failed")
+                try:
+                    await asyncio.wait_for(stop_system.wait(), timeout=2.0)
+                except asyncio.TimeoutError:
+                    pass
+
+        system_task = asyncio.create_task(system_loop())
 
         async def reconcile() -> None:
             while not stop_reconciler.is_set():
@@ -826,6 +853,8 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
 
         reconciler_task = asyncio.create_task(reconcile())
         yield
+        stop_system.set()
+        await system_task
         await app.state.ingest_queue.join()
         for target_store in app.state.storage_stores.values():
             try:
@@ -897,6 +926,14 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
                 for spec in PROTOCOLS
             ]
         }
+
+    @app.get("/api/v1/connections")
+    async def connections(account=Depends(user)):
+        vms = repo.list_vms()
+        items = await asyncio.gather(
+            *[asyncio.to_thread(vm_link_status, vm, bus.latest_tags(str(vm["id"]))) for vm in vms]
+        )
+        return {"items": list(items)}
 
     @app.post("/api/v1/auth/login")
     async def login(payload: LoginRequest):
@@ -1464,6 +1501,7 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
                 and live is not None
             ),
             "diagnosis": diagnosis,
+            "connection": vm_link_status(vm, sample),
         }
 
     @app.get("/api/v1/resources")
@@ -1629,13 +1667,17 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
                 snapshot["vm_status"] = []
             if "tags" not in requested_topics:
                 snapshot["tags"] = []
+                snapshot["tags_good"] = []
             if "logs" not in requested_topics:
                 snapshot["logs"] = {}
             if "alarms" not in requested_topics:
                 snapshot["alarms"] = []
+            if "system" not in requested_topics:
+                snapshot["system"] = {}
         if vm_filter:
             snapshot["vm_status"] = [item for item in snapshot.get("vm_status", []) if item.get("vm_id") == vm_filter]
             snapshot["tags"] = [item for item in snapshot.get("tags", []) if item.get("vm_id") == vm_filter]
+            snapshot["tags_good"] = [item for item in snapshot.get("tags_good", []) if item.get("vm_id") == vm_filter]
             snapshot["logs"] = {key: value for key, value in snapshot.get("logs", {}).items() if key == vm_filter}
             snapshot["alarms"] = [item for item in snapshot.get("alarms", []) if item.get("vm_id") == vm_filter]
         raw_cursor = websocket.query_params.get("cursor")
@@ -1650,7 +1692,7 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
                 event = await queue.get()
                 if requested_topics and event.topic not in requested_topics:
                     continue
-                if vm_filter and str(event.payload.get("vm_id", "")) != vm_filter:
+                if vm_filter and event.topic != "system" and str(event.payload.get("vm_id", "")) != vm_filter:
                     continue
                 await websocket.send_json({"type": "delta", "seq": event.seq, "topic": event.topic, "payload": event.payload})
         except WebSocketDisconnect:
@@ -1708,13 +1750,261 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
             **groups,
         }
 
+    def _telemetry_stores() -> list[ParquetStore]:
+        stores = list(getattr(app.state, "storage_stores", {}).values())
+        if all(item is not store for item in stores):
+            stores.append(store)
+        return stores
+
+    def _telemetry_roots() -> list[Path]:
+        return collect_roots(cfg.data_root, repo.list_resources(), repo.list_vms(), [item.root for item in _telemetry_stores()])
+
+    def _source_documents() -> dict[tuple[str, str], dict[str, Any]]:
+        documents: dict[tuple[str, str], dict[str, Any]] = {}
+        for vm in repo.list_vms():
+            key = (str(vm.get("map_version") or ""), str(vm.get("protocol") or ""))
+            if not key[0] or key in documents:
+                continue
+            document = repo.map_by_version(key[0], key[1])
+            if document:
+                documents[key] = document
+        return documents
+
+    def _sources(vm_ids: set[str] | None = None) -> list[dict[str, Any]]:
+        vms = [vm for vm in repo.list_vms() if vm_ids is None or str(vm["id"]) in vm_ids]
+        live = {str(vm["id"]): sample for vm in vms if (sample := bus.latest_tags(str(vm["id"]))) is not None}
+        return describe_sources(vms, _source_documents(), live, _telemetry_roots())
+
+    def _selected_vm_ids(requested: list[str] | None) -> list[str]:
+        known = {str(vm["id"]) for vm in repo.list_vms()}
+        if not requested:
+            return sorted(known)
+        return [vm_id for vm_id in requested if vm_id in known]
+
+    def _measurement_rows(vm_ids: list[str], date_from: datetime | None, date_to: datetime | None, *, today_if_open: bool = False, point_cap: int | None = None) -> tuple[list[Any], bool, bool]:
+        start, end = date_from, date_to
+        realtime = start is None and end is None
+        if today_if_open and realtime:
+            now = datetime.now().astimezone()
+            start = now.replace(hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.utc)
+        rows, truncated = query_measurements(
+            _telemetry_roots(),
+            _telemetry_stores(),
+            vm_ids=set(vm_ids),
+            date_from=start,
+            date_to=end,
+            point_cap=point_cap,
+        )
+        return rows, truncated, realtime
+
+    @app.get("/api/v1/telemetry/catalog")
+    async def telemetry_catalog(request: Request, vm_id: list[str] | None = Query(default=None)):
+        current_user(request, repo, cfg)
+        selected = set(_selected_vm_ids(vm_id))
+        return {"sources": _sources(selected)}
+
+    @app.get("/api/v1/telemetry/rows")
+    async def telemetry_rows(
+        request: Request,
+        vm_id: list[str] | None = Query(default=None),
+        tab: str = "analog",
+        date_from: str | None = None,
+        date_to: str | None = None,
+        sort: str = "desc",
+        page: int = Query(default=1, ge=1),
+        column: list[str] | None = Query(default=None),
+    ):
+        current_user(request, repo, cfg)
+        active = tab if tab in {"analog", "discrete", "alarms", "gpio"} else "analog"
+        selected = _selected_vm_ids(vm_id)
+        start = parse_bound(date_from)
+        end = parse_bound(date_to, end_of_day=True)
+        names = {str(vm["id"]): str(vm["name"]) for vm in repo.list_vms()}
+        if active in {"alarms", "gpio"}:
+            events, total = repo.list_alarm_events(
+                selected,
+                kind="gpio" if active == "gpio" else "alert",
+                date_from=start.isoformat() if start else None,
+                date_to=end.isoformat() if end else None,
+                sort_desc=sort != "asc",
+                offset=(page - 1) * PAGE_SIZE,
+                limit=PAGE_SIZE,
+            )
+            total_pages = max(1, (total + PAGE_SIZE - 1) // PAGE_SIZE) if total else 1
+            page_eff = min(page, total_pages)
+            rows = []
+            for event in events:
+                state = str(event["state"])
+                if active == "gpio":
+                    state_label = "Активно" if state == "active" else "Снято"
+                else:
+                    state_label = "Активна" if state == "active" else "Снята"
+                created = datetime.fromisoformat(str(event["created_at"]))
+                rows.append(
+                    {
+                        "time": format_timestamp(created),
+                        "ts": created.isoformat(),
+                        "vm_id": event["vm_id"],
+                        "vm_name": names.get(str(event["vm_id"]), str(event["vm_id"])),
+                        "name": event["name"],
+                        "state": state,
+                        "state_label": state_label,
+                    }
+                )
+            return {
+                "tab": active,
+                "columns": [],
+                "rows": rows,
+                "page": page_eff,
+                "total_pages": total_pages,
+                "total_rows": total,
+                "page_size": PAGE_SIZE,
+                "truncated": False,
+            }
+        sources = _sources(set(selected))
+        columns = column_defs(sources, active, column or None)
+        measurements, total, page_used = query_window(
+            _telemetry_roots(),
+            _telemetry_stores(),
+            vm_ids=set(selected),
+            date_from=start,
+            date_to=end,
+            page=page,
+            page_size=PAGE_SIZE,
+            sort_desc=sort != "asc",
+        )
+        payload = page_table(
+            measurements,
+            tab=active,
+            columns=columns,
+            vm_names=names,
+            sort_desc=sort != "asc",
+            page=page_used,
+            total_override=total,
+            already_paged=True,
+        )
+        payload["truncated"] = False
+        return payload
+
+    @app.get("/api/v1/telemetry/series")
+    async def telemetry_series(
+        request: Request,
+        vm_id: list[str] | None = Query(default=None),
+        table: str = "analog",
+        date_from: str | None = None,
+        date_to: str | None = None,
+        column: list[str] | None = Query(default=None),
+    ):
+        current_user(request, repo, cfg)
+        active = "discrete" if table == "discrete" else "analog"
+        selected = _selected_vm_ids(vm_id)
+        start = parse_bound(date_from)
+        end = parse_bound(date_to, end_of_day=True)
+        measurements, _truncated, realtime = _measurement_rows(selected, start, end, today_if_open=True, point_cap=CHART_POINT_CAP)
+        sources = _sources(set(selected))
+        labels = {item["key"]: item["label"] for item in column_defs(sources, active, None)}
+        fields = column or list(labels)
+        return chart_payload(
+            measurements,
+            table=active,
+            vm_ids=selected,
+            vm_names={str(vm["id"]): str(vm["name"]) for vm in repo.list_vms()},
+            labels=labels,
+            fields=fields,
+            realtime=realtime,
+        )
+
+    @app.get("/api/v1/telemetry/export")
+    async def telemetry_export(
+        request: Request,
+        vm_id: list[str] | None = Query(default=None),
+        tab: str = "analog",
+        date_from: str | None = None,
+        date_to: str | None = None,
+        sort: str = "desc",
+        column: list[str] | None = Query(default=None),
+    ):
+        current_user(request, repo, cfg)
+        active = tab if tab in {"analog", "discrete", "alarms", "gpio"} else "analog"
+        selected = _selected_vm_ids(vm_id)
+        names = {str(vm["id"]): str(vm["name"]) for vm in repo.list_vms()}
+        if active in {"alarms", "gpio"}:
+            events, _total = repo.list_alarm_events(
+                selected,
+                kind="gpio" if active == "gpio" else "alert",
+                date_from=parse_bound(date_from).isoformat() if parse_bound(date_from) else None,
+                date_to=parse_bound(date_to, end_of_day=True).isoformat() if parse_bound(date_to, end_of_day=True) else None,
+                sort_desc=sort != "asc",
+                offset=0,
+                limit=10_000,
+            )
+            rows = []
+            for event in events:
+                state = str(event["state"])
+                created = datetime.fromisoformat(str(event["created_at"]))
+                rows.append(
+                    {
+                        "time": format_timestamp(created),
+                        "vm_name": names.get(str(event["vm_id"]), str(event["vm_id"])),
+                        "name": event["name"],
+                        "state_label": ("Активно" if state == "active" else "Снято") if active == "gpio" else ("Активна" if state == "active" else "Снята"),
+                    }
+                )
+            payload = {"tab": active, "rows": rows}
+        else:
+            measurements, total, _page_used = query_window(
+                _telemetry_roots(),
+                _telemetry_stores(),
+                vm_ids=set(selected),
+                date_from=parse_bound(date_from),
+                date_to=parse_bound(date_to, end_of_day=True),
+                page=1,
+                page_size=READ_ROW_CAP,
+                sort_desc=sort != "asc",
+            )
+            columns = column_defs(_sources(set(selected)), active, column or None)
+            payload = page_table(
+                measurements,
+                tab=active,
+                columns=columns,
+                vm_names=names,
+                sort_desc=sort != "asc",
+                page=1,
+                page_size=max(len(measurements), 1),
+                total_override=total,
+                already_paged=True,
+            )
+        text = "\ufeff" + rows_as_csv(payload)
+        filename = {"alarms": "alarms.csv", "gpio": "gpio.csv"}.get(active, f"{active}.csv")
+        return Response(content=text, media_type="text/csv; charset=utf-8", headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+
     @app.get("/dashboard", response_class=HTMLResponse)
     async def dashboard(request: Request):
         try:
             account = current_user(request, repo, cfg)
         except HTTPException:
             return RedirectResponse("/login", status_code=303)
-        return templates.TemplateResponse(request=request, name="dashboard.html", context={"user": account, "vms": repo.list_vms()})
+        return templates.TemplateResponse(
+            request=request,
+            name="dashboard.html",
+            context={"user": account, "vms": repo.list_vms(), "sources": _sources()},
+        )
+
+    @app.get("/data", response_class=HTMLResponse)
+    async def data_page(request: Request):
+        try:
+            account = current_user(request, repo, cfg)
+        except HTTPException:
+            return RedirectResponse("/login", status_code=303)
+        return templates.TemplateResponse(request=request, name="data.html", context={"user": account, "vms": repo.list_vms()})
+
+    @app.get("/charts", response_class=HTMLResponse)
+    async def charts_page(request: Request):
+        try:
+            account = current_user(request, repo, cfg)
+        except HTTPException:
+            return RedirectResponse("/login", status_code=303)
+        return templates.TemplateResponse(request=request, name="charts.html", context={"user": account, "vms": repo.list_vms()})
 
     @app.get("/vms", response_class=HTMLResponse)
     async def vms_page(request: Request):

@@ -11,6 +11,8 @@ def test_tcp_is_a_dialed_endpoint_not_an_inventory_device():
     assert tcp.probe_read is True
     assert tcp.scan_label is None
     assert tcp.link == "network"
+    assert tcp.as_dict()["shows_ping"] is True
+    assert tcp.as_dict()["shows_link"] is True
 
 
 def test_physical_buses_scan_and_lease_exclusive_nodes():

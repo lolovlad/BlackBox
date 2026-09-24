@@ -26,6 +26,8 @@
       <nav class="bb-nav" aria-label="Основное меню">
         {% set path = request.url.path %}
         <a href="/dashboard" class="bb-nav-link{% if path == '/dashboard' %} is-active{% endif %}"><i class="bi bi-speedometer2"></i> Дашборд</a>
+        <a href="/data" class="bb-nav-link{% if path.startswith('/data') %} is-active{% endif %}"><i class="bi bi-table"></i> Данные</a>
+        <a href="/charts" class="bb-nav-link{% if path.startswith('/charts') %} is-active{% endif %}"><i class="bi bi-graph-up"></i> Графики</a>
         <a href="/vms" class="bb-nav-link{% if path.startswith('/vms') or path.startswith('/admin/vms') %} is-active{% endif %}"><i class="bi bi-hdd-stack"></i> ВМ</a>
         {% if user.role == 'admin' %}
         <a href="/admin/maps" class="bb-nav-link{% if path.startswith('/admin/maps') %} is-active{% endif %}"><i class="bi bi-file-earmark-code"></i> Карты</a>

@@ -1,16 +1,19 @@
 from __future__ import annotations
 
 import json
-import os
 import shutil
 import threading
 from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
 from typing import Iterable
-from uuid import UUID, uuid4
+from uuid import UUID
+
+import pyarrow as pa
 
 from bb_platform.contracts import TagSample
+
+from .parquet_daily import append_daily_file, compact_legacy_partitions, recover_pending_files
 
 
 class StorageUnavailable(RuntimeError):
@@ -18,7 +21,11 @@ class StorageUnavailable(RuntimeError):
 
 
 class ParquetStore:
-    """Buffered, atomic Parquet writer partitioned by VM and UTC date."""
+    """Buffered Parquet writer: one file per VM per UTC day.
+
+    Flushes still happen every few seconds, but each flush appends a row group
+    to that day's file instead of creating another small part.
+    """
 
     def __init__(self, root: Path, *, flush_rows: int = 500, flush_seconds: float = 5.0, min_free_bytes: int = 64 * 1024 * 1024, quota_bytes: int | None = None) -> None:
         self.root = root
@@ -29,6 +36,8 @@ class ParquetStore:
         self._buffers: dict[tuple[str, str], list[TagSample]] = defaultdict(list)
         self._last_flush = datetime.now().timestamp()
         self._lock = threading.RLock()
+        self._legacy_compacted = False
+        recover_pending_files(root)
 
     @staticmethod
     def _arrow():
@@ -51,19 +60,22 @@ class ParquetStore:
                 self.flush()
 
     def flush(self) -> int:
-        if not self._buffers:
-            return 0
-        pa, pq = self._arrow()
-        total = 0
-        self.root.mkdir(parents=True, exist_ok=True)
-        usage = shutil.disk_usage(self.root)
-        if usage.free < self.min_free_bytes:
-            raise StorageUnavailable(f"free space below telemetry threshold: {usage.free} bytes")
-        if self.quota_bytes is not None:
-            used = sum(path.stat().st_size for path in self.root.rglob("*.parquet") if path.is_file())
-            if used >= self.quota_bytes:
-                raise StorageUnavailable("telemetry quota exceeded")
         with self._lock:
+            if not self._legacy_compacted:
+                compact_legacy_partitions(self.root)
+                self._legacy_compacted = True
+            if not self._buffers:
+                return 0
+            self._arrow()
+            total = 0
+            self.root.mkdir(parents=True, exist_ok=True)
+            usage = shutil.disk_usage(self.root)
+            if usage.free < self.min_free_bytes:
+                raise StorageUnavailable(f"free space below telemetry threshold: {usage.free} bytes")
+            if self.quota_bytes is not None:
+                used = sum(path.stat().st_size for path in self.root.rglob("*.parquet") if path.is_file())
+                if used >= self.quota_bytes:
+                    raise StorageUnavailable("telemetry quota exceeded")
             buffers, self._buffers = self._buffers, defaultdict(list)
             completed: set[tuple[str, str]] = set()
             try:
@@ -72,52 +84,26 @@ class ParquetStore:
                     if not samples:
                         completed.add(key)
                         continue
-                    directory = self.root / f"vm_id={vm_id}" / f"date={date}"
-                    directory.mkdir(parents=True, exist_ok=True)
-                    rows = [
-                        {
-                            "vm_id": str(sample.vm_id),
-                            "seq": sample.seq,
-                            "captured_at": sample.captured_at.isoformat(),
-                            "map_version": sample.map_version,
-                            "protocol": getattr(sample.protocol, "value", sample.protocol),
-                            "quality": getattr(sample.quality, "value", sample.quality),
-                            "tags_json": json.dumps(sample.tags, ensure_ascii=False, default=str),
-                            "analog_json": json.dumps(sample.analog, ensure_ascii=False, default=str),
-                            "discrete_json": json.dumps(sample.discrete, ensure_ascii=False, default=str),
-                            "alerts_json": json.dumps(sample.alerts, ensure_ascii=False, default=str),
-                        }
-                        for sample in samples
-                    ]
-                    table = pa.Table.from_pylist(rows)
-                    # A worker sequence restarts after a container restart. Add
-                    # an opaque suffix so a new batch can never overwrite an
-                    # older partition file with the same first sequence number.
-                    final = directory / f"part-{samples[0].seq:020d}-{os.getpid()}-{uuid4().hex[:12]}.parquet"
-                    tmp = final.with_suffix(".tmp")
-                    try:
-                        pq.write_table(table, tmp, compression="zstd")
-                        tmp.replace(final)
-                    finally:
-                        # A failed write must not leave a misleading .tmp file
-                        # that is mistaken for a committed partition.
-                        if tmp.exists():
-                            try:
-                                tmp.unlink()
-                            except OSError:
-                                pass
+                    rows = [_row(sample) for sample in samples]
+                    table = pa.Table.from_pylist(rows, schema=_DAILY_SCHEMA)
+                    target = self.root / f"vm_id={vm_id}" / f"date={date}.parquet"
+                    append_daily_file(target, table)
                     total += len(samples)
                     completed.add(key)
                 self._last_flush = datetime.now().timestamp()
             except Exception:
-                # Keep only partitions that were not committed. This allows a
-                # later flush after an SSD is remounted/space is freed without
-                # duplicating files that were already atomically renamed.
+                # Keep rows whose daily file was not updated. A finished append
+                # is already in that day's file and must not be written again.
                 for key, samples in buffers.items():
                     if key not in completed:
                         self._buffers[key][0:0] = samples
                 raise
-        return total
+            return total
+
+    def pending_samples(self) -> list[TagSample]:
+        """Rows accepted by ingest but not yet flushed into the daily file."""
+        with self._lock:
+            return [sample for rows in self._buffers.values() for sample in rows]
 
     def discard_vm(self, vm_id: str) -> None:
         """Drop unflushed rows for a VM so delete does not rewrite its files."""
@@ -125,6 +111,37 @@ class ParquetStore:
         with self._lock:
             for key in [item for item in self._buffers if item[0] == key_id]:
                 self._buffers.pop(key, None)
+
+
+_DAILY_SCHEMA = pa.schema(
+    [
+        pa.field("vm_id", pa.string()),
+        pa.field("seq", pa.int64()),
+        pa.field("captured_at", pa.string()),
+        pa.field("map_version", pa.string()),
+        pa.field("protocol", pa.string()),
+        pa.field("quality", pa.string()),
+        pa.field("tags_json", pa.string()),
+        pa.field("analog_json", pa.string()),
+        pa.field("discrete_json", pa.string()),
+        pa.field("alerts_json", pa.string()),
+    ]
+)
+
+
+def _row(sample: TagSample) -> dict[str, object]:
+    return {
+        "vm_id": str(sample.vm_id),
+        "seq": int(sample.seq),
+        "captured_at": sample.captured_at.isoformat(),
+        "map_version": sample.map_version or "",
+        "protocol": str(getattr(sample.protocol, "value", sample.protocol) or ""),
+        "quality": str(getattr(sample.quality, "value", sample.quality) or ""),
+        "tags_json": json.dumps(sample.tags, ensure_ascii=False, default=str),
+        "analog_json": json.dumps(sample.analog, ensure_ascii=False, default=str),
+        "discrete_json": json.dumps(sample.discrete, ensure_ascii=False, default=str),
+        "alerts_json": json.dumps(sample.alerts, ensure_ascii=False, default=str),
+    }
 
 
 def purge_vm_directories(vm_id: str, roots: Iterable[Path], *, extra_subdirs: Iterable[str] = ()) -> list[str]:

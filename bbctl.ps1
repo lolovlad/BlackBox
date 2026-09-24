@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Position = 0)]
-    [ValidateSet("up", "down", "update", "smoke", "logs", "ps", "help", "check-read")]
+    [ValidateSet("up", "down", "update", "smoke", "logs", "ps", "help", "check-read", "check-tcp")]
     [string]$Command = "help",
     [Parameter(ValueFromRemainingArguments = $true)]
     [string[]]$Rest
@@ -85,7 +85,7 @@ function Invoke-Smoke {
 }
 
 if ($Command -eq "help") {
-    Write-Host "Usage: ./bbctl.ps1 <up|down|update|smoke|check-read|logs|ps|help>"
+    Write-Host "Usage: ./bbctl.ps1 <up|down|update|smoke|check-read|check-tcp|logs|ps|help>"
     exit 0
 }
 
@@ -113,5 +113,9 @@ switch ($Command) {
     "check-read" {
         $ProbeArgs = if ($Rest -and $Rest.Count -gt 0) { $Rest } else { @("--list") }
         Invoke-Compose exec -T hub /app/.venv/bin/python -m services.hub.check_read @ProbeArgs
+    }
+    "check-tcp" {
+        $ProbeArgs = if ($null -ne $Rest) { @($Rest) } else { @() }
+        Invoke-Compose exec -T hub /app/.venv/bin/python -m services.hub.check_tcp @ProbeArgs
     }
 }

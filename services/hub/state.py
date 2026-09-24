@@ -20,12 +20,18 @@ class EventBus:
         self._latest_good_tags: dict[str, TagSample] = {}
         self._logs: dict[str, deque[dict[str, Any]]] = defaultdict(lambda: deque(maxlen=log_limit))
         self._alarms: deque[dict[str, Any]] = deque(maxlen=log_limit)
+        self._system: dict[str, Any] = {}
 
     async def publish(self, topic: str, payload: dict[str, Any]) -> EventEnvelope:
         async with self._lock:
             self._seq += 1
             event = EventEnvelope(seq=self._seq, topic=topic, payload=payload)
-            self._history.append(event)
+            if topic == "system":
+                # Host snapshots are frequent. Keep only the latest one so
+                # they do not push tags, logs and alarms out of the replay buffer.
+                self._system = payload
+            else:
+                self._history.append(event)
             if topic == "alarms":
                 self._alarms.append(payload)
             for queue in list(self._subscribers):
@@ -65,8 +71,10 @@ class EventBus:
             "seq": self._seq,
             "vm_status": [x.model_dump(mode="json") for x in self._latest_status.values()],
             "tags": [x.model_dump(mode="json") for x in self._latest_tags.values()],
+            "tags_good": [x.model_dump(mode="json") for x in self._latest_good_tags.values()],
             "logs": {key: list(value)[-2000:] for key, value in self._logs.items()},
             "alarms": list(self._alarms)[-500:],
+            "system": self._system,
         }
 
     async def subscribe(self, *, after_seq: int = 0) -> asyncio.Queue[EventEnvelope]:

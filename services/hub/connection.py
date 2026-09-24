@@ -35,6 +35,8 @@ class ConnectionProfile:
             "probe_read": self.probe_read,
             "scan_label": self.scan_label,
             "hint": self.hint,
+            "shows_link": self.link in {"serial", "network", "can"},
+            "shows_ping": self.link == "network",
         }
 
 
