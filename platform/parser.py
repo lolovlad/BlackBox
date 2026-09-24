@@ -11,6 +11,27 @@ from uuid import UUID
 
 from .contracts import MapDocument, Quality, RawBatch, TagSample, VmProtocol
 
+FIELD_TYPE_ALIASES = {
+    "u16": "uint16",
+    "uint": "uint16",
+    "word": "uint16",
+    "s16": "int16",
+    "i16": "int16",
+    "short": "int16",
+    "u32": "uint32_be",
+    "s32": "int32_be",
+    "i32": "int32_be",
+}
+FIELD_KIND_ALIASES = {
+    "analogue": "analog",
+    "measurement": "analog",
+    "digital": "discrete",
+    "status": "discrete",
+    "coil": "discrete",
+    "alarm": "alert",
+    "alarms": "alert",
+}
+
 
 def _safe_eval(expression: str, context: dict[str, Any]) -> Any:
     helpers = {
@@ -51,6 +72,54 @@ def _checksum(payload: dict[str, Any]) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
+SUPPORTED_FIELD_TYPES = {
+    "bool",
+    "boolean",
+    "uint16",
+    "int16",
+    "sint16",
+    "uint32",
+    "uint32_be",
+    "uint32_le",
+    "int32",
+    "int32_be",
+    "bitfield",
+    "expr",
+}
+CORE_MAP_KEYS = {"requests", "fields", "protocol", "version", "preset_id", "document", "map_id", "checksum", "immutable", "metadata"}
+
+
+def _as_int(value: Any, default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _normalize_bit_labels(labels: Any) -> dict[str, str]:
+    if isinstance(labels, dict):
+        out: dict[str, str] = {}
+        for bit, name in labels.items():
+            try:
+                number = int(bit)
+            except (TypeError, ValueError):
+                continue
+            if 0 <= number <= 31:
+                out[str(number)] = str(name)
+        return out
+    if isinstance(labels, list):
+        out = {}
+        for index, item in enumerate(labels):
+            if isinstance(item, dict):
+                bit = _as_int(item.get("bit", index), index)
+                if 0 <= bit <= 31:
+                    out[str(bit)] = str(item.get("name") or item.get("label") or item)
+            else:
+                out[str(index)] = str(item)
+        return out
+    return {}
+
+
 def adapt_legacy_map(
     payload: dict[str, Any],
     *,
@@ -58,108 +127,152 @@ def adapt_legacy_map(
     preset_id: str | None = None,
     version: str = "legacy-1",
 ) -> MapDocument:
-    """Normalize either legacy JSON shape into an immutable map document."""
+    """Accept any map that has the core requests/fields shape; extra keys stay."""
     if not isinstance(payload, dict):
-        raise ValueError("map root must be an object")
-    requests = payload.get("requests", [])
-    fields = payload.get("fields", [])
-    if not isinstance(requests, list) or not isinstance(fields, list):
-        raise ValueError("requests and fields must be arrays")
-    if len(fields) > 10_000 or len(requests) > 1_000:
-        raise ValueError("map is too large")
+        raise ValueError("В корне карты должен быть объект")
+    if not isinstance(payload.get("requests"), list) and isinstance(payload.get("document"), dict):
+        nested = payload["document"]
+        if isinstance(nested, dict):
+            payload = {key: value for key, value in payload.items() if key != "document"}
+            payload.update({key: value for key, value in nested.items() if key not in payload or key in {"requests", "fields"}})
+    if not isinstance(payload, dict):
+        raise ValueError("В корне карты должен быть объект")
+    raw_requests = payload.get("requests")
+    raw_fields = payload.get("fields")
+    if not isinstance(raw_requests, list) or not isinstance(raw_fields, list):
+        raise ValueError("Минимальная структура карты: массивы requests и fields")
+    if not raw_fields:
+        raise ValueError("В карте нет fields — добавьте хотя бы одно поле с name")
+    if len(raw_fields) > 10_000 or len(raw_requests) > 1_000:
+        raise ValueError("Карта слишком большая")
+
+    warnings: list[str] = []
+    requests: list[dict[str, Any]] = []
     request_names: set[str] = set()
-    for request in requests:
-        if not isinstance(request, dict) or not str(request.get("name", "")).strip():
-            raise ValueError("each request requires a name")
-        name = str(request["name"]).strip()
+    for index, request in enumerate(raw_requests):
+        if not isinstance(request, dict):
+            warnings.append(f"requests[{index}] пропущен: это не объект")
+            continue
+        name = str(request.get("name", "")).strip()
+        if not name:
+            warnings.append(f"requests[{index}] пропущен: нет name")
+            continue
         if name in request_names:
-            raise ValueError(f"duplicate request name: {name}")
-        request_names.add(name)
-        try:
-            fc = int(request.get("fc", 3))
-            address = int(request.get("address", 0))
-            count = int(request.get("count", 1))
-        except (TypeError, ValueError) as exc:
-            raise ValueError("request fc/address/count must be integers") from exc
+            warnings.append(f"запрос {name} повторён, оставлен первый")
+            continue
+        fc = _as_int(request.get("fc", 3), 3)
         if fc not in {1, 2, 3, 4}:
-            raise ValueError("request function code must be one of 1, 2, 3 or 4")
+            warnings.append(f"запрос {name}: fc={request.get('fc')} не поддерживается, берём 3")
+            fc = 3
+        address = _as_int(request.get("address", 0), 0)
+        count = _as_int(request.get("count", 1), 1)
         max_count = 2000 if fc in {1, 2} else 125
-        if address < 0 or address > 0xFFFF or count < 1 or count > max_count or address + count > 0x10000:
-            raise ValueError("request address/count is outside the valid range")
+        if address < 0:
+            address = 0
+        if address > 0xFFFF:
+            address = 0xFFFF
+        if count < 1:
+            count = 1
+        if count > max_count:
+            warnings.append(f"запрос {name}: count урезан до {max_count}")
+            count = max_count
+        if address + count > 0x10000:
+            count = max(1, 0x10000 - address)
+        item = dict(request)
+        item["name"] = name
+        item["fc"] = fc
+        item["address"] = address
+        item["count"] = count
+        request_names.add(name)
+        requests.append(item)
+
+    needs_source = any(
+        isinstance(field, dict) and str(field.get("type", "uint16")).lower() != "expr"
+        for field in raw_fields
+    )
+    if needs_source and not requests:
+        raise ValueError("Нужен хотя бы один запрос в requests с полем name")
+
+    request_by_name = {str(item["name"]): item for item in requests}
+    fields: list[dict[str, Any]] = []
     field_names: set[str] = set()
-    request_by_name = {str(request["name"]).strip(): request for request in requests}
-    supported_types = {
-        "bool",
-        "boolean",
-        "uint16",
-        "int16",
-        "sint16",
-        "uint32",
-        "uint32_be",
-        "uint32_le",
-        "int32",
-        "int32_be",
-        "bitfield",
-        "expr",
-    }
-    for field in fields:
-        if not isinstance(field, dict) or not str(field.get("name", "")).strip():
-            raise ValueError("each field requires a name")
-        name = str(field["name"]).strip()
+    for index, field in enumerate(raw_fields):
+        if not isinstance(field, dict):
+            warnings.append(f"fields[{index}] пропущен: это не объект")
+            continue
+        name = str(field.get("name", "")).strip()
+        if not name:
+            warnings.append(f"fields[{index}] пропущен: нет name")
+            continue
         if name in field_names:
-            raise ValueError(f"duplicate field name: {name}")
-        field_names.add(name)
-        try:
-            field_address = int(field.get("address", 0))
-        except (TypeError, ValueError) as exc:
-            raise ValueError("field address must be an integer") from exc
-        if field_address < 0:
-            raise ValueError("field address must be non-negative")
-        field_type = str(field.get("type", "uint16")).lower()
-        if field_type not in supported_types:
-            raise ValueError(f"unsupported field type: {field_type}")
-        if "bit" in field:
-            try:
-                bit = int(field["bit"])
-            except (TypeError, ValueError) as exc:
-                raise ValueError("field bit must be an integer") from exc
+            warnings.append(f"поле {name} повторено, оставлено первое")
+            continue
+        item = dict(field)
+        item["name"] = name
+        item["address"] = max(0, _as_int(field.get("address", 0), 0))
+        field_type = FIELD_TYPE_ALIASES.get(str(field.get("type", "uint16")).lower(), str(field.get("type", "uint16")).lower())
+        if field_type not in SUPPORTED_FIELD_TYPES:
+            warnings.append(f"поле {name}: type {field_type} неизвестен, читаем как uint16")
+            field_type = "uint16"
+        item["type"] = field_type
+        if "bit" in item:
+            bit = _as_int(item.get("bit"), 0)
             if not 0 <= bit <= 31:
-                raise ValueError("field bit must be between 0 and 31")
-        if field_type == "expr" and not str(field.get("expr", "")).strip():
-            raise ValueError(f"expression field {name} requires expr")
+                warnings.append(f"поле {name}: bit вне 0..31, бит игнорируем")
+                item.pop("bit", None)
+            else:
+                item["bit"] = bit
+        if field_type == "expr" and not str(item.get("expr", "")).strip():
+            warnings.append(f"поле {name}: expr пустой, поле пропущено")
+            continue
         if field_type != "expr":
-            source = str(field.get("source", "")).strip()
+            source = str(item.get("source", "")).strip()
+            if not source and len(request_by_name) == 1:
+                source = next(iter(request_by_name))
             if source not in request_by_name:
-                raise ValueError(f"field {name} references an unknown request: {source}")
-            request = request_by_name[source]
+                warnings.append(f"поле {name}: неизвестный source {source or '∅'}, поле пропущено")
+                continue
+            item["source"] = source
             width = 2 if field_type in {"uint32", "uint32_be", "uint32_le", "int32", "int32_be"} else 1
-            if field_address + width > int(request.get("count", 1)):
-                raise ValueError(f"field {name} exceeds request {source} count")
+            request = request_by_name[source]
+            needed = item["address"] + width
+            if needed > int(request.get("count", 1)):
+                warnings.append(f"поле {name}: адрес выходит за count запроса {source}, значение может быть 0")
         if field_type == "bitfield":
-            labels = field.get("bits", field.get("bit_labels", {}))
-            if not isinstance(labels, dict):
-                raise ValueError(f"bitfield labels for {name} must be an object")
-            for bit in labels:
-                try:
-                    if not 0 <= int(bit) <= 31:
-                        raise ValueError
-                except (TypeError, ValueError) as exc:
-                    raise ValueError(f"bitfield bit for {name} must be between 0 and 31") from exc
-        kind = str(field.get("kind") or field.get("channel") or "").strip().lower()
-        if kind and kind not in {"analog", "discrete", "alert"}:
-            raise ValueError(f"field {name} kind must be analog, discrete or alert")
+            item["bits"] = _normalize_bit_labels(item.get("bits", item.get("bit_labels", {})))
+        kind = str(item.get("kind") or item.get("channel") or "").strip().lower()
+        kind = FIELD_KIND_ALIASES.get(kind, kind)
+        if kind in {"analog", "discrete", "alert"}:
+            item["kind"] = kind
+        elif kind:
+            warnings.append(f"поле {name}: kind {kind} игнорируем")
+            item.pop("kind", None)
         for numeric_key in ("scale", "offset"):
-            if numeric_key in field:
+            if numeric_key in item:
                 try:
-                    float(field[numeric_key])
-                except (TypeError, ValueError) as exc:
-                    raise ValueError(f"field {numeric_key} must be numeric") from exc
-        if "decimals" in field:
-            try:
-                if int(field["decimals"]) < 0 or int(field["decimals"]) > 12:
-                    raise ValueError
-            except (TypeError, ValueError) as exc:
-                raise ValueError("field decimals must be between 0 and 12") from exc
+                    item[numeric_key] = float(item[numeric_key])
+                except (TypeError, ValueError):
+                    warnings.append(f"поле {name}: {numeric_key} не число, игнорируем")
+                    item.pop(numeric_key, None)
+        if "decimals" in item:
+            decimals = _as_int(item.get("decimals"), -1)
+            if decimals < 0 or decimals > 12:
+                warnings.append(f"поле {name}: decimals игнорируем")
+                item.pop("decimals", None)
+            else:
+                item["decimals"] = decimals
+        field_names.add(name)
+        fields.append(item)
+
+    if not fields:
+        raise ValueError("После проверки не осталось рабочих fields. Нужны объекты с name, а для чтения — source из requests")
+
+    extra = {key: value for key, value in payload.items() if key not in CORE_MAP_KEYS}
+    metadata: dict[str, Any] = {"source": "legacy"}
+    if extra:
+        metadata["extra"] = extra
+    if warnings:
+        metadata["adapt_warnings"] = warnings
     canonical = {
         "protocol": protocol.value,
         "preset_id": preset_id,
@@ -174,7 +287,7 @@ def adapt_legacy_map(
         checksum=_checksum(canonical),
         requests=requests,
         fields=fields,
-        metadata={"source": "legacy"},
+        metadata=metadata,
     )
 
 

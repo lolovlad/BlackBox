@@ -719,7 +719,7 @@ def test_html_pages_render_with_current_starlette(tmp_path: Path):
         assert client.get("/login").status_code == 200
         login_html = client.get("/login").text
         assert "AGK" in login_html
-        assert '2.0.18' in login_html
+        assert '2.0.20' in login_html
         assert "bb-login" in login_html
         app_js = login_html.find("/static/app.js")
         alpine_js = login_html.find("/static/vendor/alpine.min.js")
@@ -747,7 +747,7 @@ def test_html_pages_render_with_current_starlette(tmp_path: Path):
             assert response.status_code == 200, (path, response.text)
             assert "<html" in response.text.lower()
             assert "AGK" in response.text
-            assert "2.0.18" in response.text
+            assert "2.0.20" in response.text
             if path in {"/vms", f"/vms/{vm['id']}", f"/admin/vms/{vm['id']}/edit"}:
                 assert 'data-vm-action="delete"' in response.text
                 assert "Удалить" in response.text
@@ -985,6 +985,53 @@ def test_map_edits_publish_as_a_new_immutable_version(tmp_path: Path):
         second = client.get("/api/v1/maps/edit-v2", params={"protocol": "simulator"}).json()
         assert first["document"]["requests"][0]["count"] == 1
         assert second["document"]["requests"][0]["count"] == 2
+
+
+def test_invalid_map_publish_returns_422_not_500(tmp_path: Path):
+    with _client(tmp_path) as client:
+        assert client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin-password"}).status_code == 200
+        csrf = client.cookies.get("bb_csrf")
+        missing = client.post(
+            "/api/v1/maps",
+            json={"protocol": "modbus_rtu", "version": "empty-v1", "document": {"title": "no core"}},
+            headers={"X-CSRF-Token": csrf},
+        )
+        assert missing.status_code == 422, missing.text
+        assert missing.json()["code"] == "invalid_map"
+        extra = {
+            "author": "stand",
+            "requests": [{"name": "hr", "fc": 3, "address": 0, "count": 4, "comment": "holding"}],
+            "fields": [
+                {"name": "u", "type": "uint16", "source": "hr", "address": 0, "unit": "V", "group": "gen"},
+                {"name": "x", "type": "float32", "source": "hr", "address": 1, "note": "new"},
+            ],
+        }
+        response = client.post(
+            "/api/v1/maps",
+            json={"protocol": "modbus_rtu", "version": "extra-v1", "document": extra},
+            headers={"X-CSRF-Token": csrf},
+        )
+        assert response.status_code == 200, response.text
+        body = response.json()
+        names = [field["name"] for field in body["fields"]]
+        assert names == ["u", "x"]
+        assert body["fields"][0]["unit"] == "V"
+        assert body["fields"][1]["type"] == "uint16"
+        assert body["metadata"]["extra"]["author"] == "stand"
+        assert any("float32" in item for item in body["metadata"]["adapt_warnings"])
+        wrapped = {
+            "document": {
+                "requests": [{"name": "hr", "fc": 3, "address": 0, "count": 2}],
+                "fields": [{"name": "u", "type": "u16", "source": "hr", "address": 0}],
+            }
+        }
+        ok = client.post(
+            "/api/v1/maps",
+            json={"protocol": "modbus_rtu", "version": "wrap-v1", "document": wrapped},
+            headers={"X-CSRF-Token": csrf},
+        )
+        assert ok.status_code == 200, ok.text
+        assert ok.json()["fields"][0]["type"] == "uint16"
 
 
 def test_admin_can_delete_unused_map_but_not_assigned_map(tmp_path: Path):

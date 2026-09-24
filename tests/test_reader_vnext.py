@@ -87,6 +87,30 @@ def test_worker_quality_is_preserved_by_parser():
     assert parsed.alerts == []
 
 
+def test_adapt_legacy_map_keeps_extra_keys_and_unknown_types():
+    document = adapt_legacy_map(
+        {
+            "site": "cabinet-A",
+            "requests": [{"name": "hr", "fc": 3, "address": 0, "count": 2, "bus": "rs485"}],
+            "fields": [
+                {"name": "Ugen", "type": "uint16", "source": "hr", "address": 0, "unit": "V"},
+                {"name": "mystery", "type": "float32", "source": "hr", "address": 1},
+                {"name": "orphan", "type": "uint16", "source": "missing", "address": 0},
+            ],
+        },
+        protocol=VmProtocol.MODBUS_RTU,
+        version="agc-v1",
+    )
+    assert document.metadata["extra"]["site"] == "cabinet-A"
+    assert document.requests[0]["bus"] == "rs485"
+    assert document.fields[0]["unit"] == "V"
+    names = [field["name"] for field in document.fields]
+    assert names == ["Ugen", "mystery"]
+    assert document.fields[1]["type"] == "uint16"
+    assert any("float32" in item for item in document.metadata["adapt_warnings"])
+    assert any("orphan" in item for item in document.metadata["adapt_warnings"])
+
+
 def test_modbus_tcp_reader_reads_registers_from_fake_server():
     ready = threading.Event()
     stop = threading.Event()

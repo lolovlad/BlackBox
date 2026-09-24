@@ -144,9 +144,10 @@ def main(argv: list[str] | None = None) -> int:
 
     modbus_errors = 0
 
-    def on_error(_source: str, _exc: BaseException) -> None:
+    def on_error(source: str, exc: BaseException) -> None:
         nonlocal modbus_errors
         modbus_errors += 1
+        print(f"{source}: {type(exc).__name__}: {exc}", file=sys.stderr)
 
     instrument = build_instrument(
         {

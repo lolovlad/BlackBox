@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 import os
 import secrets
 from contextlib import asynccontextmanager
@@ -32,7 +33,9 @@ from .state import EventBus
 from .storage import ParquetStore, StorageUnavailable, purge_vm_directories
 from .vm_config import normalize_runtime_config
 
-HUB_VERSION = "2.0.18"
+logger = logging.getLogger("blackbox.hub")
+
+HUB_VERSION = "2.0.20"
 HUB_VENDOR = "AGK"
 
 PROTOCOL_LABELS = {
@@ -128,6 +131,17 @@ class UserCreateRequest(BaseModel):
     username: str = Field(min_length=1, max_length=255)
     password: str = Field(min_length=8, max_length=1024)
     role: str = "user"
+
+
+def _exc_message(exc: BaseException) -> str:
+    if isinstance(exc, ValidationError):
+        errors = exc.errors()
+        if errors:
+            err = errors[0]
+            loc = ".".join(str(part) for part in err.get("loc", ()) if str(part) not in {"__root__", "checksum_matches_document"})
+            msg = str(err.get("msg") or exc)
+            return f"{loc}: {msg}" if loc else msg
+    return str(exc) or type(exc).__name__
 
 
 def _problem(code: str, message: str, status_code: int, details: Any = None) -> JSONResponse:
@@ -824,8 +838,20 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
 
     @app.exception_handler(Exception)
     async def unhandled_error(request: Request, exc: Exception):
-        # Keep API errors stable and do not expose stack traces or secrets.
+        logger.exception("Unhandled error on %s %s", request.method, request.url.path)
         return _problem("internal_error", "Internal server error", 500)
+
+    def _publish_map_document(document_payload: dict[str, Any], *, protocol: VmProtocol, preset_id: str | None, version: str, account: dict[str, Any]) -> MapDocument:
+        try:
+            document = adapt_legacy_map(document_payload, protocol=protocol, preset_id=preset_id, version=version)
+        except (ValueError, ValidationError, TypeError) as exc:
+            raise HTTPException(422, detail={"code": "invalid_map", "message": _exc_message(exc)}) from exc
+        try:
+            repo.save_map(document.model_dump(mode="json"))
+        except ValueError as exc:
+            raise HTTPException(409, detail={"code": "map_immutable", "message": str(exc)}) from exc
+        repo.record_audit(int(account["id"]), "map.publish", document.version, {"checksum": document.checksum})
+        return document
 
     def admin(request: Request):
         account = current_user(request, repo, cfg)
@@ -1243,13 +1269,7 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
 
     @app.post("/api/v1/maps", dependencies=[Depends(csrf_protect)])
     async def save_map(payload: MapUploadRequest, account=Depends(admin)):
-        document = adapt_legacy_map(payload.document, protocol=payload.protocol, preset_id=payload.preset_id, version=payload.version)
-        try:
-            repo.save_map(document.model_dump(mode="json"))
-        except ValueError as exc:
-            raise HTTPException(409, detail={"code": "map_immutable", "message": str(exc)}) from exc
-        repo.record_audit(int(account["id"]), "map.publish", document.version, {"checksum": document.checksum})
-        return document
+        return _publish_map_document(payload.document, protocol=payload.protocol, preset_id=payload.preset_id, version=payload.version, account=account)
 
     @app.post("/api/v1/maps/upload", dependencies=[Depends(csrf_protect)])
     async def upload_map(protocol: VmProtocol = Form(...), version: str = Form(...), preset_id: str | None = Form(None), file: UploadFile = File(...), account=Depends(admin)):
@@ -1258,15 +1278,9 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
             raise HTTPException(415, detail={"code": "invalid_map_type", "message": "Only JSON map files are supported"})
         try:
             payload = json.loads((await file.read()).decode("utf-8"))
-            document = adapt_legacy_map(payload, protocol=protocol, preset_id=preset_id, version=version)
-        except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise HTTPException(422, detail={"code": "invalid_map", "message": str(exc)}) from exc
-        try:
-            repo.save_map(document.model_dump(mode="json"))
-        except ValueError as exc:
-            raise HTTPException(409, detail={"code": "map_immutable", "message": str(exc)}) from exc
-        repo.record_audit(int(account["id"]), "map.publish", document.version, {"checksum": document.checksum})
-        return document
+        return _publish_map_document(payload, protocol=protocol, preset_id=preset_id, version=version, account=account)
 
     @app.get("/api/v1/maps")
     async def list_maps(account=Depends(user)):
