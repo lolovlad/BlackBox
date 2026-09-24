@@ -2,7 +2,7 @@
 {% block title %}Дашборд · BlackBox{% endblock %}
 {% block body_class %}bb-wide{% endblock %}
 {% block content %}
-<div id="bb-dashboard" data-bb-events>
+<div id="bb-dashboard" class="bb-busy-host is-busy" data-bb-events aria-busy="true">
   <section class="bb-card">
     <h1 class="bb-page-title">Главная панель</h1>
     <p class="bb-page-lead">У каждого источника свой лист. Селектор по умолчанию показывает все его показатели; выбранные показатели заменяют этот набор.</p>
@@ -51,6 +51,12 @@
       <div class="bb-monitor-disk-grid" data-monitor="disks"></div>
     </div>
   </section>
+  <div class="bb-busy" data-busy>
+    <div class="bb-busy-panel" role="status" aria-live="polite">
+      <span class="bb-spinner" aria-hidden="true"></span>
+      <span data-busy-label>Загрузка…</span>
+    </div>
+  </div>
 </div>
 <script type="application/json" id="bb-dashboard-sources">{{ sources | tojson }}</script>
 <script defer src="/static/live.js?v={{ app_version }}"></script>

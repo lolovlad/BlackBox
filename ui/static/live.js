@@ -9,6 +9,11 @@
   const openSheets = new Set(JSON.parse(localStorage.getItem('bb-dash-open') || '[]'));
   let boardSignature = '';
   let openPicker = '';
+  let dashReady = false;
+
+  function setBusy(on, label) {
+    if (window.bbBusy) window.bbBusy(root, on, label);
+  }
 
   function esc(value) {
     return String(value ?? '').replace(/[&<>"']/g, function (ch) {
@@ -281,6 +286,8 @@
     if (!target) return;
     const pick = target.closest('[data-pick]');
     if (pick) {
+      event.preventDefault();
+      event.stopPropagation();
       const vmId = pick.getAttribute('data-vm');
       const key = pick.getAttribute('data-pick');
       const current = pickOf(vmId);
@@ -303,6 +310,8 @@
     }
     const pickerBtn = target.closest('[data-picker-btn]');
     if (pickerBtn) {
+      event.preventDefault();
+      event.stopPropagation();
       const vmId = pickerBtn.getAttribute('data-vm');
       openPicker = openPicker === vmId ? '' : vmId;
       boardSignature = '';
@@ -317,8 +326,12 @@
   });
 
   document.addEventListener('click', function (event) {
-    const target = event.target instanceof Element ? event.target : null;
-    if (!openPicker || (target && target.closest('.bb-picker'))) return;
+    if (!openPicker) return;
+    const path = typeof event.composedPath === 'function' ? event.composedPath() : [];
+    const inside = path.some(function (node) {
+      return node && node.classList && node.classList.contains('bb-picker');
+    });
+    if (inside) return;
     openPicker = '';
     boardSignature = '';
     renderBoards();
@@ -332,6 +345,8 @@
       tags.forEach(applyTag);
       renderBoards();
       renderSystem(payload.system || {});
+      dashReady = true;
+      setBusy(false);
       return;
     }
     if (message.type !== 'delta') return;
@@ -343,4 +358,7 @@
   });
 
   renderBoards();
+  setTimeout(function () {
+    if (!dashReady) setBusy(false);
+  }, 12000);
 })();

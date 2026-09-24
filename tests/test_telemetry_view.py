@@ -210,6 +210,7 @@ def test_values_charts_and_alarm_journal_for_many_sources(tmp_path: Path) -> Non
         assert 'id="bb-data-form"' in data_page
         assert data_page.find('id="bb-data-form"') < data_page.find('name="vm_id"')
         assert data_page.find('bb-vm-tabs') < data_page.find('id="bb-data-table"')
+        assert 'data-busy' in data_page
         charts = client.get("/charts").text
         assert "echarts.min.js" in charts
         assert 'id="bb-chart-form"' in charts
@@ -218,6 +219,8 @@ def test_values_charts_and_alarm_journal_for_many_sources(tmp_path: Path) -> Non
         assert "Обновить график" in charts
         assert "Выберите источники" not in charts
         assert "Аварии" not in charts
+        assert 'data-busy' in charts
+        assert 'data-busy' in dashboard
 
         with client.websocket_connect("/ws/v1/events") as socket:
             snapshot = socket.receive_json()

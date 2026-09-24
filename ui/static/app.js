@@ -34,6 +34,20 @@
     return response;
   }
 
+  window.bbBusy = function (root, on, label) {
+    if (!root) return;
+    const busy = !!on;
+    const lock = root.querySelector('[data-busy]');
+    const text = lock && lock.querySelector('[data-busy-label]');
+    if (text && label) text.textContent = label;
+    if (lock) lock.hidden = !busy;
+    root.classList.toggle('is-busy', busy);
+    root.setAttribute('aria-busy', busy ? 'true' : 'false');
+    root.querySelectorAll('form').forEach(function (form) {
+      form.inert = busy;
+    });
+  };
+
   window.bbShell = function bbShell() {
     return {
       toasts: [],

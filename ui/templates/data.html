@@ -2,9 +2,9 @@
 {% block title %}Данные · BlackBox{% endblock %}
 {% block body_class %}bb-wide{% endblock %}
 {% block content %}
-<section class="bb-card" id="bb-data" data-bb-events data-export-url="/api/v1/telemetry/export">
+<section class="bb-card bb-busy-host is-busy" id="bb-data" data-bb-events data-export-url="/api/v1/telemetry/export" aria-busy="true">
   <h1 class="bb-page-title">Данные</h1>
-  <form id="bb-data-form" onsubmit="return false;">
+  <form id="bb-data-form" onsubmit="return false;" inert>
     <div class="bb-tabs bb-vm-tabs" role="tablist" aria-label="Машины">
       {% for vm in vms %}
       <label class="bb-tab"><input type="radio" name="vm_id" value="{{ vm.id }}" {% if loop.first %}checked{% endif %}> {{ vm.name }}</label>
@@ -39,6 +39,12 @@
     </div>
   </form>
   <div id="bb-data-table"><p class="bb-hint">Загрузка таблицы…</p></div>
+  <div class="bb-busy" data-busy>
+    <div class="bb-busy-panel" role="status" aria-live="polite">
+      <span class="bb-spinner" aria-hidden="true"></span>
+      <span data-busy-label>Загрузка…</span>
+    </div>
+  </div>
 </section>
 <script defer src="/static/data.js?v={{ app_version }}"></script>
 {% endblock %}

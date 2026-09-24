@@ -1910,7 +1910,7 @@
   background: #fff;
   cursor: pointer;
 }
-.bb-row-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; margin: 0.8rem 0; }
+.bb-row-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; margin: 0.8rem 0; position: relative; z-index: 5; overflow: visible; }
 .bb-table-wrap { overflow: auto; border: 1px solid var(--bb-border); border-radius: 10px; }
 .bb-table-wrap table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
 .bb-table-wrap th,
@@ -1966,9 +1966,10 @@
 .bb-picker-btn span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .bb-picker-menu {
   position: absolute;
-  z-index: 30;
+  z-index: 90;
   top: calc(100% + 0.35rem);
-  right: 0;
+  left: 0;
+  right: auto;
   width: min(320px, 80vw);
   max-height: 360px;
   overflow: auto;
@@ -2029,4 +2030,48 @@
   background: #fff;
 }
 #bb-chart-view { margin-top: 0.2rem; }
+
+.bb-busy-host {
+  position: relative;
+  min-height: 12rem;
+}
+#bb-dashboard.bb-busy-host { min-height: 60vh; }
+.bb-busy-host.is-busy > :not(.bb-busy) {
+  pointer-events: none;
+  user-select: none;
+}
+.bb-busy {
+  position: absolute;
+  inset: 0;
+  z-index: 80;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(255, 255, 255, 0.78);
+  backdrop-filter: blur(2px);
+  border-radius: inherit;
+}
+.bb-busy[hidden] { display: none !important; }
+.bb-busy-panel {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.7rem;
+  padding: 0.7rem 1rem;
+  border: 1px solid var(--bb-border);
+  border-radius: 12px;
+  background: #fff;
+  box-shadow: var(--bb-shadow);
+  font-weight: 600;
+}
+.bb-spinner {
+  width: 1.6rem;
+  height: 1.6rem;
+  border: 3px solid #d5deee;
+  border-top-color: var(--bb-accent);
+  border-radius: 50%;
+  animation: bb-spin 0.7s linear infinite;
+}
+@keyframes bb-spin {
+  to { transform: rotate(360deg); }
+}
 

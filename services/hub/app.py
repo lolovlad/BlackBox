@@ -39,7 +39,7 @@ from .vm_config import normalize_runtime_config
 
 logger = logging.getLogger("blackbox.hub")
 
-HUB_VERSION = "2.0.23"
+HUB_VERSION = "2.0.24"
 HUB_VENDOR = "AGK"
 
 PROTOCOL_LABELS = {

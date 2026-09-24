@@ -12,6 +12,17 @@
   let loadToken = 0;
   const columnPick = JSON.parse(localStorage.getItem('bb-charts-columns') || '{}');
 
+  function setBusy(on, label) {
+    if (window.bbBusy) window.bbBusy(root, on, label);
+  }
+
+  function syncPicker() {
+    const menu = fieldHost.querySelector('.bb-picker-menu');
+    const btn = fieldHost.querySelector('[data-picker-btn]');
+    if (menu) menu.hidden = !openPicker;
+    if (btn) btn.setAttribute('aria-expanded', openPicker ? 'true' : 'false');
+  }
+
   function setRadio(name, value) {
     const nodes = form.querySelectorAll('input[name="' + name + '"]');
     let matched = false;
@@ -301,15 +312,18 @@
     activeFetch = ctl;
     const token = ++loadToken;
     const id = vmId();
+    setBusy(true, 'Загрузка…');
     if (!id) {
       state.catalog = [];
       renderFields();
       renderEmpty('Выберите машину.');
+      if (token === loadToken) setBusy(false);
       return;
     }
     if (!window.echarts) {
       renderFields();
       renderEmpty('Не удалось инициализировать график.');
+      if (token === loadToken) setBusy(false);
       return;
     }
     meta.textContent = 'Загрузка графика…';
@@ -338,6 +352,7 @@
       renderEmpty('Не удалось загрузить график.');
     } finally {
       if (activeFetch === ctl) activeFetch = null;
+      if (token === loadToken) setBusy(false);
     }
   }
 
@@ -399,21 +414,29 @@
     if (!target) return;
     const pick = target.closest('[data-pick]');
     if (pick) {
+      event.preventDefault();
+      event.stopPropagation();
       chooseColumn(pick.getAttribute('data-pick'));
       return;
     }
     const pickerBtn = target.closest('[data-picker-btn]');
     if (pickerBtn) {
+      event.preventDefault();
+      event.stopPropagation();
       openPicker = !openPicker;
-      renderFields();
+      syncPicker();
     }
   });
 
   document.addEventListener('click', function (event) {
-    const target = event.target instanceof Element ? event.target : null;
-    if (!openPicker || (target && target.closest('#bb-chart-fields'))) return;
+    if (!openPicker) return;
+    const path = typeof event.composedPath === 'function' ? event.composedPath() : [];
+    const inside = path.some(function (node) {
+      return node && node.id === 'bb-chart-fields';
+    });
+    if (inside) return;
     openPicker = false;
-    renderFields();
+    syncPicker();
   });
 
   const refresh = document.getElementById('bb-chart-refresh');

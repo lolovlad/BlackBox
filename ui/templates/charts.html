@@ -2,9 +2,9 @@
 {% block title %}Графики · BlackBox{% endblock %}
 {% block body_class %}bb-wide{% endblock %}
 {% block content %}
-<section class="bb-card" id="bb-charts" data-bb-events data-series-url="/api/v1/telemetry/series">
+<section class="bb-card bb-busy-host is-busy" id="bb-charts" data-bb-events data-series-url="/api/v1/telemetry/series" aria-busy="true">
   <h1 class="bb-page-title">Графики</h1>
-  <form id="bb-chart-form" onsubmit="return false;">
+  <form id="bb-chart-form" onsubmit="return false;" inert>
     <div class="bb-tabs bb-vm-tabs" role="tablist" aria-label="Машины">
       {% for vm in vms %}
       <label class="bb-tab"><input type="radio" name="vm_id" value="{{ vm.id }}" {% if loop.first %}checked{% endif %}> {{ vm.name }}</label>
@@ -32,6 +32,12 @@
   <div id="bb-chart-view">
     <p class="bb-hint" id="bb-chart-meta">Загрузка графика…</p>
     <div id="bb-echarts" class="bb-echarts"></div>
+  </div>
+  <div class="bb-busy" data-busy>
+    <div class="bb-busy-panel" role="status" aria-live="polite">
+      <span class="bb-spinner" aria-hidden="true"></span>
+      <span data-busy-label>Загрузка…</span>
+    </div>
   </div>
 </section>
 <script defer src="/static/vendor/echarts.min.js?v={{ app_version }}"></script>

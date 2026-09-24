@@ -13,6 +13,17 @@
   let loadToken = 0;
   const columnPick = JSON.parse(localStorage.getItem('bb-data-columns') || '{}');
 
+  function setBusy(on, label) {
+    if (window.bbBusy) window.bbBusy(root, on, label);
+  }
+
+  function syncPicker() {
+    const menu = fieldHost.querySelector('.bb-picker-menu');
+    const btn = fieldHost.querySelector('[data-picker-btn]');
+    if (menu) menu.hidden = !openPicker;
+    if (btn) btn.setAttribute('aria-expanded', openPicker ? 'true' : 'false');
+  }
+
   function cssEscape(value) {
     if (window.CSS && CSS.escape) return CSS.escape(String(value));
     return String(value).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
@@ -176,10 +187,12 @@
     activeFetch = ctl;
     const token = ++loadToken;
     const id = vmId();
+    if (!keepPlace) setBusy(true, 'Загрузка…');
     if (!id) {
       catalog = [];
       renderFields();
       tableHost.innerHTML = '<p class="bb-hint">Выберите машину.</p>';
+      if (token === loadToken) setBusy(false);
       return;
     }
     if (!keepPlace) tableHost.innerHTML = '<p class="bb-hint">Загрузка таблицы…</p>';
@@ -209,6 +222,7 @@
       tableHost.innerHTML = '<p class="bb-hint">Не удалось загрузить таблицу.</p>';
     } finally {
       if (activeFetch === ctl) activeFetch = null;
+      if (token === loadToken && !keepPlace) setBusy(false);
     }
   }
 
@@ -282,21 +296,29 @@
     if (!target) return;
     const pick = target.closest('[data-pick]');
     if (pick) {
+      event.preventDefault();
+      event.stopPropagation();
       chooseColumn(pick.getAttribute('data-pick'));
       return;
     }
     const pickerBtn = target.closest('[data-picker-btn]');
     if (pickerBtn) {
+      event.preventDefault();
+      event.stopPropagation();
       openPicker = !openPicker;
-      renderFields();
+      syncPicker();
     }
   });
 
   document.addEventListener('click', function (event) {
-    const target = event.target instanceof Element ? event.target : null;
-    if (!openPicker || (target && target.closest('#bb-data-fields'))) return;
+    if (!openPicker) return;
+    const path = typeof event.composedPath === 'function' ? event.composedPath() : [];
+    const inside = path.some(function (node) {
+      return node && node.id === 'bb-data-fields';
+    });
+    if (inside) return;
     openPicker = false;
-    renderFields();
+    syncPicker();
   });
 
   document.getElementById('bb-data-refresh').addEventListener('click', function () { reloadView(); });
