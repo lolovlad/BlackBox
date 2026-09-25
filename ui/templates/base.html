@@ -30,6 +30,7 @@
         <a href="/charts" class="bb-nav-link{% if path.startswith('/charts') %} is-active{% endif %}"><i class="bi bi-graph-up"></i> Графики</a>
         <a href="/vms" class="bb-nav-link{% if path.startswith('/vms') or path.startswith('/admin/vms') %} is-active{% endif %}"><i class="bi bi-hdd-stack"></i> ВМ</a>
         {% if user.role == 'admin' %}
+        <a href="/cameras" class="bb-nav-link{% if path.startswith('/cameras') %} is-active{% endif %}"><i class="bi bi-camera-video"></i> Камеры</a>
         <a href="/admin/maps" class="bb-nav-link{% if path.startswith('/admin/maps') %} is-active{% endif %}"><i class="bi bi-file-earmark-code"></i> Карты</a>
         <a href="/admin/resources" class="bb-nav-link{% if path.startswith('/admin/resources') %} is-active{% endif %}"><i class="bi bi-hdd-network"></i> Ресурсы</a>
         {% endif %}

@@ -598,7 +598,49 @@ def discover_tcp_resources(
     return resources
 
 
-def discover_storage_resources(data_root: Path) -> list[dict[str, Any]]:
+def _storage_descriptor(
+    *,
+    resource_id: str,
+    name: str,
+    path: str,
+    available: bool,
+    metadata: dict[str, Any],
+) -> dict[str, Any]:
+    return ResourceDescriptor(
+        resource_id=resource_id,
+        kind=ResourceKind.STORAGE,
+        name=name,
+        path=path or None,
+        available=available,
+        metadata=metadata,
+    ).model_dump(mode="json")
+
+
+def _usage_metadata(path: str, *, storage_class: str, detail: str | None = None) -> dict[str, Any]:
+    try:
+        usage = shutil.disk_usage(path)
+    except OSError:
+        return {"class": storage_class, "detail": detail or "внешний носитель"}
+    metadata = {
+        "class": storage_class,
+        "free_bytes": int(usage.free),
+        "total_bytes": int(usage.total),
+        "free_human": human_bytes(usage.free),
+        "total_human": human_bytes(usage.total),
+        "detail": detail or f"{human_bytes(usage.free)} свободно из {human_bytes(usage.total)}",
+    }
+    return metadata
+
+
+def discover_storage_resources(
+    data_root: Path,
+    *,
+    sys_block: Path | None = None,
+    mountinfo: Path | None = None,
+    visible: Callable[[str], Path | None] | None = None,
+) -> list[dict[str, Any]]:
+    from .disks import dedupe_key, storage_filesystems
+
     data_root.mkdir(parents=True, exist_ok=True)
     found: list[dict[str, Any]] = []
     try:
@@ -614,66 +656,136 @@ def discover_storage_resources(data_root: Path) -> list[dict[str, Any]]:
     except OSError:
         storage_meta = {"class": "internal", "detail": "внутренний диск Hub"}
     found.append(
-        ResourceDescriptor(
+        _storage_descriptor(
             resource_id="storage:data",
-            kind=ResourceKind.STORAGE,
             name="Внутренний диск Hub",
             path=str(data_root),
+            available=True,
             metadata=storage_meta,
-        ).model_dump(mode="json")
+        )
     )
-    storage_candidates: list[tuple[str, str]] = []
-    for item in _env_csv("BB_STORAGE_PATHS"):
-        if "=" not in item:
-            continue
-        resource_id, path = item.split("=", 1)
-        resource_id, path = resource_id.strip(), path.strip()
-        if resource_id and path and Path(path).exists():
-            storage_candidates.append((resource_id, path))
-    for mount_root in ("/mnt", "/media", "/run/media"):
-        for candidate in sorted(glob.glob(f"{mount_root}/*")):
-            path = Path(candidate)
-            try:
-                if not path.is_dir() or not os.path.ismount(path):
-                    continue
-            except OSError:
+    explicit = sys_block is not None or mountinfo is not None
+    if not explicit:
+        sys_block = _path_from_env("BB_DISCOVERY_SYS_BLOCK", "/host/sys/block", "/sys/block")
+        mountinfo = _path_from_env("BB_DISCOVERY_MOUNTINFO", "/host/proc/1/mountinfo", "/proc/1/mountinfo", "/proc/self/mountinfo")
+    candidates: list[dict[str, Any]] = []
+    host_items = storage_filesystems(sys_block=sys_block, mountinfo=mountinfo, visible=visible) if sys_block is not None and sys_block.is_dir() else []
+    if host_items:
+        candidates.extend(host_items)
+    elif not explicit:
+        for item in _env_csv("BB_STORAGE_PATHS"):
+            if "=" not in item:
                 continue
-            storage_candidates.append((path.name, str(path)))
-            for nested in sorted(glob.glob(f"{candidate}/*")):
-                nested_path = Path(nested)
+            resource_id, path = item.split("=", 1)
+            resource_id, path = resource_id.strip(), path.strip()
+            if resource_id and path and Path(path).exists():
+                candidates.append(
+                    {
+                        "resource_id": f"storage:{resource_id}",
+                        "name": resource_id,
+                        "path": path,
+                        "available": True,
+                        "detail": None,
+                        "total_bytes": None,
+                        "free_bytes": None,
+                    }
+                )
+        for mount_root in ("/mnt", "/media", "/run/media", "/host/mnt", "/host/media"):
+            for candidate in sorted(glob.glob(f"{mount_root}/*")):
+                path = Path(candidate)
                 try:
-                    if nested_path.is_dir() and os.path.ismount(nested_path):
-                        storage_candidates.append((nested_path.name, str(nested_path)))
+                    if not path.is_dir() or not os.path.ismount(path):
+                        continue
                 except OSError:
                     continue
-    seen_storage_paths: set[str] = set()
-    seen_storage_ids: set[str] = set()
-    for resource_id, path in storage_candidates:
-        resolved_path = str(Path(path).resolve())
-        if resource_id == "data" or resolved_path == str(data_root.resolve()) or resolved_path in seen_storage_paths or resource_id in seen_storage_ids:
+                candidates.append(
+                    {
+                        "resource_id": f"storage:{path.name}",
+                        "name": path.name,
+                        "path": str(path),
+                        "available": True,
+                        "detail": None,
+                        "total_bytes": None,
+                        "free_bytes": None,
+                    }
+                )
+    else:
+        for item in _env_csv("BB_STORAGE_PATHS"):
+            if "=" not in item:
+                continue
+            resource_id, path = item.split("=", 1)
+            resource_id, path = resource_id.strip(), path.strip()
+            if resource_id and path and Path(path).exists():
+                candidates.append(
+                    {
+                        "resource_id": f"storage:{resource_id}",
+                        "name": resource_id,
+                        "path": path,
+                        "available": True,
+                        "detail": None,
+                        "total_bytes": None,
+                        "free_bytes": None,
+                    }
+                )
+    if host_items:
+        for item in _env_csv("BB_STORAGE_PATHS"):
+            if "=" not in item:
+                continue
+            resource_id, path = item.split("=", 1)
+            resource_id, path = resource_id.strip(), path.strip()
+            if resource_id and path and Path(path).exists():
+                candidates.append(
+                    {
+                        "resource_id": f"storage:{resource_id}",
+                        "name": resource_id,
+                        "path": path,
+                        "available": True,
+                        "detail": None,
+                        "total_bytes": None,
+                        "free_bytes": None,
+                    }
+                )
+    seen_ids: set[str] = {"storage:data"}
+    seen_keys: set[str] = {dedupe_key(str(data_root))}
+    for item in candidates:
+        resource_id = str(item["resource_id"])
+        path = str(item.get("path") or "")
+        key = dedupe_key(path) if path else resource_id
+        if resource_id in seen_ids or (path and key in seen_keys):
             continue
-        seen_storage_paths.add(resolved_path)
-        seen_storage_ids.add(resource_id)
-        try:
-            usage = shutil.disk_usage(path)
-            metadata = {
-                "class": "external",
-                "free_bytes": int(usage.free),
-                "total_bytes": int(usage.total),
-                "free_human": human_bytes(usage.free),
-                "total_human": human_bytes(usage.total),
-                "detail": f"{human_bytes(usage.free)} свободно из {human_bytes(usage.total)}",
-            }
-        except OSError:
-            metadata = {"class": "external", "detail": "внешний носитель"}
+        if path:
+            try:
+                if Path(path).resolve() == data_root.resolve():
+                    continue
+            except OSError:
+                pass
+        seen_ids.add(resource_id)
+        if path:
+            seen_keys.add(key)
+        available = bool(item.get("available", True))
+        detail = item.get("detail")
+        if available and path:
+            metadata = _usage_metadata(path, storage_class="external", detail=detail)
+        else:
+            metadata = {"class": "external", "detail": detail or "внешний носитель"}
+            if item.get("total_bytes"):
+                metadata["total_bytes"] = int(item["total_bytes"])
+                metadata["total_human"] = human_bytes(item["total_bytes"])
+            if item.get("free_bytes") is not None:
+                metadata["free_bytes"] = int(item["free_bytes"])
+                metadata["free_human"] = human_bytes(item["free_bytes"])
+        if item.get("host_mount"):
+            metadata["host_mount"] = item["host_mount"]
+        if item.get("device"):
+            metadata["device"] = item["device"]
         found.append(
-            ResourceDescriptor(
-                resource_id=f"storage:{resource_id}",
-                kind=ResourceKind.STORAGE,
-                name=resource_id,
+            _storage_descriptor(
+                resource_id=resource_id,
+                name=str(item.get("name") or resource_id),
                 path=path,
+                available=available,
                 metadata=metadata,
-            ).model_dump(mode="json")
+            )
         )
     return found
 

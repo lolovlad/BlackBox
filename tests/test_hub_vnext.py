@@ -1017,7 +1017,8 @@ def test_get_map_document_by_version(tmp_path: Path):
 def test_hub_does_not_seed_default_maps(tmp_path: Path):
     with _client(tmp_path) as client:
         assert client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin-password"}).status_code == 200
-        assert client.get("/api/v1/maps").json()["items"] == []
+        items = client.get("/api/v1/maps").json()["items"]
+        assert [item for item in items if item["protocol"] != "gpio"] == []
         missing = client.post(
             "/api/v1/vms",
             json={"name": "no-map", "protocol": "simulator", "map_version": "default-v1"},
@@ -1040,7 +1041,7 @@ def test_maps_page_opens_version_studio(tmp_path: Path):
         end = html.find("</script>", start)
         payload = html[start + len('id="bb-maps-payload">') : end]
         maps = json.loads(payload)
-        assert maps == []
+        assert all(item.get("protocol") == "gpio" for item in maps)
 
 
 def test_map_edits_publish_as_a_new_immutable_version(tmp_path: Path):
@@ -1157,3 +1158,32 @@ def test_refresh_rotation_and_logout(tmp_path: Path):
         assert client.get("/api/v1/auth/me").status_code == 200
         assert client.post("/api/v1/auth/logout", headers={"X-CSRF-Token": client.cookies.get("bb_csrf")}).status_code == 200
         assert client.get("/api/v1/auth/me").status_code == 401
+
+
+def test_gpio_chip_seeds_running_vm_once(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("BB_DISCOVERY_GPIO_PATHS", "/dev/gpiochip0")
+    with _client(tmp_path) as client:
+        assert client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin-password"}).status_code == 200
+        csrf = client.cookies.get("bb_csrf")
+        maps = client.get("/api/v1/maps").json()["items"]
+        assert any(item["protocol"] == "gpio" and item["version"] == "gpio-default-v1" for item in maps)
+        vms = [item for item in client.get("/api/v1/vms").json()["items"] if item["protocol"] == "gpio"]
+        assert len(vms) == 1
+        assert vms[0]["desired_state"] == "running"
+        assert vms[0]["map_version"] == "gpio-default-v1"
+        assert vms[0]["config"]["reader"]["gpio_chip"] == "/dev/gpiochip0"
+        assert vms[0]["read_resources"][0]["resource_id"] == "gpio:/dev/gpiochip0"
+        stopped = client.post(f"/api/v1/vms/{vms[0]['id']}/stop", headers={"X-CSRF-Token": csrf})
+        assert stopped.status_code == 200
+    cfg = HubConfig(
+        db_path=tmp_path / "hub.db",
+        data_root=tmp_path / "data",
+        jwt_secret="test-secret",
+        bootstrap_password="admin-password",
+        docker_enabled=True,
+    )
+    with TestClient(create_app(cfg, docker_client=FakeDocker())) as again:
+        again.post("/api/v1/auth/login", json={"username": "admin", "password": "admin-password"})
+        vms = [item for item in again.get("/api/v1/vms").json()["items"] if item["protocol"] == "gpio"]
+        assert len(vms) == 1
+        assert vms[0]["desired_state"] == "stopped"

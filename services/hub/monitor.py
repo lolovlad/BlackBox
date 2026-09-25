@@ -48,32 +48,78 @@ def collect_system_monitor(data_root: Path) -> dict[str, Any]:
             "percent": round(float(memory.percent), 1),
         }
         stats["process"]["uptime_sec"] = int(max(0.0, time.time() - process.create_time()))
-        disks: list[dict[str, Any]] = []
-        seen: set[str] = set()
-        for part in psutil.disk_partitions(all=False):
-            mount = str(getattr(part, "mountpoint", "") or "")
-            if not mount or mount in seen:
-                continue
-            seen.add(mount)
-            try:
-                mount_usage = psutil.disk_usage(mount)
-            except (OSError, PermissionError):
-                continue
-            disks.append(
-                {
-                    "mount": mount,
-                    "device": str(getattr(part, "device", "") or ""),
-                    "fstype": str(getattr(part, "fstype", "") or ""),
-                    "used_gb": round((mount_usage.total - mount_usage.free) / (1024**3), 2),
-                    "total_gb": round(mount_usage.total / (1024**3), 2),
-                    "free_gb": round(mount_usage.free / (1024**3), 2),
-                    "percent": round(float(mount_usage.percent), 1),
-                }
-            )
-        stats["disks"] = disks
+        stats["disks"] = _dashboard_disks(psutil)
     except Exception:
         pass
     return stats
+
+
+_PSEUDO_FS = frozenset(
+    {
+        "autofs",
+        "bpf",
+        "cgroup",
+        "cgroup2",
+        "configfs",
+        "debugfs",
+        "devpts",
+        "devtmpfs",
+        "fusectl",
+        "mqueue",
+        "nsfs",
+        "overlay",
+        "proc",
+        "pstore",
+        "ramfs",
+        "securityfs",
+        "squashfs",
+        "sysfs",
+        "tmpfs",
+        "tracefs",
+    }
+)
+_SKIP_MOUNT = frozenset({"/etc/hosts", "/etc/hostname", "/etc/resolv.conf"})
+
+
+def _dashboard_disks(psutil: Any) -> list[dict[str, Any]]:
+    from .discovery import _path_from_env
+    from .disks import dashboard_disks, parent_disk_name
+
+    sys_block = _path_from_env("BB_DISCOVERY_SYS_BLOCK", "/host/sys/block", "/sys/block")
+    mountinfo = _path_from_env("BB_DISCOVERY_MOUNTINFO", "/host/proc/1/mountinfo", "/proc/1/mountinfo", "/proc/self/mountinfo")
+    host = dashboard_disks(sys_block=sys_block, mountinfo=mountinfo)
+    if host is not None:
+        return host
+    grouped: dict[str, dict[str, Any]] = {}
+    for part in psutil.disk_partitions(all=False):
+        mount = str(getattr(part, "mountpoint", "") or "")
+        device = str(getattr(part, "device", "") or "")
+        fstype = str(getattr(part, "fstype", "") or "")
+        if not mount or fstype in _PSEUDO_FS or mount in _SKIP_MOUNT:
+            continue
+        if mount.startswith("/etc/") or mount.startswith("/proc") or mount.startswith("/sys") or mount.startswith("/dev"):
+            continue
+        node = device.removeprefix("/dev/")
+        if node.startswith(("loop", "zram", "ram")):
+            continue
+        try:
+            mount_usage = psutil.disk_usage(mount)
+        except (OSError, PermissionError):
+            continue
+        parent = parent_disk_name(node) if device.startswith("/dev/") else device or mount
+        card = {
+            "mount": mount,
+            "device": device or mount,
+            "fstype": fstype,
+            "used_gb": round((mount_usage.total - mount_usage.free) / (1024**3), 2),
+            "total_gb": round(mount_usage.total / (1024**3), 2),
+            "free_gb": round(mount_usage.free / (1024**3), 2),
+            "percent": round(float(mount_usage.percent), 1),
+        }
+        current = grouped.get(parent)
+        if current is None or card["total_gb"] > current["total_gb"]:
+            grouped[parent] = card
+    return list(grouped.values())
 
 
 def _cpu_fan_rpm(psutil: Any) -> int | None:

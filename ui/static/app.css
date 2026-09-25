@@ -2075,3 +2075,18 @@
   to { transform: rotate(360deg); }
 }
 
+#cameras-form { max-width: none; }
+.bb-camera-row {
+  margin: 0.4rem 0 0;
+  padding: 0.9rem 1rem 1rem;
+  border: 1px solid var(--bb-border);
+  border-radius: 12px;
+}
+.bb-camera-row legend { font-weight: 700; padding: 0 0.35rem; }
+.bb-camera-status { margin: 0 0 0.7rem; color: var(--bb-slate); }
+.bb-camera-grid {
+  display: grid;
+  gap: 0.75rem;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+}
+

@@ -267,7 +267,11 @@
     const disks = root.querySelector('[data-monitor="disks"]');
     const list = data.disks || [];
     disks.innerHTML = list.length ? list.map(function (item) {
-      return '<article class="bb-monitor-disk"><div class="bb-monitor-disk-head"><strong>' + esc(item.device || '-') + '</strong><span>' + esc(item.percent) + '%</span></div><div class="bb-hint">' + esc(item.mount) + '</div><div>ФС: ' + esc(item.fstype || '-') + '</div><div>Занято: ' + esc(item.used_gb) + ' / ' + esc(item.total_gb) + ' ГБ</div><div>Свободно: ' + esc(item.free_gb) + ' ГБ</div></article>';
+      const percent = item.percent == null ? '—' : esc(item.percent) + '%';
+      const used = item.used_gb == null ? '—' : esc(item.used_gb);
+      const total = item.total_gb == null ? '—' : esc(item.total_gb);
+      const free = item.free_gb == null ? '—' : esc(item.free_gb);
+      return '<article class="bb-monitor-disk"><div class="bb-monitor-disk-head"><strong>' + esc(item.device || '-') + '</strong><span>' + percent + '</span></div><div class="bb-hint">' + esc(item.mount) + '</div><div>ФС: ' + esc(item.fstype || '-') + '</div><div>Занято: ' + used + ' / ' + total + ' ГБ</div><div>Свободно: ' + free + ' ГБ</div></article>';
     }).join('') : '<p class="bb-hint">Список дисков недоступен.</p>';
     const gpio = data.gpio_items || [];
     const gpioList = root.querySelector('[data-gpio-list]');

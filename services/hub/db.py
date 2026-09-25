@@ -101,6 +101,17 @@ class HubRepository:
                     PRIMARY KEY (vm_id, kind, name)
                 );
                 CREATE INDEX IF NOT EXISTS idx_alarm_events_vm ON alarm_events(vm_id, kind, created_at);
+                CREATE TABLE IF NOT EXISTS camera_settings (
+                    id INTEGER PRIMARY KEY CHECK (id = 1),
+                    document_json TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS camera_status (
+                    camera_id TEXT PRIMARY KEY,
+                    state TEXT NOT NULL,
+                    message TEXT NOT NULL DEFAULT '',
+                    updated_at TEXT NOT NULL
+                );
                 """
             )
             c.executemany("INSERT OR IGNORE INTO roles(name) VALUES (?)", [("admin",), ("user",)])
@@ -255,7 +266,7 @@ class HubRepository:
                     values.get("preset_id"),
                     values["map_version"],
                     values["worker_image"],
-                    "stopped",
+                    values.get("desired_state") if values.get("desired_state") in {"running", "stopped"} else "stopped",
                     json.dumps(read_resources),
                     json.dumps(read_resources),
                     values.get("storage_resource_id"),
@@ -583,11 +594,53 @@ class HubRepository:
             else:
                 c.execute("UPDATE discovered_resources SET available=0,updated_at=?", (now,))
             for r in resources:
+                available = 1 if r.get("available", True) else 0
                 c.execute(
-                    "INSERT INTO discovered_resources(resource_id,kind,name,path,address,metadata_json,updated_at) VALUES(?,?,?,?,?,?,?) ON CONFLICT(resource_id) DO UPDATE SET kind=excluded.kind,name=excluded.name,path=excluded.path,address=excluded.address,available=1,metadata_json=excluded.metadata_json,updated_at=excluded.updated_at",
-                    (r["resource_id"], r["kind"], r["name"], r.get("path"), r.get("address"), json.dumps(r.get("metadata", {})), now),
+                    "INSERT INTO discovered_resources(resource_id,kind,name,path,address,metadata_json,available,updated_at) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(resource_id) DO UPDATE SET kind=excluded.kind,name=excluded.name,path=excluded.path,address=excluded.address,available=excluded.available,metadata_json=excluded.metadata_json,updated_at=excluded.updated_at",
+                    (r["resource_id"], r["kind"], r["name"], r.get("path"), r.get("address"), json.dumps(r.get("metadata", {})), available, now),
                 )
         return self.list_resources()
+
+    def camera_document(self) -> dict[str, Any]:
+        with self.connect() as c:
+            row = c.execute("SELECT document_json FROM camera_settings WHERE id=1").fetchone()
+        if row is None:
+            return {"cameras": []}
+        try:
+            payload = json.loads(row[0])
+        except json.JSONDecodeError:
+            return {"cameras": []}
+        return payload if isinstance(payload, dict) else {"cameras": []}
+
+    def save_camera_document(self, document: dict[str, Any]) -> dict[str, Any]:
+        now = datetime.now(timezone.utc).isoformat()
+        with self.connect() as c:
+            c.execute(
+                "INSERT INTO camera_settings(id, document_json, updated_at) VALUES(1, ?, ?) ON CONFLICT(id) DO UPDATE SET document_json=excluded.document_json, updated_at=excluded.updated_at",
+                (json.dumps(document, ensure_ascii=False), now),
+            )
+        return self.camera_document()
+
+    def camera_status(self) -> dict[str, dict[str, Any]]:
+        with self.connect() as c:
+            rows = c.execute("SELECT camera_id, state, message, updated_at FROM camera_status").fetchall()
+        return {
+            str(row["camera_id"]): {"state": row["state"], "message": row["message"], "updated_at": row["updated_at"]}
+            for row in rows
+        }
+
+    def save_camera_status(self, items: list[dict[str, Any]]) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        with self.connect() as c:
+            c.execute("DELETE FROM camera_status")
+            for item in items:
+                camera_id = str(item.get("id") or "").strip()
+                if not camera_id:
+                    continue
+                c.execute(
+                    "INSERT INTO camera_status(camera_id, state, message, updated_at) VALUES(?,?,?,?)",
+                    (camera_id, str(item.get("state") or "stopped"), str(item.get("message") or "")[:500], now),
+                )
 
     def list_resource_leases(self) -> dict[str, str]:
         with self.connect() as c:

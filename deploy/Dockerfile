@@ -51,6 +51,33 @@ ENTRYPOINT ["/app/.venv/bin/python", "-m", "workers.modbus_rtu.main"]
 FROM worker AS worker-tcp
 ENTRYPOINT ["/app/.venv/bin/python", "-m", "workers.modbus_tcp.main"]
 
+FROM worker AS worker-gpio
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libgpiod2 \
+    && rm -rf /var/lib/apt/lists/*
+RUN uv pip install --python /app/.venv/bin/python "gpiod>=2.1,<3"
+ENTRYPOINT ["/app/.venv/bin/python", "-m", "workers.gpio.main"]
+
+FROM base AS video
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl xz-utils \
+    && rm -rf /var/lib/apt/lists/*
+ARG TARGETARCH
+RUN set -eux; \
+    case "${TARGETARCH}" in \
+      arm64) arch=linuxarm64 ;; \
+      *) arch=linux64 ;; \
+    esac; \
+    curl -fsSL -o /tmp/ffmpeg.tar.xz "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-${arch}-gpl.tar.xz"; \
+    tar -xJf /tmp/ffmpeg.tar.xz -C /tmp; \
+    install -m 755 "/tmp/ffmpeg-master-latest-${arch}-gpl/bin/ffmpeg" /usr/local/bin/ffmpeg; \
+    install -m 755 "/tmp/ffmpeg-master-latest-${arch}-gpl/bin/ffprobe" /usr/local/bin/ffprobe; \
+    rm -rf /tmp/ffmpeg*
+RUN pip install --no-cache-dir "pydantic>=2.12.5"
+COPY services/__init__.py ./services/__init__.py
+COPY services/video ./services/video
+ENTRYPOINT ["python", "-m", "services.video.main"]
+
 FROM hub-deps AS legacy
 COPY blackbox ./blackbox
 COPY modbus_acquire ./modbus_acquire

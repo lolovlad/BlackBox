@@ -148,16 +148,43 @@
     if (iface && option && option.dataset.interface) iface.value = option.dataset.interface;
   }
 
+  function syncGpioChip(form) {
+    const select = enabledField(form, 'gpio_resource_id');
+    const chip = enabledField(form, 'gpio_chip');
+    const option = selectedOption(select);
+    if (chip && option && option.dataset.path) chip.value = option.dataset.path;
+  }
+
+  function gpioPinsFromForm(form) {
+    return Array.from(form.querySelectorAll('[data-gpio-pin]')).map(function (row) {
+      const invert = row.querySelector('[name="gpio_invert"]');
+      return {
+        bcm_pin: numberOr(row.querySelector('[name="gpio_bcm"]')?.value, 0),
+        name: (row.querySelector('[name="gpio_name"]')?.value || '').trim(),
+        trigger_level: numberOr(row.querySelector('[name="gpio_trigger"]')?.value, 0),
+        hold_sec: numberOr(row.querySelector('[name="gpio_hold"]')?.value, 0.5),
+        pull: row.querySelector('[name="gpio_pull"]')?.value || 'up',
+        invert: !!(invert && invert.checked),
+      };
+    });
+  }
+
   function bindProtocolForm(form, protocol) {
     if (!form) return;
     syncProtocolPanels(protocol, form);
     syncSerialPort(form);
     syncCanInterface(form);
+    syncGpioChip(form);
     syncConnectionChrome(form, protocol);
     const serial = form.querySelector('[name="serial_resource_id"]');
     if (serial) serial.addEventListener('change', function () { syncSerialPort(form); });
     const can = form.querySelector('[name="can_resource_id"]');
     if (can) can.addEventListener('change', function () { syncCanInterface(form); });
+    const gpio = form.querySelector('[name="gpio_resource_id"]');
+    if (gpio && !gpio.dataset.bound) {
+      gpio.dataset.bound = '1';
+      gpio.addEventListener('change', function () { syncGpioChip(form); });
+    }
   }
 
   function readResourcesFromForm(form, protocol) {
@@ -168,6 +195,10 @@
     }
     if (protocol === 'can') {
       const value = enabledField(form, 'can_resource_id')?.value;
+      return value ? [{ resource_id: value }] : [];
+    }
+    if (protocol === 'gpio') {
+      const value = enabledField(form, 'gpio_resource_id')?.value;
       return value ? [{ resource_id: value }] : [];
     }
     return [];
@@ -243,6 +274,12 @@
         can_bitrate: numberOr(get('can_bitrate')?.value, 250000),
       });
     }
+    if (protocol === 'gpio') {
+      Object.assign(reader, {
+        gpio_chip: get('gpio_chip')?.value || selectedOption(get('gpio_resource_id'))?.dataset.path || '',
+        poll_interval_sec: numberOr(get('poll_interval_sec')?.value, 0.05),
+      });
+    }
     return {
       reader: reader,
       storage: {
@@ -272,6 +309,7 @@
   function deviceSelectName(protocol) {
     if (protocol === 'modbus_rtu') return 'serial_resource_id';
     if (protocol === 'can') return 'can_resource_id';
+    if (protocol === 'gpio') return 'gpio_resource_id';
     return '';
   }
 
@@ -357,16 +395,20 @@
     }
     if (protocol === 'modbus_rtu') syncSerialPort(form);
     if (protocol === 'can') syncCanInterface(form);
+    if (protocol === 'gpio') syncGpioChip(form);
   }
 
   function applyCandidates(form, protocol, candidates) {
     const grouped = candidates || {};
     fillResourceSelect(form.querySelector('[name="serial_resource_id"]'), grouped.modbus_rtu, 'path', 'path');
     fillResourceSelect(form.querySelector('[name="can_resource_id"]'), grouped.can, 'interface', 'name');
+    fillResourceSelect(form.querySelector('[name="gpio_resource_id"]'), grouped.gpio, 'path', 'path');
     renderDeviceList(form, 'modbus_rtu', grouped.modbus_rtu);
     renderDeviceList(form, 'can', grouped.can);
+    renderDeviceList(form, 'gpio', grouped.gpio);
     syncSerialPort(form);
     syncCanInterface(form);
+    syncGpioChip(form);
     const spec = connectionOf(protocol);
     const panel = form.querySelector('[data-protocol-panel="' + protocol + '"]');
     const status = panel ? panel.querySelector('[data-probe-status]') : null;
@@ -564,7 +606,7 @@
   }
 
   window.bbMapsPage = function bbMapsPage() {
-    const labels = { simulator: 'Simulator', modbus_rtu: 'Modbus RTU', modbus_tcp: 'Modbus TCP', can: 'CAN' };
+    const labels = { simulator: 'Simulator', modbus_rtu: 'Modbus RTU', modbus_tcp: 'Modbus TCP', can: 'CAN', gpio: 'GPIO' };
 
     function nextVersion(version) {
       const match = String(version || '').match(/^(.*?)(\d+)$/);
@@ -855,7 +897,7 @@
 
   window.bbVmsPage = function bbVmsPage() {
     const labels = { pending: 'Ожидает', created: 'Создана', starting: 'Запускается', running: 'Работает', stopping: 'Останавливается', stopped: 'Остановлена', failed: 'Ошибка', unknown: 'Неизвестно' };
-    const protocols = { simulator: 'Симулятор', modbus_rtu: 'Modbus RTU', modbus_tcp: 'Modbus TCP', can: 'CAN' };
+    const protocols = { simulator: 'Симулятор', modbus_rtu: 'Modbus RTU', modbus_tcp: 'Modbus TCP', can: 'CAN', gpio: 'GPIO' };
     let payload = { selected: '', vms: [] };
     const node = document.getElementById('bb-vms-state');
     if (node) {
@@ -973,6 +1015,7 @@
         if (vm.protocol === 'modbus_rtu') connection = config.port || '';
         else if (vm.protocol === 'modbus_tcp') connection = config.host ? (config.host + ':' + (config.tcp_port || 502)) : '';
         else if (vm.protocol === 'can') connection = config.can_interface || '';
+        else if (vm.protocol === 'gpio') connection = config.gpio_chip || '';
         else connection = 'без физического прибора';
         return {
           name: vm.name || 'ВМ',
@@ -1190,6 +1233,10 @@
         toast('Выберите CAN-интерфейс', 'error');
         return;
       }
+      if (protocol === 'gpio' && !payload.read_resources.length) {
+        toast('Выберите GPIO-чип', 'error');
+        return;
+      }
       try {
         await mutate('/api/v1/vms', {
           method: 'POST',
@@ -1210,18 +1257,20 @@
       event.preventDefault();
       const form = new FormData(edit);
       const protocol = edit.dataset.vmProtocol || '';
+      const payload = {
+        name: form.get('name'),
+        description: form.get('description'),
+        map_version: form.get('map_version'),
+        read_resources: readResourcesFromForm(edit, protocol),
+        storage_resource_id: form.get('storage_resource_id') || 'storage:data',
+        config: runtimeConfigFromForm(edit),
+      };
+      if (protocol === 'gpio') payload.gpio_pins = gpioPinsFromForm(edit);
       try {
         await mutate('/api/v1/vms/' + edit.dataset.vmId, {
           method: 'PATCH',
           headers: headers({ 'Content-Type': 'application/json' }),
-          body: JSON.stringify({
-            name: form.get('name'),
-            description: form.get('description'),
-            map_version: form.get('map_version'),
-            read_resources: readResourcesFromForm(edit, protocol),
-            storage_resource_id: form.get('storage_resource_id') || 'storage:data',
-            config: runtimeConfigFromForm(edit),
-          }),
+          body: JSON.stringify(payload),
         });
         toast('ВМ сохранена', 'ok');
         location.href = '/vms';

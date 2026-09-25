@@ -9,7 +9,7 @@ import secrets
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, UploadFile, WebSocket, WebSocketDisconnect
@@ -22,11 +22,16 @@ from pydantic import BaseModel, Field, ValidationError
 from bb_platform.contracts import AlarmEvent, MapDocument, Quality, RawBatch, ResourceKind, TagSample, VmCommand, VmLifecycle, VmProtocol, VmStatus, WorkerCommandAck, WorkerError, WorkerHeartbeat, WorkerRegister
 from bb_platform.parser import adapt_legacy_map, diagnose_read, field_channel, field_label, parse_batch
 
+from services.video.settings import VideoConfig, config_estimates
+
+from workers.gpio.pins import pins_from_fields
+
 from .config import HubConfig
 from .connection import PROFILES, connection_profile, inventory_kinds
 from .db import HubRepository
 from .discovery import KIND_LABELS, PROTOCOL_RESOURCE_KIND, discover_resources, discovery_summary, is_usable_can_interface, is_usable_serial_port
 from .docker_manager import DockerManager, DockerUnavailable
+from .gpio_seed import ensure_gpio_vm, publish_gpio_pins
 from .link import vm_link_status
 from .monitor import collect_system_monitor, gpio_panel
 from .probe import run_probe
@@ -47,12 +52,14 @@ PROTOCOL_LABELS = {
     "modbus_rtu": "Modbus RTU",
     "modbus_tcp": "Modbus TCP",
     "can": "CAN",
+    "gpio": "GPIO",
 }
 PROTOCOL_ICONS = {
     "simulator": "bi-cpu",
     "modbus_rtu": "bi-usb-plug",
     "modbus_tcp": "bi-ethernet",
     "can": "bi-broadcast",
+    "gpio": "bi-toggles",
 }
 LIFECYCLE_LABELS = {
     "pending": "Ожидает",
@@ -114,6 +121,7 @@ class VmPatchRequest(BaseModel):
     storage_resource_id: str | None = None
     limits: dict[str, Any] | None = None
     config: dict[str, Any] | None = None
+    gpio_pins: list[dict[str, Any]] | None = None
 
 
 class MapUploadRequest(BaseModel):
@@ -131,6 +139,16 @@ class ProbeRequest(BaseModel):
     vm_id: str | None = None
 
 
+class VideoStatusItem(BaseModel):
+    id: str = Field(min_length=1, max_length=64)
+    state: Literal["recording", "stopped", "error"] = "stopped"
+    message: str = ""
+
+
+class VideoStatusBody(BaseModel):
+    items: list[VideoStatusItem] = Field(default_factory=list)
+
+
 class UserCreateRequest(BaseModel):
     username: str = Field(min_length=1, max_length=255)
     password: str = Field(min_length=8, max_length=1024)
@@ -146,6 +164,16 @@ def _exc_message(exc: BaseException) -> str:
             msg = str(err.get("msg") or exc)
             return f"{loc}: {msg}" if loc else msg
     return str(exc) or type(exc).__name__
+
+
+def _jsonable(value: Any) -> Any:
+    if isinstance(value, BaseException):
+        return str(value)
+    if isinstance(value, dict):
+        return {str(key): _jsonable(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_jsonable(item) for item in value]
+    return value
 
 
 def _problem(code: str, message: str, status_code: int, details: Any = None) -> JSONResponse:
@@ -493,6 +521,14 @@ def _validate_reader_allowlist(repo: HubRepository, protocol: str, runtime_confi
         if not cans or not iface or not is_usable_can_interface(iface):
             raise HTTPException(409, detail={"code": "read_resource_required", "message": "Нужен интерфейс вроде can0. Сначала найдите его в форме ВМ."})
         reader["can_interface"] = iface
+        return
+    if profile.link == "gpio":
+        chips = by_kind.get(ResourceKind.GPIO.value, [])
+        path = str((chips[0].get("path") if chips else "") or reader.get("gpio_chip") or "")
+        if not chips or not path:
+            raise HTTPException(409, detail={"code": "read_resource_required", "message": "Нужен GPIO-чип, например /dev/gpiochip0."})
+        reader["gpio_chip"] = path
+        return
 
 
 def _approved_resource_groups(repo: HubRepository) -> dict[str, list[dict[str, Any]]]:
@@ -535,6 +571,7 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
     repo.upsert_resources(_discover_resources(cfg.data_root, repo, probe_network=False))
     if repo.resource_by_id("storage:data"):
         repo.approve_resource("storage:data", None)
+    ensure_gpio_vm(repo, worker_image=cfg.worker_image_gpio)
     bus = EventBus()
     store = ParquetStore(cfg.data_root / "telemetry", min_free_bytes=cfg.telemetry_min_free_bytes, quota_bytes=cfg.telemetry_quota_bytes)
     docker_manager = DockerManager(docker_client, enabled=cfg.docker_enabled)
@@ -875,7 +912,7 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
 
     @app.exception_handler(RequestValidationError)
     async def validation_error(request: Request, exc: RequestValidationError):
-        return _problem("validation_error", "Request validation failed", 422, exc.errors())
+        return _problem("validation_error", "Request validation failed", 422, _jsonable(exc.errors()))
 
     @app.exception_handler(HTTPException)
     async def http_error(request: Request, exc: HTTPException):
@@ -1006,6 +1043,7 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
             VmProtocol.SIMULATOR: cfg.worker_image_simulator,
             VmProtocol.MODBUS_RTU: cfg.worker_image_rtu,
             VmProtocol.MODBUS_TCP: cfg.worker_image_tcp,
+            VmProtocol.GPIO: cfg.worker_image_gpio,
         }.get(payload.protocol)
         if image is None:
             raise HTTPException(422, detail={"code": "protocol_unsupported", "message": "No worker image is configured for this protocol"})
@@ -1120,6 +1158,12 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
         if current_vm is None:
             raise HTTPException(404, detail={"code": "not_found", "message": "VM not found"})
         values = payload.model_dump(exclude_none=True)
+        gpio_pins = values.pop("gpio_pins", None)
+        if gpio_pins is not None and current_vm.get("protocol") == VmProtocol.GPIO.value:
+            try:
+                values["map_version"] = publish_gpio_pins(repo, gpio_pins, current_version=str(current_vm.get("map_version") or ""))
+            except ValueError as exc:
+                raise HTTPException(422, detail={"code": "invalid_gpio_pins", "message": str(exc)}) from exc
         if "resources" in values and "read_resources" not in values:
             values["read_resources"] = values.pop("resources")
         values.pop("resources", None)
@@ -1528,6 +1572,42 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
             raise HTTPException(404, detail={"code": "not_found", "message": "Resource not found"})
         repo.record_audit(int(account["id"]), "resource.approve", resource_id)
         return {"ok": True, "resource_id": resource_id}
+
+    def _camera_payload() -> dict[str, Any]:
+        config = VideoConfig.model_validate(repo.camera_document())
+        return {
+            "config": config.model_dump(mode="json"),
+            "estimates": config_estimates(config),
+            "status": repo.camera_status(),
+        }
+
+    def _video_auth(request: Request) -> None:
+        expected = os.getenv("BB_VIDEO_TOKEN", "")
+        supplied = request.headers.get("x-video-token", "")
+        if not expected or not supplied or not secrets.compare_digest(supplied, expected):
+            raise HTTPException(401, detail={"code": "video_unauthorized", "message": "Invalid video token"})
+
+    @app.get("/api/v1/cameras")
+    async def get_cameras(account=Depends(admin)):
+        return _camera_payload()
+
+    @app.put("/api/v1/cameras", dependencies=[Depends(csrf_protect)])
+    async def put_cameras(payload: VideoConfig, account=Depends(admin)):
+        repo.save_camera_document(payload.model_dump(mode="json"))
+        repo.record_audit(int(account["id"]), "cameras.update", None, {"count": len(payload.cameras)})
+        return _camera_payload()
+
+    @app.get("/api/v1/internal/video/config")
+    async def video_config(request: Request):
+        _video_auth(request)
+        config = VideoConfig.model_validate(repo.camera_document())
+        return {"config": config.model_dump(mode="json")}
+
+    @app.post("/api/v1/internal/video/status")
+    async def video_status(payload: VideoStatusBody, request: Request):
+        _video_auth(request)
+        repo.save_camera_status([item.model_dump() for item in payload.items])
+        return {"ok": True}
 
     def worker_auth(request: Request, vm_id: str) -> dict[str, Any]:
         token = request.headers.get("x-worker-token", "")
@@ -2046,6 +2126,18 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
             for item in (vm.get("read_resources") or vm.get("resources") or [])
             if isinstance(item, dict) and item.get("resource_id")
         ]
+        document = repo.map_by_version(vm["map_version"], vm["protocol"]) or {}
+        gpio_pins = [
+            {
+                "bcm_pin": pin.bcm_pin,
+                "name": pin.name,
+                "trigger_level": pin.trigger_level,
+                "hold_sec": pin.hold_sec,
+                "pull": pin.pull,
+                "invert": pin.invert,
+            }
+            for pin in pins_from_fields(document.get("fields") or [])
+        ]
         return templates.TemplateResponse(
             request=request,
             name="vm_edit.html",
@@ -2059,6 +2151,7 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
                 "buffer": (vm.get("config") or {}).get("buffer") or {},
                 "selected_read_ids": read_ids,
                 "current_storage_id": vm.get("storage_resource_id") or "",
+                "gpio_pins": gpio_pins,
                 **groups,
             },
         )
@@ -2099,6 +2192,13 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
                 "storage_resources": [r for r in resources if r.get("kind") == ResourceKind.STORAGE.value],
             },
         )
+
+    @app.get("/cameras", response_class=HTMLResponse)
+    async def cameras_page(request: Request):
+        account = _require_admin_html(request)
+        if isinstance(account, RedirectResponse):
+            return account
+        return templates.TemplateResponse(request=request, name="cameras.html", context={"user": account})
 
     @app.get("/admin/logs", response_class=HTMLResponse)
     async def admin_logs_page(request: Request):

@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block title %}Камеры · BlackBox{% endblock %}
+{% block content %}
+<section class="bb-card">
+  <h1 class="bb-page-title">Камеры</h1>
+  <p class="bb-page-lead">Каждая включённая камера пишется отдельным ffmpeg. Фрагменты: <span class="bb-mono">/data/video/&lt;id&gt;/%Y%m%d_%H%M%S.mp4</span></p>
+  <form id="cameras-form" class="bb-form">
+    <label>Число камер
+      <input type="number" id="camera-count" min="0" max="16" value="0">
+    </label>
+    <div id="camera-rows"></div>
+    <div class="bb-actions">
+      <button type="submit" class="bb-btn">Сохранить</button>
+      <span id="camera-message" class="bb-muted" role="status"></span>
+    </div>
+  </form>
+</section>
+<section class="bb-card">
+  <h2 class="bb-section-title">Размер файлов</h2>
+  <p class="bb-muted" id="camera-copy-note" hidden>Оценка по введённому битрейту: фактический поток камеры может отличаться.</p>
+  <div class="bb-table-wrap">
+    <table class="bb-table">
+      <thead>
+        <tr><th>Камера</th><th>Фрагмент</th><th>Час</th><th>Сутки</th></tr>
+      </thead>
+      <tbody id="camera-estimate-body"></tbody>
+    </table>
+  </div>
+</section>
+<script src="/static/cameras.js?v={{ app_version }}"></script>
+{% endblock %}

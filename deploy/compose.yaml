@@ -42,6 +42,12 @@ services:
       BB_DISCOVERY_SYS_BUS_GPIO: /host/sys/bus/gpio/devices
       BB_DISCOVERY_SYS_CLASS_GPIO: /host/sys/class/gpio
       BB_DISCOVERY_PROC_NET_ARP: /host/proc/net/arp
+      BB_DISCOVERY_SYS_BLOCK: /host/sys/block
+      BB_DISCOVERY_MOUNTINFO: /host/proc/1/mountinfo
+      BB_DISCOVERY_HOST_MNT: /host/mnt
+      BB_DISCOVERY_HOST_MEDIA: /host/media
+      BB_VIDEO_TOKEN: ${BB_VIDEO_TOKEN:-blackbox-video-token}
+      BB_WORKER_IMAGE_GPIO: ${BB_WORKER_IMAGE_GPIO:-blackbox/worker-gpio:dev}
     ports:
       - "${BB_HUB_PORT:-8080}:8080"
     depends_on:
@@ -55,6 +61,20 @@ services:
       - /sys/bus/gpio:/host/sys/bus/gpio:ro
       - /sys/class/gpio:/host/sys/class/gpio:ro
       - /proc/net/arp:/host/proc/net/arp:ro
+      - /sys/block:/host/sys/block:ro
+      - /proc/1/mountinfo:/host/proc/1/mountinfo:ro
+      - type: bind
+        source: /mnt
+        target: /host/mnt
+        read_only: true
+        bind:
+          propagation: rslave
+      - type: bind
+        source: /media
+        target: /host/media
+        read_only: true
+        bind:
+          propagation: rslave
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/healthz')"]
       interval: 10s
@@ -87,6 +107,32 @@ services:
       context: .
       dockerfile: deploy/Dockerfile
       target: worker-tcp
+
+  worker-gpio-image:
+    profiles: ["build"]
+    image: blackbox/worker-gpio:dev
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile
+      target: worker-gpio
+
+  video:
+    profiles: ["dev", "prod"]
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile
+      target: video
+    environment:
+      BB_HUB_URL: http://hub:8080
+      BB_VIDEO_TOKEN: ${BB_VIDEO_TOKEN:-blackbox-video-token}
+      BB_DATA_ROOT: /data
+    depends_on:
+      hub:
+        condition: service_healthy
+    networks: [bb-control]
+    volumes:
+      - blackbox-data:/data
+    restart: unless-stopped
 
   legacy-web:
     profiles: ["legacy"]

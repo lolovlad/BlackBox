@@ -19,7 +19,7 @@ PROTOCOLS: tuple[ProtocolSpec, ...] = (
     ProtocolSpec(VmProtocol.MODBUS_RTU, True, "modbus-rtu", "Modbus RTU worker"),
     ProtocolSpec(VmProtocol.MODBUS_TCP, True, "modbus-tcp", "Modbus TCP worker"),
     ProtocolSpec(VmProtocol.CAN, False, "can", "Contract/discovery only; adapter requires bench validation"),
-    ProtocolSpec(VmProtocol.GPIO, False, "gpio", "Digital GPIO contract/simulator only; hardware adapter is disabled"),
+    ProtocolSpec(VmProtocol.GPIO, True, "gpio", "Raspberry GPIO inputs with the legacy hold-time card"),
     ProtocolSpec(VmProtocol.SIMULATOR, True, "simulator", "Deterministic analog/discrete simulator"),
 )
 

@@ -17,6 +17,7 @@ class HubConfig:
     worker_image_rtu: str = "blackbox/worker-modbus-rtu:dev"
     worker_image_tcp: str = "blackbox/worker-modbus-tcp:dev"
     worker_image_simulator: str = "blackbox/worker-simulator:dev"
+    worker_image_gpio: str = "blackbox/worker-gpio:dev"
     docker_enabled: bool = True
     queue_size: int = 2048
     cookie_secure: bool = False
@@ -36,6 +37,7 @@ class HubConfig:
             worker_image_rtu=os.getenv("BB_WORKER_IMAGE_RTU", cls.worker_image_rtu),
             worker_image_tcp=os.getenv("BB_WORKER_IMAGE_TCP", cls.worker_image_tcp),
             worker_image_simulator=os.getenv("BB_WORKER_IMAGE_SIMULATOR", cls.worker_image_simulator),
+            worker_image_gpio=os.getenv("BB_WORKER_IMAGE_GPIO", cls.worker_image_gpio),
             docker_enabled=os.getenv("BB_DOCKER_ENABLED", "1") == "1",
             cookie_secure=os.getenv("BB_COOKIE_SECURE", "0") == "1",
             telemetry_min_free_bytes=int(os.getenv("BB_TELEMETRY_MIN_FREE_BYTES", str(64 * 1024 * 1024))),
