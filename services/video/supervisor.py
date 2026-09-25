@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
+from services.video.devices import h264_encoder_present
 from services.video.settings import (
     CameraSettings,
     VideoConfig,
@@ -30,9 +31,16 @@ def _preview_signature(camera: CameraSettings) -> str:
 
 
 class Supervisor:
-    def __init__(self, data_root: Path, spawn: Callable[[list[str]], Any] | None = None) -> None:
+    def __init__(
+        self,
+        data_root: Path,
+        spawn: Callable[[list[str]], Any] | None = None,
+        hardware_h264: Callable[[], bool] | None = None,
+    ) -> None:
         self.data_root = data_root
         self.spawn = spawn or _popen
+        self._hardware_h264 = hardware_h264 or h264_encoder_present
+        self._hw_h264: bool | None = None
         self.output_root = data_root / "video"
         self.episodes: dict[str, dict[str, Any]] = {}
         self.previews: dict[str, dict[str, Any]] = {}
@@ -138,7 +146,8 @@ class Supervisor:
             stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
             directory = root / camera.id
             path = directory / episode_name(camera, episode_id, stamp)
-            argv = build_episode_argv(camera, path)
+            encode_as = self._encoder(camera)
+            argv = build_episode_argv(encode_as, path)
             self._note(camera.id, f"Эпизод {episode_id} запущен: {_redact_argv(argv)}", level="info", source="hub")
             try:
                 directory.mkdir(parents=True, exist_ok=True)
@@ -215,6 +224,25 @@ class Supervisor:
                 continue
             rows.append({"id": camera.id, "state": "stopped", "message": ""})
         return rows
+
+    def _encoder(self, camera: CameraSettings) -> CameraSettings:
+        if camera.codec != "h264_v4l2m2m" or self._hardware_ready():
+            return camera
+        self._note(
+            camera.id,
+            "Аппаратный кодер H.264 не найден, эпизод пишется через libx264",
+            level="error",
+            source="hub",
+        )
+        return camera.model_copy(update={"codec": "libx264"})
+
+    def _hardware_ready(self) -> bool:
+        if self._hw_h264 is None:
+            try:
+                self._hw_h264 = bool(self._hardware_h264())
+            except OSError:
+                self._hw_h264 = False
+        return self._hw_h264
 
     def _stop_preview(self, camera_id: str) -> None:
         slot = self.previews.pop(camera_id, None)

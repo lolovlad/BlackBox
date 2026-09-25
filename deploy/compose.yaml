@@ -130,8 +130,11 @@ services:
       hub:
         condition: service_healthy
     networks: [bb-control]
+    device_cgroup_rules:
+      - "c 81:* rmw"
     volumes:
       - blackbox-data:/data
+      - /dev:/host-dev
       - type: bind
         source: /mnt
         target: /host/mnt

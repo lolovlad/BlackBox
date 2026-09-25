@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
+from services.video.devices import h264_encoder_present, publish_host_video_devices
 from services.video.settings import (
     CameraSettings,
     VideoConfig,
@@ -59,8 +60,16 @@ def test_ffmpeg_argv_copy_skips_scale_and_libx264_limits_bitrate(tmp_path: Path)
     assert encoded[encoded.index("-t") + 1] == "60"
     assert encoded[-1].endswith("clip.mp4")
 
+    hardware = build_episode_argv(_camera(codec="h264_v4l2m2m", fps=25), tmp_path / "clip.mp4")
+    hardware_text = " ".join(hardware)
+    assert hardware[hardware.index("-c:v") + 1] == "h264_v4l2m2m"
+    assert "format=yuv420p" in hardware_text
+    assert "-maxrate" not in hardware
+    assert "-preset" not in hardware
+
     preview = build_preview_argv(_camera(), tmp_path / "live.jpg")
     assert "scale=1920:1080" in " ".join(preview)
+    assert preview[1] == "-y"
     assert preview[preview.index("-f") + 1] == "image2"
     plain = build_preview_argv(_camera(codec="copy"), tmp_path / "live.jpg")
     assert "scale=" not in " ".join(plain)
@@ -140,6 +149,40 @@ def test_supervisor_records_one_episode_and_reports_when_it_ends(tmp_path: Path)
     lost = supervisor.tick(config, [{"id": "ep9", "camera_id": "cam1", "state": "recording"}], [])
     assert lost["episodes"][0]["state"] == "error"
     assert lost["episodes"][0]["message"] == "запись прервана"
+
+
+def test_missing_pi_encoder_records_with_libx264(tmp_path: Path):
+    started: list[_Proc] = []
+
+    def spawn(argv):
+        proc = _Proc(list(argv))
+        started.append(proc)
+        return proc
+
+    supervisor = Supervisor(tmp_path, spawn=spawn, hardware_h264=lambda: False)
+    camera = _camera(codec="h264_v4l2m2m")
+    result = supervisor.tick(VideoConfig(cameras=[camera]), [{"id": "ep1", "camera_id": "cam1", "state": "queued"}], [])
+    assert started[0].argv[started[0].argv.index("-c:v") + 1] == "libx264"
+    assert "h264_v4l2m2m" not in started[0].argv
+    assert any("Аппаратный кодер H.264 не найден" in item["line"] and item["source"] == "hub" for item in result["logs"])
+
+    ready = Supervisor(tmp_path, spawn=spawn, hardware_h264=lambda: True)
+    again = ready.tick(VideoConfig(cameras=[camera]), [{"id": "ep2", "camera_id": "cam1", "state": "queued"}], [])
+    assert started[-1].argv[started[-1].argv.index("-c:v") + 1] == "h264_v4l2m2m"
+    assert "format=yuv420p" in " ".join(started[-1].argv)
+    assert not any("не найден" in item["line"] for item in again["logs"])
+
+
+def test_video_device_publish_ignores_ordinary_files(tmp_path: Path):
+    host = tmp_path / "host"
+    dest = tmp_path / "dev"
+    host.mkdir()
+    dest.mkdir()
+    (host / "video0").write_text("not a device", encoding="utf-8")
+    (host / "sda").write_text("disk", encoding="utf-8")
+    assert publish_host_video_devices(host, dest) == 0
+    assert list(dest.iterdir()) == []
+    assert h264_encoder_present(tmp_path / "missing") is False
 
 
 def test_preview_restarts_when_the_picture_settings_change(tmp_path: Path):

@@ -9,6 +9,7 @@ import urllib.request
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 
+from services.video.devices import publish_host_video_devices
 from services.video.settings import CameraSettings, VideoConfig
 from services.video.supervisor import Supervisor
 
@@ -60,6 +61,7 @@ def run() -> int:
     token = os.getenv("BB_VIDEO_TOKEN", "")
     root = Path(os.getenv("BB_DATA_ROOT", "/data"))
     interval = max(1.0, float(os.getenv("BB_VIDEO_POLL_SEC", "1")))
+    publish_host_video_devices()
     supervisor = Supervisor(root)
     while True:
         try:

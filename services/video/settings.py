@@ -193,6 +193,8 @@ def _encode_argv(camera: CameraSettings) -> list[str]:
             filters.append(f"scale={camera.width}:{camera.height}")
         if camera.fps:
             filters.append(f"fps={camera.fps}")
+        if camera.codec == "h264_v4l2m2m":
+            filters.append("format=yuv420p")
         if filters:
             argv.extend(["-vf", ",".join(filters)])
         argv.extend(["-c:v", camera.codec])
@@ -201,7 +203,9 @@ def _encode_argv(camera: CameraSettings) -> list[str]:
         if camera.codec == "libx264":
             argv.extend(["-profile:v", camera.profile])
         bitrate = f"{camera.bitrate_kbps}k"
-        argv.extend(["-b:v", bitrate, "-maxrate", bitrate, "-bufsize", f"{camera.bitrate_kbps * 2}k"])
+        argv.extend(["-b:v", bitrate])
+        if camera.codec != "h264_v4l2m2m":
+            argv.extend(["-maxrate", bitrate, "-bufsize", f"{camera.bitrate_kbps * 2}k"])
         if camera.fps:
             argv.extend(["-g", str(max(1, int(camera.fps) * int(camera.gop_sec)))])
         else:
@@ -234,6 +238,7 @@ def build_episode_argv(camera: CameraSettings, output_file: Path) -> list[str]:
 def build_preview_argv(camera: CameraSettings, jpeg_path: Path) -> list[str]:
     """Low-rate JPEG so the settings page can show the picture being configured."""
     argv = _input_argv(camera)
+    argv.insert(1, "-y")
     filters: list[str] = ["fps=2"]
     if camera.codec != "copy" and camera.width and camera.height:
         filters.insert(0, f"scale={camera.width}:{camera.height}")

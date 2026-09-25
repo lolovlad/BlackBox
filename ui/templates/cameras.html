@@ -106,7 +106,7 @@
               {% call field('FPS', 'Пусто — как у камеры.', 'bi-speedometer2') %}
               <input data-field="fps" type="number" min="1" max="60" placeholder="исходный">
               {% endcall %}
-              {% call field('Кодек', 'copy кладёт поток камеры как есть и не меняет размер.', 'bi-film') %}
+              {% call field('Кодек', 'copy кладёт поток камеры как есть. Аппаратный Pi — только если в контейнере есть кодер, иначе эпизод пишется обычным H.264.', 'bi-film') %}
               <select data-field="codec">
                 <option value="libx264">H.264</option>
                 <option value="libx265">H.265</option>
