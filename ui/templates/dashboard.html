@@ -10,10 +10,16 @@
   <div id="bb-dash-boards"></div>
 
   <section class="bb-card" id="bb-gpio">
-    <h2>GPIO панель</h2>
-    <p class="bb-hint" data-gpio-time>Последнее обновление: нет данных</p>
-    <div class="bb-gpio-grid" data-gpio-list></div>
+    <div class="bb-gpio-head">
+      <h2>GPIO панель</h2>
+      <p class="bb-hint" data-gpio-summary>Нет данных</p>
+    </div>
+    <div class="bb-gpio-layout" data-gpio-layout hidden>
+      <div class="bb-gpio-board" data-gpio-list></div>
+      <div class="bb-gpio-detail" data-gpio-detail></div>
+    </div>
     <p class="bb-hint" data-gpio-empty>Панель ещё не читает пины.</p>
+    <p class="bb-hint" data-gpio-time>Последнее обновление: нет данных</p>
   </section>
 
   <section class="bb-card" id="bb-monitor">

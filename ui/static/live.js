@@ -10,6 +10,11 @@
   let boardSignature = '';
   let openPicker = '';
   let dashReady = false;
+  const GPIO_LEFT = [2, 3, 4, 17, 27, 22, 10, 9, 11, 5, 6, 13, 19, 26];
+  const GPIO_RIGHT = [14, 15, 18, 23, 24, 25, 8, 7, 12, 16, 20, 21];
+  let gpioItems = [];
+  let gpioTime = '';
+  let selectedBcm = '';
 
   function setBusy(on, label) {
     if (window.bbBusy) window.bbBusy(root, on, label);
@@ -248,6 +253,81 @@
     if (node) node.textContent = value;
   }
 
+  function gpioState(item) {
+    if (!item || item.live == null) return { klass: 'is-wait', label: 'нет данных' };
+    if (item.live === false) return { klass: 'is-dead', label: 'нет линии' };
+    if (item.is_on) return { klass: 'is-on', label: 'ACTIVE' };
+    return { klass: 'is-off', label: 'спокойно' };
+  }
+
+  function gpioCell(bcm, byBcm) {
+    if (bcm == null) return '<span class="bb-gpio-cell is-empty"></span>';
+    const item = byBcm[bcm];
+    const state = gpioState(item);
+    const selected = String(bcm) === selectedBcm ? ' is-selected' : '';
+    const title = item ? (item.name + ' · ' + state.label) : ('BCM ' + bcm);
+    return '<button type="button" class="bb-gpio-cell ' + state.klass + selected + '" data-gpio-bcm="' + bcm + '" title="' + esc(title) + '">' + bcm + '</button>';
+  }
+
+  function renderGpio() {
+    const list = root.querySelector('[data-gpio-list]');
+    const detail = root.querySelector('[data-gpio-detail]');
+    const empty = root.querySelector('[data-gpio-empty]');
+    const layout = root.querySelector('[data-gpio-layout]');
+    const summary = root.querySelector('[data-gpio-summary]');
+    const stamp = root.querySelector('[data-gpio-time]');
+    if (!list || !detail || !layout) return;
+    stamp.textContent = 'Последнее обновление: ' + (gpioTime ? formatTime(gpioTime) : 'нет данных');
+    if (!gpioItems.length) {
+      layout.hidden = true;
+      empty.hidden = false;
+      summary.textContent = 'Нет данных';
+      list.innerHTML = '';
+      detail.innerHTML = '';
+      return;
+    }
+    layout.hidden = false;
+    empty.hidden = true;
+    const byBcm = {};
+    let active = 0;
+    let dead = 0;
+    let waiting = 0;
+    gpioItems.forEach(function (item) {
+      byBcm[item.bcm_pin] = item;
+      const state = gpioState(item);
+      if (state.klass === 'is-on') active += 1;
+      else if (state.klass === 'is-dead') dead += 1;
+      else if (state.klass === 'is-wait') waiting += 1;
+    });
+    const parts = [gpioItems.length + ' пинов'];
+    if (active) parts.push(active + ' ACTIVE');
+    if (dead) parts.push(dead + ' без линии');
+    if (waiting) parts.push(waiting + ' без данных');
+    if (!active && !dead && !waiting) parts.push('все спокойны');
+    summary.textContent = parts.join(' · ');
+    if (selectedBcm && !byBcm[selectedBcm]) selectedBcm = '';
+    if (!selectedBcm) {
+      const hot = gpioItems.find(function (item) { return gpioState(item).klass === 'is-on'; });
+      selectedBcm = String((hot || gpioItems[0]).bcm_pin);
+    }
+    const rows = Math.max(GPIO_LEFT.length, GPIO_RIGHT.length);
+    let html = '';
+    for (let index = 0; index < rows; index += 1) {
+      html += gpioCell(GPIO_LEFT[index], byBcm) + gpioCell(GPIO_RIGHT[index], byBcm);
+    }
+    const known = {};
+    GPIO_LEFT.concat(GPIO_RIGHT).forEach(function (bcm) { known[bcm] = true; });
+    gpioItems.forEach(function (item) {
+      if (!known[item.bcm_pin]) html += gpioCell(item.bcm_pin, byBcm);
+    });
+    list.innerHTML = html;
+    const item = byBcm[selectedBcm];
+    const state = gpioState(item);
+    const level = !item || item.level === null || item.level === undefined ? '—' : String(item.level);
+    const hold = !item || item.hold_sec == null ? '—' : (item.hold_sec + ' с');
+    detail.innerHTML = '<p class="bb-gpio-kicker">BCM ' + esc(selectedBcm) + '</p><p class="bb-gpio-name">' + esc(item ? item.name : 'Пин') + '</p><p class="bb-gpio-state ' + state.klass + '">' + esc(state.label) + '</p><dl class="bb-gpio-facts"><div><dt>Уровень</dt><dd>' + esc(level) + '</dd></div><div><dt>Подтяжка</dt><dd>' + esc(item && item.pull ? item.pull : '—') + '</dd></div><div><dt>Удержание</dt><dd>' + esc(hold) + '</dd></div></dl>';
+  }
+
   function renderSystem(payload) {
     const data = payload || {};
     const disk = data.disk || {};
@@ -273,26 +353,21 @@
       const free = item.free_gb == null ? '—' : esc(item.free_gb);
       return '<article class="bb-monitor-disk"><div class="bb-monitor-disk-head"><strong>' + esc(item.device || '-') + '</strong><span>' + percent + '</span></div><div class="bb-hint">' + esc(item.mount) + '</div><div>ФС: ' + esc(item.fstype || '-') + '</div><div>Занято: ' + used + ' / ' + total + ' ГБ</div><div>Свободно: ' + free + ' ГБ</div></article>';
     }).join('') : '<p class="bb-hint">Список дисков недоступен.</p>';
-    const gpio = data.gpio_items || [];
-    const gpioList = root.querySelector('[data-gpio-list]');
-    const empty = root.querySelector('[data-gpio-empty]');
-    gpioList.innerHTML = gpio.map(function (item) {
-      const on = !!item.is_on;
-      const missing = item.live === false;
-      const waiting = item.live == null;
-      const klass = missing ? 'is-dead' : (on ? 'is-on' : 'is-off');
-      const state = missing ? 'нет линии' : (waiting ? 'нет данных' : (on ? 'ACTIVE' : 'спокойно'));
-      const level = item.level === null || item.level === undefined ? '—' : String(item.level);
-      return '<article class="bb-gpio-pin ' + klass + '"><div class="bb-gpio-pin-head"><strong>' + esc(item.name) + '</strong><span>BCM ' + esc(item.bcm_pin) + '</span></div><div class="bb-gpio-pin-state">' + state + '</div><div class="bb-hint">Уровень ' + esc(level) + ' · подтяжка ' + esc(item.pull || 'up') + ' · удержание ' + esc(item.hold_sec) + ' с</div></article>';
-    }).join('');
-    empty.hidden = gpio.length > 0;
-    const stamp = root.querySelector('[data-gpio-time]');
-    stamp.textContent = 'Последнее обновление: ' + (data.gpio_time ? formatTime(data.gpio_time) : 'нет данных');
+    gpioItems = data.gpio_items || [];
+    gpioTime = data.gpio_time || '';
+    renderGpio();
   }
 
   root.addEventListener('click', function (event) {
     const target = event.target instanceof Element ? event.target : null;
     if (!target) return;
+    const gpioCellButton = target.closest('[data-gpio-bcm]');
+    if (gpioCellButton) {
+      event.preventDefault();
+      selectedBcm = gpioCellButton.getAttribute('data-gpio-bcm') || '';
+      renderGpio();
+      return;
+    }
     const pick = target.closest('[data-pick]');
     if (pick) {
       event.preventDefault();

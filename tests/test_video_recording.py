@@ -2,7 +2,17 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from services.video.settings import CameraSettings, VideoConfig, build_ffmpeg_argv, camera_estimate, estimate_mib
+import pytest
+from pydantic import ValidationError
+
+from services.video.settings import (
+    CameraSettings,
+    VideoConfig,
+    build_episode_argv,
+    build_preview_argv,
+    camera_estimate,
+    estimate_mib,
+)
 from services.video.supervisor import Supervisor
 from tests.test_hub_vnext import _client
 
@@ -33,28 +43,47 @@ def test_fragment_size_matches_bitrate_formula():
 
 
 def test_ffmpeg_argv_copy_skips_scale_and_libx264_limits_bitrate(tmp_path: Path):
-    copied = build_ffmpeg_argv(_camera(codec="copy", fps=25), tmp_path)
+    copied = build_episode_argv(_camera(codec="copy", fps=25), tmp_path / "clip.mp4")
     assert "-vf" not in copied
     assert "scale" not in " ".join(copied)
+    assert "segment" not in copied
     assert copied[copied.index("-c:v") + 1] == "copy"
-    assert copied[copied.index("-segment_time") + 1] == "60"
+    assert copied[copied.index("-t") + 1] == "60"
+    assert copied[-1].endswith("clip.mp4")
 
-    encoded = build_ffmpeg_argv(_camera(codec="libx264", fps=25), tmp_path)
+    encoded = build_episode_argv(_camera(codec="libx264", fps=25), tmp_path / "clip.mp4")
     encoded_text = " ".join(encoded)
     assert "scale=1920:1080" in encoded_text
     assert "2000k" in encoded
     assert encoded[encoded.index("-c:v") + 1] == "libx264"
-    assert encoded[encoded.index("-segment_time") + 1] == "60"
-    assert str(tmp_path / "%Y%m%d_%H%M%S.mp4") in encoded
+    assert encoded[encoded.index("-t") + 1] == "60"
+    assert encoded[-1].endswith("clip.mp4")
+
+    preview = build_preview_argv(_camera(), tmp_path / "live.jpg")
+    assert "scale=1920:1080" in " ".join(preview)
+    assert preview[preview.index("-f") + 1] == "image2"
+    plain = build_preview_argv(_camera(codec="copy"), tmp_path / "live.jpg")
+    assert "scale=" not in " ".join(plain)
+
+
+def test_storage_dir_must_be_absolute():
+    assert VideoConfig(storage_dir="/mnt/nvme/video").storage_dir == "/mnt/nvme/video"
+    assert VideoConfig(storage_dir="").storage_dir == ""
+    with pytest.raises(ValidationError):
+        VideoConfig(storage_dir="videos")
+    with pytest.raises(ValidationError):
+        VideoConfig(storage_dir="/mnt/../etc")
 
 
 class _Proc:
-    def __init__(self):
+    def __init__(self, argv: list[str]):
+        self.argv = argv
         self.alive = True
+        self.code = 0
         self.stderr = None
 
     def poll(self):
-        return None if self.alive else 1
+        return None if self.alive else self.code
 
     def terminate(self):
         self.alive = False
@@ -63,37 +92,72 @@ class _Proc:
         self.alive = False
 
 
-def test_supervisor_starts_only_enabled_cameras_and_restarts_on_change(tmp_path: Path):
+def test_supervisor_records_one_episode_and_reports_when_it_ends(tmp_path: Path):
     started: list[_Proc] = []
 
     def spawn(argv):
-        proc = _Proc()
+        proc = _Proc(list(argv))
         started.append(proc)
         return proc
 
     supervisor = Supervisor(tmp_path, spawn=spawn)
-    assert supervisor.reconcile(VideoConfig()) == []
-    assert started == []
-
-    disabled = _camera(enabled=False)
-    stopped = supervisor.reconcile(VideoConfig(cameras=[disabled]))
-    assert started == []
-    assert stopped == [{"id": "cam1", "state": "stopped", "message": ""}]
-    assert supervisor.reconcile(VideoConfig(cameras=[_camera(url="")]))[0]["state"] == "stopped"
-    assert started == []
-
     camera = _camera()
-    first = supervisor.reconcile(VideoConfig(cameras=[camera]))
+    config = VideoConfig(cameras=[camera])
+    assert supervisor.tick(config, [], [])["statuses"] == [{"id": "cam1", "state": "stopped", "message": ""}]
+    assert started == []
+    assert supervisor.tick(VideoConfig(cameras=[_camera(enabled=False)]), [{"id": "ep0", "camera_id": "cam1", "state": "queued"}], [])["episodes"][0]["state"] == "error"
+    assert started == []
+
+    archive = tmp_path / "archive"
+    stored = VideoConfig(cameras=[camera], storage_dir=str(archive))
+    job = {"id": "ep1", "camera_id": "cam1", "state": "queued"}
+    first = supervisor.tick(stored, [job], [camera])
     assert len(started) == 1
-    assert first[0]["state"] == "recording"
-    supervisor.reconcile(VideoConfig(cameras=[camera]))
+    assert "-t" in started[0].argv
+    assert "segment" not in started[0].argv
+    assert str(archive) in started[0].argv[-1] or str(archive).replace("\\", "/") in started[0].argv[-1].replace("\\", "/")
+    assert first["episodes"][0]["state"] == "recording"
+    assert first["statuses"][0]["state"] == "recording"
+    assert supervisor.previews == {}
+
+    again = supervisor.tick(stored, [{"id": "ep1", "camera_id": "cam1", "state": "recording"}], [])
+    assert again["episodes"] == []
     assert len(started) == 1
 
-    changed = _camera(bitrate_kbps=4000)
-    supervisor.reconcile(VideoConfig(cameras=[changed]))
+    started[0].alive = False
+    started[0].code = 0
+    done = supervisor.tick(stored, [{"id": "ep1", "camera_id": "cam1", "state": "recording"}], [])
+    assert done["episodes"][0]["state"] == "finished"
+    assert done["episodes"][0]["path"].endswith("ep1.mp4")
+
+    lost = supervisor.tick(stored, [{"id": "ep9", "camera_id": "cam1", "state": "recording"}], [])
+    assert lost["episodes"][0]["state"] == "error"
+    assert lost["episodes"][0]["message"] == "запись прервана"
+
+
+def test_preview_restarts_when_the_picture_settings_change(tmp_path: Path):
+    started: list[_Proc] = []
+
+    def spawn(argv):
+        proc = _Proc(list(argv))
+        started.append(proc)
+        return proc
+
+    supervisor = Supervisor(tmp_path, spawn=spawn)
+    camera = _camera()
+    config = VideoConfig(cameras=[camera])
+    first = supervisor.tick(config, [], [camera])
+    assert first["statuses"][0]["state"] == "preview"
+    assert len(started) == 1
+    assert started[0].argv[started[0].argv.index("-f") + 1] == "image2"
+    supervisor.tick(config, [], [camera])
+    assert len(started) == 1
+
+    changed = _camera(resolution="640x480")
+    supervisor.tick(config, [], [changed])
     assert len(started) == 2
     assert started[0].alive is False
-    assert started[1].alive is True
+    assert "scale=640:480" in " ".join(started[1].argv)
 
 
 def test_camera_settings_roundtrip(tmp_path: Path, monkeypatch):
@@ -102,17 +166,21 @@ def test_camera_settings_roundtrip(tmp_path: Path, monkeypatch):
         assert client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin-password"}).status_code == 200
         page = client.get("/cameras")
         assert page.status_code == 200
-        assert "Число камер" in page.text
+        assert "Добавить камеру" in page.text
+        assert "Каталог записей" in page.text
+        assert "bb-vm-step" in page.text
         assert "/static/cameras.js" in page.text
 
         csrf = client.cookies.get("bb_csrf")
-        body = {"cameras": [_camera().model_dump(mode="json")]}
+        body = {"storage_dir": "/mnt/nvme/video", "cameras": [_camera().model_dump(mode="json")]}
         saved = client.put("/api/v1/cameras", json=body, headers={"X-CSRF-Token": csrf})
         assert saved.status_code == 200
         payload = saved.json()
+        assert payload["config"]["storage_dir"] == "/mnt/nvme/video"
         assert payload["config"]["cameras"][0]["resolution"] == "1920x1080"
         assert payload["config"]["cameras"][0]["bitrate_kbps"] == 2000
         assert payload["estimates"]["cameras"][0]["fragment_mib"] == round(2000 * 60 / 8 / 1024, 2)
+        assert client.put("/api/v1/cameras", json={"storage_dir": "relative/video", "cameras": []}, headers={"X-CSRF-Token": csrf}).status_code == 422
 
         loaded = client.get("/api/v1/cameras")
         assert loaded.json()["config"]["cameras"][0]["codec"] == "libx264"
@@ -121,6 +189,60 @@ def test_camera_settings_roundtrip(tmp_path: Path, monkeypatch):
         internal = client.get("/api/v1/internal/video/config", headers={"X-Video-Token": "video-secret"})
         assert internal.status_code == 200
         assert internal.json()["config"]["cameras"][0]["id"] == "cam1"
+        assert internal.json()["episodes"] == []
+
+        started = client.post("/api/v1/cameras/cam1/episodes", headers={"X-CSRF-Token": csrf})
+        assert started.status_code == 200
+        episode_id = started.json()["id"]
+        assert started.json()["state"] == "queued"
+        assert client.post("/api/v1/cameras/cam1/episodes", headers={"X-CSRF-Token": csrf}).status_code == 409
+        queued = client.get("/api/v1/internal/video/config", headers={"X-Video-Token": "video-secret"})
+        assert queued.json()["episodes"][0]["id"] == episode_id
+
+        recording = client.post(
+            "/api/v1/internal/video/episodes",
+            headers={"X-Video-Token": "video-secret"},
+            json={"items": [{"id": episode_id, "state": "recording", "path": "/mnt/nvme/video/cam1/clip.mp4", "started_at": "2026-09-25T12:00:00+00:00"}]},
+        )
+        assert recording.status_code == 200
+        assert recording.json()["items"][0]["state"] == "recording"
+        repeat = client.post(
+            "/api/v1/internal/video/episodes",
+            headers={"X-Video-Token": "video-secret"},
+            json={"items": [{"id": episode_id, "state": "recording", "path": "/mnt/nvme/video/cam1/clip.mp4", "started_at": "2026-09-25T12:00:00+00:00"}]},
+        )
+        assert repeat.json()["items"] == []
+        finished = client.post(
+            "/api/v1/internal/video/episodes",
+            headers={"X-Video-Token": "video-secret"},
+            json={"items": [{"id": episode_id, "state": "finished", "path": "/mnt/nvme/video/cam1/clip.mp4", "started_at": "2026-09-25T12:00:00+00:00", "ended_at": "2026-09-25T12:01:00+00:00"}]},
+        )
+        assert finished.status_code == 200
+        assert finished.json()["items"][0]["state"] == "finished"
+        assert finished.json()["items"][0]["path"].endswith("clip.mp4")
+        listed = client.get("/api/v1/cameras").json()["episodes"]
+        assert listed[0]["id"] == episode_id
+        assert listed[0]["state"] == "finished"
+        assert client.get("/api/v1/internal/video/config", headers={"X-Video-Token": "video-secret"}).json()["episodes"] == []
+        assert client.post("/api/v1/internal/video/episodes", json={"items": []}).status_code == 401
+
+        watched = client.post(
+            "/api/v1/cameras/cam1/preview",
+            headers={"X-CSRF-Token": csrf},
+            json={"active": True, "camera": _camera().model_dump(mode="json")},
+        )
+        assert watched.status_code == 200
+        previewing = client.get("/api/v1/internal/video/config", headers={"X-Video-Token": "video-secret"})
+        assert previewing.json()["previews"][0]["url"] == "rtsp://10.0.0.8/stream"
+        assert client.get("/api/v1/cameras/cam1/preview.jpg").status_code == 404
+        jpeg = tmp_path / "data" / "video" / ".preview" / "cam1.jpg"
+        jpeg.parent.mkdir(parents=True)
+        jpeg.write_bytes(b"\xff\xd8\xff\xd9")
+        image = client.get("/api/v1/cameras/cam1/preview.jpg")
+        assert image.status_code == 200
+        assert image.headers["content-type"].startswith("image/jpeg")
+        assert client.post("/api/v1/cameras/cam1/preview", headers={"X-CSRF-Token": csrf}, json={"active": False}).status_code == 200
+        assert client.get("/api/v1/internal/video/config", headers={"X-Video-Token": "video-secret"}).json()["previews"] == []
 
         posted = client.post(
             "/api/v1/internal/video/status",

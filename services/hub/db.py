@@ -13,6 +13,19 @@ from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError
 
 
+def _episode_dict(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "id": str(row["id"]),
+        "camera_id": str(row["camera_id"]),
+        "state": str(row["state"]),
+        "path": str(row["path"] or ""),
+        "message": str(row["message"] or ""),
+        "started_at": row["started_at"],
+        "ended_at": row["ended_at"],
+        "created_at": str(row["created_at"]),
+    }
+
+
 class HubRepository:
     def __init__(self, path: Path) -> None:
         self.path = path
@@ -111,6 +124,16 @@ class HubRepository:
                     state TEXT NOT NULL,
                     message TEXT NOT NULL DEFAULT '',
                     updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS video_episodes (
+                    id TEXT PRIMARY KEY,
+                    camera_id TEXT NOT NULL,
+                    state TEXT NOT NULL,
+                    path TEXT NOT NULL DEFAULT '',
+                    message TEXT NOT NULL DEFAULT '',
+                    started_at TEXT,
+                    ended_at TEXT,
+                    created_at TEXT NOT NULL
                 );
                 """
             )
@@ -641,6 +664,63 @@ class HubRepository:
                     "INSERT INTO camera_status(camera_id, state, message, updated_at) VALUES(?,?,?,?)",
                     (camera_id, str(item.get("state") or "stopped"), str(item.get("message") or "")[:500], now),
                 )
+
+    def enqueue_episode(self, camera_id: str) -> dict[str, Any]:
+        episode_id = secrets.token_hex(8)
+        now = datetime.now(timezone.utc).isoformat()
+        with self.connect() as c:
+            c.execute(
+                "INSERT INTO video_episodes(id,camera_id,state,path,message,started_at,ended_at,created_at) VALUES(?,?,?,?,?,?,?,?)",
+                (episode_id, camera_id, "queued", "", "", None, None, now),
+            )
+        episode = self.get_episode(episode_id)
+        if episode is None:
+            raise RuntimeError("episode was not stored")
+        return episode
+
+    def get_episode(self, episode_id: str) -> dict[str, Any] | None:
+        with self.connect() as c:
+            row = c.execute("SELECT * FROM video_episodes WHERE id=?", (episode_id,)).fetchone()
+        return _episode_dict(row) if row is not None else None
+
+    def open_episodes(self) -> list[dict[str, Any]]:
+        with self.connect() as c:
+            rows = c.execute(
+                "SELECT * FROM video_episodes WHERE state IN ('queued','recording') ORDER BY created_at"
+            ).fetchall()
+        return [_episode_dict(row) for row in rows]
+
+    def list_episodes(self, *, limit: int = 40) -> list[dict[str, Any]]:
+        cap = max(1, min(int(limit), 100))
+        with self.connect() as c:
+            rows = c.execute("SELECT * FROM video_episodes ORDER BY created_at DESC LIMIT ?", (cap,)).fetchall()
+        return [_episode_dict(row) for row in rows]
+
+    def apply_episode_events(self, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        changed: list[dict[str, Any]] = []
+        with self.connect() as c:
+            for item in items:
+                episode_id = str(item.get("id") or "").strip()
+                state = str(item.get("state") or "")
+                if not episode_id or state not in {"recording", "finished", "error"}:
+                    continue
+                row = c.execute("SELECT * FROM video_episodes WHERE id=?", (episode_id,)).fetchone()
+                if row is None or row["state"] in {"finished", "error"}:
+                    continue
+                if row["state"] == "recording" and state == "recording":
+                    continue
+                started = item.get("started_at") or row["started_at"]
+                ended = item.get("ended_at") if state in {"finished", "error"} else None
+                path = str(item.get("path") or row["path"] or "")
+                message = str(item.get("message") or "")[:500]
+                c.execute(
+                    "UPDATE video_episodes SET state=?, path=?, message=?, started_at=?, ended_at=? WHERE id=?",
+                    (state, path, message, started or None, ended or None, episode_id),
+                )
+                updated = c.execute("SELECT * FROM video_episodes WHERE id=?", (episode_id,)).fetchone()
+                if updated is not None:
+                    changed.append(_episode_dict(updated))
+        return changed
 
     def list_resource_leases(self) -> dict[str, str]:
         with self.connect() as c:

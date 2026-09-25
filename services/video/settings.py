@@ -1,7 +1,7 @@
-"""Camera recording settings and the ffmpeg command they produce.
+"""Camera settings and the ffmpeg commands for one episode or a live preview.
 
-The Hub stores this document. The video process only supervises one ffmpeg
-per enabled camera; it does not decode frames itself.
+The Hub stores this document. Recording starts only on an episode command.
+The video process does not decode frames itself.
 """
 
 from __future__ import annotations
@@ -81,7 +81,26 @@ class CameraSettings(BaseModel):
 class VideoConfig(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
+    storage_dir: str = ""
     cameras: list[CameraSettings] = Field(default_factory=list, max_length=16)
+
+    @field_validator("storage_dir")
+    @classmethod
+    def _storage_dir(cls, value: str) -> str:
+        text = str(value or "").strip().replace("\\", "/")
+        if not text:
+            return ""
+        parts = [part for part in text.split("/") if part not in {"", "."}]
+        if ".." in parts or not parts:
+            raise ValueError("Каталог записи должен быть абсолютным путём")
+        if text.startswith("/"):
+            if len(parts) < 2:
+                raise ValueError("Укажите каталог, а не корень диска")
+            return "/" + "/".join(parts)
+        windows = len(text) >= 3 and text[1] == ":" and text[2] == "/"
+        if windows and len(parts) >= 2:
+            return text[0] + ":/" + "/".join(parts[1:])
+        raise ValueError("Каталог записи должен быть абсолютным путём")
 
     @model_validator(mode="after")
     def _unique_ids(self) -> "VideoConfig":
@@ -151,10 +170,14 @@ def config_estimates(config: VideoConfig) -> dict:
     }
 
 
-def build_ffmpeg_argv(camera: CameraSettings, output_dir: Path) -> list[str]:
-    ext = "mkv" if camera.container == "mkv" else "mp4"
-    segment_format = "matroska" if camera.container == "mkv" else "mp4"
-    argv = [
+def storage_root(config: VideoConfig, data_root: Path) -> Path:
+    if config.storage_dir:
+        return Path(config.storage_dir)
+    return Path(data_root) / "video"
+
+
+def _input_argv(camera: CameraSettings) -> list[str]:
+    return [
         "ffmpeg",
         "-hide_banner",
         "-loglevel",
@@ -164,9 +187,13 @@ def build_ffmpeg_argv(camera: CameraSettings, output_dir: Path) -> list[str]:
         "-i",
         camera.url,
     ]
+
+
+def _encode_argv(camera: CameraSettings) -> list[str]:
     if camera.codec == "copy":
-        argv.extend(["-c:v", "copy"])
+        argv = ["-c:v", "copy"]
     else:
+        argv = []
         filters: list[str] = []
         if camera.width and camera.height:
             filters.append(f"scale={camera.width}:{camera.height}")
@@ -191,19 +218,30 @@ def build_ffmpeg_argv(camera: CameraSettings, output_dir: Path) -> list[str]:
         argv.extend(["-c:a", "copy"])
     else:
         argv.extend(["-c:a", "aac", "-b:a", f"{camera.audio_bitrate_kbps}k"])
-    argv.extend(
-        [
-            "-f",
-            "segment",
-            "-segment_time",
-            str(camera.segment_sec),
-            "-segment_format",
-            segment_format,
-            "-reset_timestamps",
-            "1",
-            "-strftime",
-            "1",
-            str(output_dir / f"%Y%m%d_%H%M%S.{ext}"),
-        ]
-    )
+    return argv
+
+
+def episode_name(camera: CameraSettings, episode_id: str, stamp: str) -> str:
+    ext = "mkv" if camera.container == "mkv" else "mp4"
+    safe = "".join(ch for ch in str(episode_id) if ch.isalnum() or ch in "-_") or "episode"
+    return f"{stamp}_{safe}.{ext}"
+
+
+def build_episode_argv(camera: CameraSettings, output_file: Path) -> list[str]:
+    """One file for one episode. The process exit is the end of the episode."""
+    argv = _input_argv(camera) + _encode_argv(camera)
+    argv.extend(["-t", str(int(camera.segment_sec))])
+    if camera.container == "mp4":
+        argv.extend(["-movflags", "+faststart"])
+    argv.append(str(output_file))
+    return argv
+
+
+def build_preview_argv(camera: CameraSettings, jpeg_path: Path) -> list[str]:
+    """Low-rate JPEG so the settings page can show the picture being configured."""
+    argv = _input_argv(camera)
+    filters: list[str] = ["fps=2"]
+    if camera.codec != "copy" and camera.width and camera.height:
+        filters.insert(0, f"scale={camera.width}:{camera.height}")
+    argv.extend(["-vf", ",".join(filters), "-an", "-q:v", "6", "-f", "image2", "-update", "1", str(jpeg_path)])
     return argv

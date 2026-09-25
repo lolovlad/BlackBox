@@ -5,7 +5,9 @@ import hashlib
 import json
 import logging
 import os
+import re
 import secrets
+import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -22,7 +24,7 @@ from pydantic import BaseModel, Field, ValidationError
 from bb_platform.contracts import AlarmEvent, MapDocument, Quality, RawBatch, ResourceKind, TagSample, VmCommand, VmLifecycle, VmProtocol, VmStatus, WorkerCommandAck, WorkerError, WorkerHeartbeat, WorkerRegister
 from bb_platform.parser import adapt_legacy_map, diagnose_read, field_channel, field_label, parse_batch
 
-from services.video.settings import VideoConfig, config_estimates
+from services.video.settings import CameraSettings, VideoConfig, config_estimates
 
 from workers.gpio.pins import pins_from_fields
 
@@ -141,12 +143,33 @@ class ProbeRequest(BaseModel):
 
 class VideoStatusItem(BaseModel):
     id: str = Field(min_length=1, max_length=64)
-    state: Literal["recording", "stopped", "error"] = "stopped"
+    state: Literal["recording", "preview", "stopped", "error"] = "stopped"
     message: str = ""
 
 
 class VideoStatusBody(BaseModel):
     items: list[VideoStatusItem] = Field(default_factory=list)
+
+
+class EpisodeEventItem(BaseModel):
+    id: str = Field(min_length=1, max_length=64)
+    state: Literal["recording", "finished", "error"]
+    path: str = ""
+    message: str = ""
+    started_at: str | None = None
+    ended_at: str | None = None
+
+
+class EpisodeEventBody(BaseModel):
+    items: list[EpisodeEventItem] = Field(default_factory=list)
+
+
+class PreviewBody(BaseModel):
+    active: bool = False
+    camera: dict[str, Any] | None = None
+
+
+_CAMERA_ID = re.compile(r"^[A-Za-z0-9_-]+$")
 
 
 class UserCreateRequest(BaseModel):
@@ -609,6 +632,7 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
         app.state.docker = docker_manager
         app.state.worker_tokens = {}
         app.state.worker_commands = {}
+        app.state.video_previews = {}
         app.state.log_seen = {}
         # Keep buffers independent per VM, even when several VMs share one
         # approved SSD. ``app.state.store`` remains as a compatibility handle
@@ -1586,7 +1610,25 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
             "config": config.model_dump(mode="json"),
             "estimates": config_estimates(config),
             "status": repo.camera_status(),
+            "episodes": repo.list_episodes(),
         }
+
+    def _require_camera_id(camera_id: str) -> str:
+        if not _CAMERA_ID.fullmatch(camera_id):
+            raise HTTPException(404, detail={"code": "not_found", "message": "Камера не найдена"})
+        return camera_id
+
+    def _live_previews() -> list[dict[str, Any]]:
+        now = time.monotonic()
+        items: list[dict[str, Any]] = []
+        for camera_id, item in list(app.state.video_previews.items()):
+            if float(item.get("until") or 0) <= now:
+                app.state.video_previews.pop(camera_id, None)
+                continue
+            camera = item.get("camera")
+            if isinstance(camera, dict):
+                items.append(camera)
+        return items
 
     def _video_auth(request: Request) -> None:
         expected = os.getenv("BB_VIDEO_TOKEN", "")
@@ -1604,17 +1646,75 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
         repo.record_audit(int(account["id"]), "cameras.update", None, {"count": len(payload.cameras)})
         return _camera_payload()
 
+    @app.post("/api/v1/cameras/{camera_id}/episodes", dependencies=[Depends(csrf_protect)])
+    async def start_camera_episode(camera_id: str, account=Depends(admin)):
+        _require_camera_id(camera_id)
+        config = VideoConfig.model_validate(repo.camera_document())
+        camera = next((item for item in config.cameras if item.id == camera_id), None)
+        if camera is None:
+            raise HTTPException(404, detail={"code": "not_found", "message": "Камера не найдена"})
+        if not camera.enabled or not camera.url:
+            raise HTTPException(409, detail={"code": "camera_not_ready", "message": "Включите камеру и укажите RTSP URL"})
+        if any(item["camera_id"] == camera_id for item in repo.open_episodes()):
+            raise HTTPException(409, detail={"code": "episode_busy", "message": "Эпизод этой камеры уже идёт"})
+        episode = repo.enqueue_episode(camera_id)
+        repo.record_audit(int(account["id"]), "video.episode.start", camera_id, {"id": episode["id"]})
+        return episode
+
+    @app.post("/api/v1/cameras/{camera_id}/preview", dependencies=[Depends(csrf_protect)])
+    async def camera_preview(camera_id: str, payload: PreviewBody, account=Depends(admin)):
+        _require_camera_id(camera_id)
+        if not payload.active:
+            app.state.video_previews.pop(camera_id, None)
+            return {"ok": True, "active": False}
+        if not payload.camera:
+            raise HTTPException(422, detail={"code": "preview_camera_required", "message": "Нужны настройки камеры для просмотра"})
+        try:
+            camera = CameraSettings.model_validate(payload.camera)
+        except ValidationError as exc:
+            raise HTTPException(422, detail={"code": "invalid_camera", "message": _exc_message(exc)}) from exc
+        if camera.id != camera_id:
+            raise HTTPException(422, detail={"code": "camera_id_mismatch", "message": "Идентификатор камеры не совпадает"})
+        if not camera.url:
+            raise HTTPException(422, detail={"code": "camera_url_required", "message": "Укажите RTSP URL"})
+        app.state.video_previews[camera_id] = {"until": time.monotonic() + 12, "camera": camera.model_dump(mode="json")}
+        return {"ok": True, "active": True}
+
+    @app.get("/api/v1/cameras/{camera_id}/preview.jpg")
+    async def camera_preview_image(camera_id: str, account=Depends(admin)):
+        _require_camera_id(camera_id)
+        root = (cfg.data_root / "video" / ".preview").resolve()
+        path = (root / f"{camera_id}.jpg").resolve()
+        if root not in path.parents or not path.is_file():
+            raise HTTPException(404, detail={"code": "preview_missing", "message": "Кадр ещё не готов"})
+        return Response(content=path.read_bytes(), media_type="image/jpeg", headers={"Cache-Control": "no-store"})
+
     @app.get("/api/v1/internal/video/config")
     async def video_config(request: Request):
         _video_auth(request)
         config = VideoConfig.model_validate(repo.camera_document())
-        return {"config": config.model_dump(mode="json")}
+        return {
+            "config": config.model_dump(mode="json"),
+            "episodes": repo.open_episodes(),
+            "previews": _live_previews(),
+        }
 
     @app.post("/api/v1/internal/video/status")
     async def video_status(payload: VideoStatusBody, request: Request):
         _video_auth(request)
         repo.save_camera_status([item.model_dump() for item in payload.items])
         return {"ok": True}
+
+    @app.post("/api/v1/internal/video/episodes")
+    async def video_episode_events(payload: EpisodeEventBody, request: Request):
+        _video_auth(request)
+        changed = repo.apply_episode_events([item.model_dump() for item in payload.items])
+        for row in changed:
+            if row["state"] not in {"finished", "error"}:
+                continue
+            event = "episode.finished" if row["state"] == "finished" else "episode.error"
+            repo.record_audit(None, "video.episode", row["camera_id"], {"event": event, "id": row["id"], "state": row["state"], "path": row["path"]})
+        return {"ok": True, "items": changed}
 
     def worker_auth(request: Request, vm_id: str) -> dict[str, Any]:
         token = request.headers.get("x-worker-token", "")

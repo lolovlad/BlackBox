@@ -1,26 +1,18 @@
 (function () {
-  var RESOLUTIONS = [
-    ["source", "исходное"],
-    ["3840x2160", "3840×2160"],
-    ["1920x1080", "1920×1080"],
-    ["1280x720", "1280×720"],
-    ["640x480", "640×480"],
-    ["custom", "своё"],
-  ];
-  var CODECS = [
-    ["libx264", "H.264"],
-    ["libx265", "H.265"],
-    ["mjpeg", "MJPEG"],
-    ["copy", "copy"],
-    ["h264_v4l2m2m", "H.264 аппаратный Pi"],
-  ];
-  var PRESETS = ["ultrafast", "superfast", "veryfast", "faster", "fast", "medium"];
-  var status = {};
   var cameras = [];
+  var episodes = [];
+  var status = {};
+  var selected = "";
+  var watching = false;
+  var lastLease = 0;
 
   function csrf() {
     var row = document.cookie.split("; ").find(function (item) { return item.trim().indexOf("bb_csrf=") === 0; });
     return row ? decodeURIComponent(row.split("=").slice(1).join("=")) : "";
+  }
+
+  function field(name) {
+    return document.querySelector("[data-field='" + name + "']");
   }
 
   function blank(id, index) {
@@ -32,8 +24,8 @@
       stream: "main",
       rtsp_transport: "tcp",
       resolution: "source",
-      width: 1920,
-      height: 1080,
+      width: null,
+      height: null,
       fps: null,
       codec: "libx264",
       profile: "high",
@@ -55,6 +47,82 @@
     return "cam" + n;
   }
 
+  function current() {
+    return cameras.find(function (camera) { return camera.id === selected; }) || null;
+  }
+
+  function numberOrNull(value) {
+    if (value === "" || value === null || value === undefined) return null;
+    var parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+
+  function readForm() {
+    var camera = current();
+    if (!camera) return;
+    camera.name = field("name").value.trim();
+    camera.enabled = field("enabled").checked;
+    camera.url = field("url").value.trim();
+    camera.stream = field("stream").value;
+    camera.rtsp_transport = field("rtsp_transport").value;
+    camera.resolution = field("resolution").value;
+    camera.width = numberOrNull(field("width").value);
+    camera.height = numberOrNull(field("height").value);
+    camera.fps = numberOrNull(field("fps").value);
+    camera.codec = field("codec").value;
+    camera.profile = field("profile").value;
+    camera.preset = field("preset").value;
+    camera.bitrate_kbps = Number(field("bitrate_kbps").value);
+    camera.gop_sec = Number(field("gop_sec").value);
+    camera.audio = field("audio").value;
+    camera.audio_bitrate_kbps = Number(field("audio_bitrate_kbps").value);
+    camera.container = field("container").value;
+    camera.segment_sec = Number(field("segment_sec").value);
+  }
+
+  function writeForm() {
+    var camera = current();
+    var steps = document.getElementById("camera-steps");
+    var empty = document.getElementById("camera-empty");
+    var live = document.getElementById("camera-live");
+    var has = !!camera;
+    steps.hidden = !has;
+    empty.hidden = has;
+    live.hidden = !has;
+    if (!has) return;
+    field("name").value = camera.name || "";
+    field("id").value = camera.id;
+    field("enabled").checked = !!camera.enabled;
+    field("url").value = camera.url || "";
+    field("stream").value = camera.stream || "main";
+    field("rtsp_transport").value = camera.rtsp_transport || "tcp";
+    field("resolution").value = camera.resolution || "source";
+    field("width").value = camera.width || "";
+    field("height").value = camera.height || "";
+    field("fps").value = camera.fps || "";
+    field("codec").value = camera.codec || "libx264";
+    field("profile").value = camera.profile || "high";
+    field("preset").value = camera.preset || "ultrafast";
+    field("bitrate_kbps").value = camera.bitrate_kbps;
+    field("gop_sec").value = camera.gop_sec;
+    field("audio").value = camera.audio || "none";
+    field("audio_bitrate_kbps").value = camera.audio_bitrate_kbps;
+    field("container").value = camera.container || "mp4";
+    field("segment_sec").value = camera.segment_sec;
+    syncPicture();
+    renderEstimate();
+    renderEpisodes();
+    renderLive();
+  }
+
+  function storageDir() {
+    return (field("storage_dir").value || "").trim();
+  }
+
+  function folder() {
+    return (storageDir() || "/data/video").replace(/\/+$/, "");
+  }
+
   function estimateMib(videoKbps, audioKbps, seconds) {
     return (Number(videoKbps) + Number(audioKbps)) * Number(seconds) / 8 / 1024;
   }
@@ -68,193 +136,148 @@
     return camera.audio === "none" ? 0 : Number(camera.audio_bitrate_kbps) || 0;
   }
 
-  function field(labelText, control) {
-    var wrap = document.createElement("label");
-    wrap.appendChild(document.createTextNode(labelText));
-    wrap.appendChild(control);
-    return wrap;
-  }
-
-  function select(value, options) {
-    var node = document.createElement("select");
-    options.forEach(function (option) {
-      var item = document.createElement("option");
-      item.value = option[0];
-      item.textContent = option[1];
-      if (option[0] === value) item.selected = true;
-      node.appendChild(item);
-    });
-    return node;
-  }
-
-  function input(type, value, attrs) {
-    var node = document.createElement("input");
-    node.type = type;
-    if (type === "checkbox") node.checked = !!value;
-    else if (value !== null && value !== undefined) node.value = value;
-    Object.keys(attrs || {}).forEach(function (key) { node[key] = attrs[key]; });
-    return node;
-  }
-
-  function readRow(card, camera) {
-    function value(name) {
-      return card.querySelector("[data-field='" + name + "']");
+  function syncPicture() {
+    var custom = field("resolution").value === "custom";
+    document.querySelectorAll("[data-custom]").forEach(function (node) { node.hidden = !custom; });
+    if (custom) {
+      if (!field("width").value) field("width").value = "1920";
+      if (!field("height").value) field("height").value = "1080";
     }
-    camera.name = value("name").value.trim();
-    camera.enabled = value("enabled").checked;
-    camera.url = value("url").value.trim();
-    camera.stream = value("stream").value;
-    camera.rtsp_transport = value("rtsp_transport").value;
-    camera.resolution = value("resolution").value;
-    camera.width = Number(value("width").value) || null;
-    camera.height = Number(value("height").value) || null;
-    var fps = value("fps").value.trim();
-    camera.fps = fps === "" ? null : Number(fps);
-    camera.codec = value("codec").value;
-    camera.profile = value("profile").value;
-    camera.preset = value("preset").value;
-    camera.bitrate_kbps = Number(value("bitrate_kbps").value);
-    camera.gop_sec = Number(value("gop_sec").value);
-    camera.audio = value("audio").value;
-    camera.audio_bitrate_kbps = Number(value("audio_bitrate_kbps").value);
-    camera.container = value("container").value;
-    camera.segment_sec = Number(value("segment_sec").value);
+    var camera = current();
+    var copy = camera && (field("codec").value === "copy" || field("audio").value === "copy");
+    document.getElementById("camera-copy-note").hidden = !copy;
   }
 
-  function readAll() {
-    document.querySelectorAll("[data-camera-id]").forEach(function (card) {
-      var camera = cameras.find(function (item) { return item.id === card.getAttribute("data-camera-id"); });
-      if (camera) readRow(card, camera);
-    });
+  function renderEstimate() {
+    readForm();
+    var camera = current();
+    var node = document.getElementById("camera-estimate");
+    var path = document.getElementById("camera-path");
+    if (!camera) {
+      node.textContent = "";
+      path.textContent = "";
+      return;
+    }
+    var extra = audioKbps(camera);
+    var episode = estimateMib(camera.bitrate_kbps, extra, camera.segment_sec);
+    var hour = estimateMib(camera.bitrate_kbps, extra, 3600);
+    var day = estimateMib(camera.bitrate_kbps, extra, 86400);
+    node.textContent = "Один эпизод: " + label(episode) + ". Если записывать без пауз: час " + label(hour) + ", сутки " + label(day) + ".";
+    path.textContent = folder() + "/" + camera.id + "/ГГГГММДД_ЧЧММСС_эпизод." + (camera.container === "mkv" ? "mkv" : "mp4");
   }
 
   function statusText(id) {
     var row = status[id];
-    if (!row || row.state === "stopped") return "остановлена";
-    if (row.state === "recording") return "пишет";
-    return row.message || "ошибка";
+    if (!row || row.state === "stopped") return "готова";
+    if (row.state === "recording") return "идёт запись";
+    if (row.state === "preview") return "просмотр";
+    return "ошибка";
   }
 
-  function renderEstimate() {
-    readAll();
-    var body = document.getElementById("camera-estimate-body");
-    var note = document.getElementById("camera-copy-note");
-    body.replaceChildren();
-    var totals = { fragment: 0, hour: 0, day: 0, copy: false };
+  function renderNav() {
+    var nav = document.getElementById("camera-nav");
+    nav.replaceChildren();
+    if (!cameras.length) {
+      var empty = document.createElement("p");
+      empty.className = "bb-muted";
+      empty.textContent = "Камер пока нет.";
+      nav.appendChild(empty);
+      return;
+    }
     cameras.forEach(function (camera) {
-      if (!camera.enabled) return;
-      var extra = audioKbps(camera);
-      var fragment = estimateMib(camera.bitrate_kbps, extra, camera.segment_sec);
-      var hour = estimateMib(camera.bitrate_kbps, extra, 3600);
-      var day = estimateMib(camera.bitrate_kbps, extra, 86400);
-      var tr = document.createElement("tr");
-      [camera.name || camera.id, label(fragment), label(hour), label(day)].forEach(function (text) {
-        var td = document.createElement("td");
-        td.textContent = text;
-        tr.appendChild(td);
-      });
-      body.appendChild(tr);
-      if (camera.enabled) {
-        totals.fragment += fragment;
-        totals.hour += hour;
-        totals.day += day;
-        if (camera.codec === "copy" || camera.audio === "copy") totals.copy = true;
-      }
+      var button = document.createElement("button");
+      button.type = "button";
+      button.className = "bb-camera-pick" + (camera.id === selected ? " is-selected" : "");
+      var name = document.createElement("strong");
+      name.textContent = camera.name || camera.id;
+      var meta = document.createElement("span");
+      meta.textContent = camera.id + " · " + statusText(camera.id);
+      button.appendChild(name);
+      button.appendChild(meta);
+      button.addEventListener("click", function () { select(camera.id); });
+      nav.appendChild(button);
     });
-    var total = document.createElement("tr");
-    ["Все включённые", label(totals.fragment), label(totals.hour), label(totals.day)].forEach(function (text) {
-      var td = document.createElement("td");
-      var strong = document.createElement("strong");
-      strong.textContent = text;
-      td.appendChild(strong);
-      total.appendChild(td);
-    });
-    body.appendChild(total);
-    note.hidden = !totals.copy;
+    document.getElementById("camera-add").disabled = cameras.length >= 16;
   }
 
-  function bind(node, camera, name) {
-    node.setAttribute("data-field", name);
-    node.addEventListener("input", function () {
-      if (name === "resolution") syncCustom(node.closest("[data-camera-id]"), node.value);
-      renderEstimate();
-    });
-    node.addEventListener("change", renderEstimate);
-    return node;
+  function when(iso) {
+    if (!iso) return "";
+    var date = new Date(iso);
+    if (Number.isNaN(date.getTime())) return iso;
+    return date.toLocaleString("ru-RU");
   }
 
-  function syncCustom(card, resolution) {
-    card.querySelectorAll("[data-custom]").forEach(function (node) {
-      node.hidden = resolution !== "custom";
+  function episodeTitle(row) {
+    if (row.state === "finished") return "Эпизод закончен";
+    if (row.state === "error") return "Ошибка эпизода";
+    if (row.state === "recording") return "Идёт запись";
+    return "В очереди";
+  }
+
+  function renderEpisodes() {
+    var list = document.getElementById("camera-episodes");
+    if (!list) return;
+    list.replaceChildren();
+    var rows = episodes.filter(function (row) { return row.camera_id === selected; }).slice(0, 8);
+    if (!rows.length) {
+      var empty = document.createElement("li");
+      empty.className = "bb-muted";
+      empty.textContent = "Событий ещё не было.";
+      list.appendChild(empty);
+      return;
+    }
+    rows.forEach(function (row) {
+      var item = document.createElement("li");
+      var title = document.createElement("strong");
+      title.textContent = episodeTitle(row);
+      item.appendChild(title);
+      var meta = document.createElement("span");
+      meta.textContent = [when(row.ended_at || row.started_at), row.path, row.message].filter(Boolean).join(" · ");
+      item.appendChild(meta);
+      list.appendChild(item);
     });
   }
 
-  function render() {
-    var root = document.getElementById("camera-rows");
-    root.replaceChildren();
-    cameras.forEach(function (camera) {
-      var card = document.createElement("fieldset");
-      card.className = "bb-camera-row";
-      card.setAttribute("data-camera-id", camera.id);
-      var legend = document.createElement("legend");
-      legend.textContent = camera.id;
-      card.appendChild(legend);
-      var state = document.createElement("p");
-      state.className = "bb-camera-status";
-      state.setAttribute("data-status", camera.id);
-      state.textContent = statusText(camera.id);
-      card.appendChild(state);
-      var grid = document.createElement("div");
-      grid.className = "bb-camera-grid";
-      var enabled = bind(input("checkbox", camera.enabled), camera, "enabled");
-      var enabledLabel = field("", enabled);
-      enabledLabel.className = "bb-checkbox-label";
-      enabledLabel.insertBefore(document.createTextNode("Включена"), enabled);
-      grid.appendChild(field("Имя", bind(input("text", camera.name, { required: true, maxLength: 128 }), camera, "name")));
-      grid.appendChild(enabledLabel);
-      grid.appendChild(field("RTSP URL", bind(input("text", camera.url, { placeholder: "rtsp://…" }), camera, "url")));
-      grid.appendChild(field("Поток", bind(select(camera.stream, [["main", "main"], ["sub", "sub"]]), camera, "stream")));
-      grid.appendChild(field("Транспорт", bind(select(camera.rtsp_transport, [["tcp", "tcp"], ["udp", "udp"]]), camera, "rtsp_transport")));
-      grid.appendChild(field("Разрешение", bind(select(camera.resolution, RESOLUTIONS), camera, "resolution")));
-      var width = field("Ширина", bind(input("number", camera.width, { min: 160, max: 7680 }), camera, "width"));
-      var height = field("Высота", bind(input("number", camera.height, { min: 120, max: 4320 }), camera, "height"));
-      width.setAttribute("data-custom", "1");
-      height.setAttribute("data-custom", "1");
-      grid.appendChild(width);
-      grid.appendChild(height);
-      grid.appendChild(field("FPS", bind(input("number", camera.fps === null ? "" : camera.fps, { min: 1, max: 60, placeholder: "исходный" }), camera, "fps")));
-      grid.appendChild(field("Кодек", bind(select(camera.codec, CODECS), camera, "codec")));
-      grid.appendChild(field("Профиль H.264", bind(select(camera.profile, [["baseline", "baseline"], ["main", "main"], ["high", "high"]]), camera, "profile")));
-      grid.appendChild(field("Preset", bind(select(camera.preset, PRESETS.map(function (item) { return [item, item]; })), camera, "preset")));
-      grid.appendChild(field("Битрейт, кбит/с", bind(input("number", camera.bitrate_kbps, { min: 64, max: 50000, required: true }), camera, "bitrate_kbps")));
-      grid.appendChild(field("Ключевой кадр, с", bind(input("number", camera.gop_sec, { min: 1, max: 30, required: true }), camera, "gop_sec")));
-      grid.appendChild(field("Звук", bind(select(camera.audio, [["none", "нет"], ["aac", "AAC"], ["copy", "copy"]]), camera, "audio")));
-      grid.appendChild(field("Звук, кбит/с", bind(input("number", camera.audio_bitrate_kbps, { min: 32, max: 512 }), camera, "audio_bitrate_kbps")));
-      grid.appendChild(field("Контейнер", bind(select(camera.container, [["mp4", "mp4"], ["mkv", "mkv"]]), camera, "container")));
-      grid.appendChild(field("Фрагмент, с", bind(input("number", camera.segment_sec, { min: 5, max: 3600, required: true }), camera, "segment_sec")));
-      card.appendChild(grid);
-      root.appendChild(card);
-      syncCustom(card, camera.resolution);
-    });
-    document.getElementById("camera-count").value = String(cameras.length);
-    renderEstimate();
+  function renderLive() {
+    var camera = current();
+    var state = camera ? statusText(camera.id) : "";
+    var node = document.getElementById("camera-live-status");
+    var watch = document.getElementById("camera-watch");
+    var record = document.getElementById("camera-record");
+    if (!camera) return;
+    var row = status[camera.id];
+    if (row && row.state === "error" && row.message) state = row.message;
+    node.textContent = watching ? ("Просмотр · " + state) : state;
+    watch.innerHTML = watching ? "<i class=\"bi bi-stop-circle\"></i> Остановить просмотр" : "<i class=\"bi bi-eye\"></i> Смотреть";
+    var busy = row && row.state === "recording";
+    if (busy && watching) {
+      watching = false;
+      hidePreview();
+    }
+    record.disabled = busy;
+    record.innerHTML = busy ? "<i class=\"bi bi-record-circle\"></i> Идёт запись" : "<i class=\"bi bi-record-circle\"></i> Начать запись";
   }
 
-  function resize(count) {
-    readAll();
-    while (cameras.length < count) cameras.push(blank(nextId(cameras), cameras.length));
-    cameras = cameras.slice(0, count);
-    render();
+  function select(id) {
+    var previous = selected;
+    readForm();
+    if (watching && previous && previous !== id) sendPreview(false, previous);
+    watching = false;
+    selected = id;
+    hidePreview();
+    writeForm();
+    renderNav();
   }
 
   function payload() {
-    readAll();
+    readForm();
     return {
+      storage_dir: storageDir(),
       cameras: cameras.map(function (camera) {
         return {
           id: camera.id,
           name: camera.name,
-          enabled: camera.enabled,
+          enabled: !!camera.enabled,
           url: camera.url,
           stream: camera.stream,
           rtsp_transport: camera.rtsp_transport,
@@ -276,34 +299,33 @@
     };
   }
 
-  function applyStatus(next) {
-    status = next || {};
-    document.querySelectorAll("[data-status]").forEach(function (node) {
-      node.textContent = statusText(node.getAttribute("data-status"));
-    });
+  function errorText(body) {
+    var details = body && body.details;
+    if (Array.isArray(details) && details.length && details[0].msg) return String(details[0].msg);
+    return (body && body.message) || "Не удалось сохранить";
   }
 
-  function load() {
-    return fetch("/api/v1/cameras", { credentials: "same-origin" }).then(function (response) {
-      if (!response.ok) throw new Error("Не удалось загрузить камеры");
-      return response.json();
-    }).then(function (body) {
+  function apply(body, replace) {
+    status = body.status || {};
+    episodes = body.episodes || [];
+    if (replace) {
       cameras = (body.config && body.config.cameras) || [];
-      applyStatus(body.status);
-      render();
-    });
+      field("storage_dir").value = (body.config && body.config.storage_dir) || "";
+      if (!cameras.some(function (camera) { return camera.id === selected; })) {
+        selected = cameras.length ? cameras[0].id : "";
+      }
+      writeForm();
+    } else {
+      renderEpisodes();
+      renderLive();
+    }
+    renderNav();
   }
 
-  document.getElementById("camera-count").addEventListener("change", function (event) {
-    var count = Math.max(0, Math.min(16, Number(event.target.value) || 0));
-    resize(count);
-  });
-
-  document.getElementById("cameras-form").addEventListener("submit", function (event) {
-    event.preventDefault();
+  function save() {
     var message = document.getElementById("camera-message");
     message.textContent = "Сохранение…";
-    fetch("/api/v1/cameras", {
+    return fetch("/api/v1/cameras", {
       method: "PUT",
       credentials: "same-origin",
       headers: { "Content-Type": "application/json", "X-CSRF-Token": csrf() },
@@ -312,26 +334,207 @@
       return response.json().then(function (body) { return { ok: response.ok, body: body }; });
     }).then(function (result) {
       if (!result.ok) {
-        message.textContent = (result.body && result.body.message) || "Не удалось сохранить";
-        return;
+        message.textContent = errorText(result.body);
+        return false;
       }
-      cameras = result.body.config.cameras;
-      applyStatus(result.body.status);
-      render();
+      apply(result.body, true);
       message.textContent = "Сохранено";
+      return true;
     }).catch(function () {
       message.textContent = "Не удалось сохранить";
+      return false;
+    });
+  }
+
+  function cameraBody(id) {
+    readForm();
+    var camera = cameras.find(function (item) { return item.id === id; });
+    if (!camera) return null;
+    return {
+      id: camera.id,
+      name: camera.name,
+      enabled: !!camera.enabled,
+      url: camera.url,
+      stream: camera.stream,
+      rtsp_transport: camera.rtsp_transport,
+      resolution: camera.resolution,
+      width: camera.resolution === "custom" ? camera.width : null,
+      height: camera.resolution === "custom" ? camera.height : null,
+      fps: camera.fps,
+      codec: camera.codec,
+      profile: camera.profile,
+      preset: camera.preset,
+      bitrate_kbps: camera.bitrate_kbps,
+      gop_sec: camera.gop_sec,
+      audio: camera.audio,
+      audio_bitrate_kbps: camera.audio_bitrate_kbps,
+      container: camera.container,
+      segment_sec: camera.segment_sec,
+    };
+  }
+
+  function hidePreview() {
+    var image = document.getElementById("camera-preview");
+    image.hidden = true;
+    image.removeAttribute("src");
+    document.getElementById("camera-preview-empty").hidden = false;
+  }
+
+  function refreshPreviewImage() {
+    if (!watching || !selected) return;
+    var image = document.getElementById("camera-preview");
+    image.src = "/api/v1/cameras/" + encodeURIComponent(selected) + "/preview.jpg?t=" + Date.now();
+  }
+
+  function sendPreview(active, id) {
+    var cameraId = id || selected;
+    if (!cameraId) return Promise.resolve();
+    var body = { active: !!active };
+    if (active) {
+      var camera = cameraBody(cameraId);
+      if (!camera || !camera.url) {
+        document.getElementById("camera-live-status").textContent = "Укажите RTSP URL";
+        watching = false;
+        renderLive();
+        return Promise.resolve();
+      }
+      body.camera = camera;
+    }
+    return fetch("/api/v1/cameras/" + encodeURIComponent(cameraId) + "/preview", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/json", "X-CSRF-Token": csrf() },
+      body: JSON.stringify(body),
+    }).then(function (response) {
+      if (!response.ok) {
+        return response.json().then(function (payload) {
+          document.getElementById("camera-live-status").textContent = errorText(payload);
+          watching = false;
+          renderLive();
+        });
+      }
+      return null;
+    }).catch(function () {
+      document.getElementById("camera-live-status").textContent = "Просмотр недоступен";
+      watching = false;
+      renderLive();
+    });
+  }
+
+  document.getElementById("camera-add").addEventListener("click", function () {
+    readForm();
+    if (cameras.length >= 16) return;
+    var camera = blank(nextId(cameras), cameras.length);
+    cameras.push(camera);
+    selected = camera.id;
+    watching = false;
+    hidePreview();
+    writeForm();
+    renderNav();
+  });
+
+  document.getElementById("camera-delete").addEventListener("click", function () {
+    if (!selected) return;
+    if (watching) sendPreview(false, selected);
+    watching = false;
+    cameras = cameras.filter(function (camera) { return camera.id !== selected; });
+    selected = cameras.length ? cameras[0].id : "";
+    hidePreview();
+    writeForm();
+    renderNav();
+    document.getElementById("camera-message").textContent = "Удаление применится после сохранения";
+  });
+
+  document.getElementById("cameras-form").addEventListener("submit", function (event) {
+    event.preventDefault();
+    save();
+  });
+
+  document.getElementById("cameras-form").addEventListener("input", function () {
+    syncPicture();
+    renderEstimate();
+  });
+
+  document.getElementById("camera-watch").addEventListener("click", function () {
+    if (!selected) return;
+    watching = !watching;
+    if (!watching) {
+      hidePreview();
+      sendPreview(false);
+    } else {
+      lastLease = Date.now();
+      document.getElementById("camera-preview-empty").textContent = "Ждём кадр от камеры…";
+      document.getElementById("camera-preview-empty").hidden = false;
+      sendPreview(true);
+    }
+    renderLive();
+  });
+
+  document.getElementById("camera-preview").addEventListener("load", function () {
+    if (!watching) return;
+    document.getElementById("camera-preview").hidden = false;
+    document.getElementById("camera-preview-empty").hidden = true;
+  });
+
+  document.getElementById("camera-preview").addEventListener("error", function () {
+    if (!watching) return;
+    document.getElementById("camera-preview").hidden = true;
+    document.getElementById("camera-preview-empty").hidden = false;
+    document.getElementById("camera-preview-empty").textContent = "Кадр ещё не готов. Проверьте URL и что сервис записи запущен.";
+  });
+
+  document.getElementById("camera-record").addEventListener("click", function () {
+    if (!selected) return;
+    var message = document.getElementById("camera-message");
+    save().then(function (ok) {
+      if (!ok) return;
+      message.textContent = "Старт эпизода…";
+      return fetch("/api/v1/cameras/" + encodeURIComponent(selected) + "/episodes", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "X-CSRF-Token": csrf() },
+      }).then(function (response) {
+        return response.json().then(function (body) { return { ok: response.ok, body: body }; });
+      }).then(function (result) {
+        if (!result.ok) {
+          message.textContent = errorText(result.body);
+          return;
+        }
+        message.textContent = "Эпизод поставлен в очередь";
+        return fetch("/api/v1/cameras", { credentials: "same-origin" }).then(function (response) {
+          return response.ok ? response.json() : null;
+        }).then(function (body) {
+          if (body) apply(body, false);
+        });
+      });
+    }).catch(function () {
+      message.textContent = "Не удалось начать запись";
     });
   });
 
-  load().catch(function () {
+  fetch("/api/v1/cameras", { credentials: "same-origin" }).then(function (response) {
+    if (!response.ok) throw new Error("load");
+    return response.json();
+  }).then(function (body) {
+    apply(body, true);
+  }).catch(function () {
     document.getElementById("camera-message").textContent = "Не удалось загрузить камеры";
   });
+
   window.setInterval(function () {
     fetch("/api/v1/cameras", { credentials: "same-origin" }).then(function (response) {
       return response.ok ? response.json() : null;
     }).then(function (body) {
-      if (body) applyStatus(body.status);
+      if (body) apply(body, false);
     }).catch(function () { return null; });
   }, 3000);
+
+  window.setInterval(function () {
+    if (!watching || !selected) return;
+    refreshPreviewImage();
+    if (Date.now() - lastLease > 2000) {
+      lastLease = Date.now();
+      sendPreview(true);
+    }
+  }, 1000);
 })();

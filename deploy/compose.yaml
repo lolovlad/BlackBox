@@ -132,6 +132,11 @@ services:
     networks: [bb-control]
     volumes:
       - blackbox-data:/data
+      - type: bind
+        source: /mnt
+        target: /mnt
+        bind:
+          propagation: rslave
     restart: unless-stopped
 
   legacy-web:

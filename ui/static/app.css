@@ -2018,13 +2018,49 @@
 .bb-monitor-disks { margin-top: 1rem; }
 .bb-monitor-disk-grid { grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); }
 .bb-monitor-disk { padding: 0.7rem; border: 1px solid var(--bb-border); border-radius: 10px; }
-.bb-gpio-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 0.55rem; }
-.bb-gpio-pin { padding: 0.7rem 0.75rem; border: 1px solid var(--bb-border); border-radius: 10px; background: #f8fafc; }
-.bb-gpio-pin-head { display: flex; justify-content: space-between; gap: 0.5rem; }
-.bb-gpio-pin-state { margin: 0.25rem 0; font-weight: 700; }
-.bb-gpio-pin.is-on { background: #e5f6f1; color: var(--bb-ok); }
-.bb-gpio-pin.is-off { background: #f4f6fa; }
-.bb-gpio-pin.is-dead { background: #f7f7f8; color: #6b7280; }
+.bb-gpio-head { display: flex; justify-content: space-between; gap: 1rem; align-items: baseline; flex-wrap: wrap; }
+.bb-gpio-head h2 { margin: 0; }
+.bb-gpio-layout { display: grid; grid-template-columns: auto minmax(220px, 280px); gap: 1.25rem; align-items: start; margin-top: 0.8rem; }
+.bb-gpio-board {
+  display: grid;
+  grid-template-columns: repeat(2, 3.1rem);
+  gap: 0.35rem 0.85rem;
+  width: max-content;
+  padding: 0.85rem 0.95rem;
+  border-radius: 18px;
+  background: #1c2430;
+}
+.bb-gpio-cell {
+  width: 3.1rem;
+  height: 2.15rem;
+  border: 0;
+  border-radius: 7px;
+  background: #2c3646;
+  color: #d5dbe6;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+.bb-gpio-cell.is-empty { visibility: hidden; }
+.bb-gpio-cell.is-on { background: #1f8a70; color: #fff; }
+.bb-gpio-cell.is-off { background: #d7dee8; color: #1c2430; }
+.bb-gpio-cell.is-dead { background: #3a4454; color: #8b95a7; }
+.bb-gpio-cell.is-wait { background: #243041; color: #8b95a7; }
+.bb-gpio-cell.is-selected { box-shadow: 0 0 0 2px #fff; }
+.bb-gpio-detail { display: grid; gap: 0.35rem; align-content: start; min-height: 8rem; }
+.bb-gpio-kicker { margin: 0; color: var(--bb-slate); font-size: 0.78rem; letter-spacing: 0.04em; }
+.bb-gpio-name { margin: 0; font-size: 1.35rem; font-weight: 700; }
+.bb-gpio-state { margin: 0; font-weight: 700; }
+.bb-gpio-state.is-on { color: var(--bb-ok); }
+.bb-gpio-state.is-dead,
+.bb-gpio-state.is-wait { color: #6b7280; }
+.bb-gpio-facts { display: grid; gap: 0.35rem; margin: 0.4rem 0 0; }
+.bb-gpio-facts div { display: flex; justify-content: space-between; gap: 1rem; padding: 0.35rem 0; border-top: 1px solid var(--bb-border); }
+.bb-gpio-facts dt { color: var(--bb-slate); }
+.bb-gpio-facts dd { margin: 0; font-weight: 650; }
+@media (max-width: 720px) {
+  .bb-gpio-layout { grid-template-columns: 1fr; }
+}
 [data-gpio-pins] input,
 [data-gpio-pins] select { width: 100%; }
 .bb-field-tools { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-bottom: 0.6rem; }
@@ -2083,18 +2119,57 @@
   to { transform: rotate(360deg); }
 }
 
-#cameras-form { max-width: none; }
-.bb-camera-row {
-  margin: 0.4rem 0 0;
-  padding: 0.9rem 1rem 1rem;
+.bb-camera-toolbar { display: flex; justify-content: space-between; gap: 1rem; align-items: flex-start; margin-bottom: 1rem; }
+.bb-camera-layout { display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 1.25rem; align-items: start; }
+.bb-camera-nav { display: grid; gap: 0.45rem; align-content: start; }
+.bb-camera-pick {
+  display: grid;
+  gap: 0.15rem;
+  width: 100%;
+  margin: 0;
+  padding: 0.7rem 0.8rem;
   border: 1px solid var(--bb-border);
   border-radius: 12px;
+  background: #f8f9fd;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
 }
-.bb-camera-row legend { font-weight: 700; padding: 0 0.35rem; }
-.bb-camera-status { margin: 0 0 0.7rem; color: var(--bb-slate); }
-.bb-camera-grid {
+.bb-camera-pick span { color: var(--bb-slate); font-size: 0.78rem; }
+.bb-camera-pick.is-selected { border-color: var(--bb-accent); background: #e8edf5; box-shadow: inset 0 0 0 1px var(--bb-accent); }
+.bb-camera-live {
   display: grid;
-  gap: 0.75rem;
-  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  grid-template-columns: minmax(220px, 420px) minmax(0, 1fr);
+  gap: 1rem;
+  align-items: center;
+  margin-bottom: 1rem;
+  padding: 0.8rem;
+  border: 1px solid var(--bb-border);
+  border-radius: 14px;
+  background: #fff;
+  position: sticky;
+  top: 0.75rem;
+  z-index: 2;
+}
+.bb-preview-frame {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  border-radius: 12px;
+  background: #111820;
+  overflow: hidden;
+}
+.bb-preview-frame img { width: 100%; height: 100%; object-fit: contain; }
+.bb-preview-frame p { margin: 0; padding: 1rem; color: #d5dbe6; }
+.bb-camera-live-copy { display: grid; gap: 0.55rem; align-content: center; }
+#cameras-form { max-width: none; }
+.bb-episode-list { list-style: none; padding: 0; margin: 0; display: grid; gap: 0.4rem; }
+.bb-episode-list li { display: grid; gap: 0.15rem; padding: 0.55rem 0.7rem; border-radius: 10px; background: #f6f8fc; }
+.bb-episode-list span { color: var(--bb-slate); font-size: 0.82rem; overflow-wrap: anywhere; }
+@media (max-width: 860px) {
+  .bb-camera-layout,
+  .bb-camera-live { grid-template-columns: 1fr; }
+  .bb-camera-live { position: static; }
 }
 
