@@ -52,8 +52,9 @@ FROM worker AS worker-tcp
 ENTRYPOINT ["/app/.venv/bin/python", "-m", "workers.modbus_tcp.main"]
 
 FROM worker AS worker-gpio
+# Debian 13 names the libgpiod 2.x library libgpiod3. libgpiod2 was the 1.6 ABI.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends libgpiod2 \
+    && apt-get install -y --no-install-recommends libgpiod3 \
     && rm -rf /var/lib/apt/lists/*
 RUN uv pip install --python /app/.venv/bin/python "gpiod>=2.1,<3"
 ENTRYPOINT ["/app/.venv/bin/python", "-m", "workers.gpio.main"]
