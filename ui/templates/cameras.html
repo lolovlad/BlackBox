@@ -2,7 +2,7 @@
 {% from "_fields.html" import field, check %}
 {% block title %}Камеры · BlackBox{% endblock %}
 {% block content %}
-<section class="bb-card">
+<section class="bb-card" data-bb-events>
   <div class="bb-camera-toolbar">
     <div>
       <h1 class="bb-page-title">Камеры</h1>
@@ -26,6 +26,10 @@
           </div>
           <p class="bb-field-hint">Просмотр показывает поток и выбранное разрешение. На время эпизода он останавливается, чтобы не занимать второе подключение к камере.</p>
         </div>
+      </div>
+      <div id="camera-journal-wrap" hidden>
+        <h3 class="bb-section-title">Журнал</h3>
+        <div id="camera-journal" class="bb-journal"></div>
       </div>
       <form id="cameras-form" class="bb-form bb-vm-form">
         <section class="bb-vm-step">

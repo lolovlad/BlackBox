@@ -17,6 +17,7 @@
 - `GET /api/v1/internal/video/config` — конфиг, открытые эпизоды и активные просмотры. Заголовок `X-Video-Token` равен `BB_VIDEO_TOKEN`.
 - `POST /api/v1/internal/video/status` — статус камеры: `recording`, `preview`, `stopped` или `error`.
 - `POST /api/v1/internal/video/episodes` — события эпизода: `recording`, затем `finished` или `error`.
+- `POST /api/v1/internal/video/logs` — строки журнала ffmpeg. `GET /api/v1/cameras/{id}/logs` отдаёт их на страницу, как журнал ВМ.
 
 Носитель выбирается из одобренных ресурсов хранения, как у ВМ (`storage:data` или найденный диск). Каталог на носителе по умолчанию `video`. Hub отдаёт сервису уже готовый путь этого ресурса. Имя файла: `<путь носителя>/video/<camera_id>/ГГГГММДД_ЧЧММСС_<episode_id>.mp4`.
 

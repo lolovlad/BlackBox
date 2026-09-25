@@ -37,6 +37,15 @@ def post_status(hub_url: str, token: str, items: list[dict[str, str]]) -> None:
     )
 
 
+def post_logs(hub_url: str, token: str, items: list[dict[str, str]]) -> None:
+    _request(
+        f"{hub_url.rstrip('/')}/api/v1/internal/video/logs",
+        token,
+        method="POST",
+        payload={"items": items},
+    )
+
+
 def post_episodes(hub_url: str, token: str, items: list[dict[str, str]]) -> None:
     _request(
         f"{hub_url.rstrip('/')}/api/v1/internal/video/episodes",
@@ -66,6 +75,8 @@ def run() -> int:
             output_root = Path(raw_root) if raw_root else root / "video"
             result = supervisor.tick(config, list(payload.get("episodes") or []), previews, output_root=output_root)
             post_status(hub_url, token, result["statuses"])
+            if result["logs"]:
+                post_logs(hub_url, token, result["logs"])
             if result["episodes"]:
                 post_episodes(hub_url, token, result["episodes"])
         except (HTTPError, URLError, TimeoutError, OSError, ValueError):

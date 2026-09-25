@@ -125,6 +125,15 @@ class HubRepository:
                     message TEXT NOT NULL DEFAULT '',
                     updated_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS camera_logs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    camera_id TEXT NOT NULL,
+                    level TEXT NOT NULL,
+                    source TEXT NOT NULL DEFAULT 'ffmpeg',
+                    line TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_camera_logs_camera ON camera_logs(camera_id, id);
                 CREATE TABLE IF NOT EXISTS video_episodes (
                     id TEXT PRIMARY KEY,
                     camera_id TEXT NOT NULL,
@@ -664,6 +673,54 @@ class HubRepository:
                     "INSERT INTO camera_status(camera_id, state, message, updated_at) VALUES(?,?,?,?)",
                     (camera_id, str(item.get("state") or "stopped"), str(item.get("message") or "")[:500], now),
                 )
+
+    def append_camera_logs(self, items: list[dict[str, Any]]) -> int:
+        now = datetime.now(timezone.utc).isoformat()
+        stored = 0
+        cameras: set[str] = set()
+        with self.connect() as c:
+            for item in items:
+                camera_id = str(item.get("camera_id") or "").strip()
+                line = str(item.get("line") or "").strip()
+                if not camera_id or not line:
+                    continue
+                level = "error" if str(item.get("level") or "") == "error" else "info"
+                source = str(item.get("source") or "ffmpeg")[:32] or "ffmpeg"
+                c.execute(
+                    "INSERT INTO camera_logs(camera_id,level,source,line,created_at) VALUES(?,?,?,?,?)",
+                    (camera_id, level, source, line[:2000], now),
+                )
+                cameras.add(camera_id)
+                stored += 1
+            for camera_id in cameras:
+                kept = c.execute(
+                    "SELECT id FROM camera_logs WHERE camera_id=? ORDER BY id DESC LIMIT 2000",
+                    (camera_id,),
+                ).fetchall()
+                if len(kept) < 2000:
+                    continue
+                cutoff = int(kept[-1]["id"])
+                c.execute("DELETE FROM camera_logs WHERE camera_id=? AND id < ?", (camera_id, cutoff))
+        return stored
+
+    def list_camera_logs(self, camera_id: str, *, limit: int = 500) -> list[dict[str, Any]]:
+        cap = max(1, min(int(limit), 2000))
+        with self.connect() as c:
+            rows = c.execute(
+                "SELECT id,camera_id,level,source,line,created_at FROM camera_logs WHERE camera_id=? ORDER BY id DESC LIMIT ?",
+                (camera_id, cap),
+            ).fetchall()
+        return [
+            {
+                "id": int(row["id"]),
+                "camera_id": str(row["camera_id"]),
+                "level": str(row["level"]),
+                "source": str(row["source"]),
+                "line": str(row["line"]),
+                "timestamp": str(row["created_at"]),
+            }
+            for row in reversed(rows)
+        ]
 
     def enqueue_episode(self, camera_id: str) -> dict[str, Any]:
         episode_id = secrets.token_hex(8)

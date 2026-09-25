@@ -175,7 +175,7 @@ def _input_argv(camera: CameraSettings) -> list[str]:
         "ffmpeg",
         "-hide_banner",
         "-loglevel",
-        "warning",
+        "info",
         "-rtsp_transport",
         camera.rtsp_transport,
         "-i",

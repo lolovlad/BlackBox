@@ -6,6 +6,7 @@
   var selected = "";
   var watching = false;
   var lastLease = 0;
+  var logEntries = [];
 
   function csrf() {
     var row = document.cookie.split("; ").find(function (item) { return item.trim().indexOf("bb_csrf=") === 0; });
@@ -90,6 +91,7 @@
     steps.hidden = !has;
     empty.hidden = has;
     live.hidden = !has;
+    document.getElementById("camera-journal-wrap").hidden = !has;
     if (!has) return;
     field("name").value = camera.name || "";
     field("id").value = camera.id;
@@ -292,6 +294,7 @@
     hidePreview();
     writeForm();
     renderNav();
+    loadLogs();
   }
 
   function payload() {
@@ -331,6 +334,60 @@
     return (body && body.message) || "Не удалось сохранить";
   }
 
+  function clock(iso) {
+    if (!iso) return "";
+    var date = new Date(iso);
+    if (Number.isNaN(date.getTime())) return "";
+    return date.toLocaleString("ru-RU");
+  }
+
+  function renderLogs() {
+    var box = document.getElementById("camera-journal");
+    if (!box) return;
+    box.replaceChildren();
+    if (!logEntries.length) {
+      var empty = document.createElement("p");
+      empty.className = "bb-journal-empty";
+      empty.textContent = "Журнал пуст. Начните просмотр или запись, чтобы увидеть ffmpeg.";
+      box.appendChild(empty);
+      return;
+    }
+    logEntries.forEach(function (entry) {
+      var row = document.createElement("div");
+      row.className = "bb-log-row" + (entry.level === "error" ? " is-error" : "") + (entry.source === "hub" ? " is-lifecycle" : "");
+      var time = document.createElement("span");
+      time.className = "bb-log-time";
+      time.textContent = clock(entry.timestamp);
+      var source = document.createElement("span");
+      source.className = "bb-log-src";
+      source.textContent = entry.source || "ffmpeg";
+      var message = document.createElement("span");
+      message.className = "bb-log-msg";
+      message.textContent = entry.line || "";
+      row.appendChild(time);
+      row.appendChild(source);
+      row.appendChild(message);
+      box.appendChild(row);
+    });
+    box.scrollTop = box.scrollHeight;
+  }
+
+  function loadLogs() {
+    if (!selected) {
+      logEntries = [];
+      renderLogs();
+      return;
+    }
+    var cameraId = selected;
+    fetch("/api/v1/cameras/" + encodeURIComponent(cameraId) + "/logs?tail=500", { credentials: "same-origin" }).then(function (response) {
+      return response.ok ? response.json() : null;
+    }).then(function (body) {
+      if (!body || cameraId !== selected) return;
+      logEntries = body.entries || [];
+      renderLogs();
+    }).catch(function () { return null; });
+  }
+
   function apply(body, replace) {
     status = body.status || {};
     episodes = body.episodes || [];
@@ -342,6 +399,7 @@
         selected = cameras.length ? cameras[0].id : "";
       }
       writeForm();
+      loadLogs();
     } else {
       fillDisks(body.storage_resources, field("storage_resource_id").value);
       renderEpisodes();
@@ -557,8 +615,24 @@
       return response.ok ? response.json() : null;
     }).then(function (body) {
       if (body) apply(body, false);
+      loadLogs();
     }).catch(function () { return null; });
   }, 3000);
+
+  window.addEventListener("bb-hub-event", function (event) {
+    var message = event.detail || {};
+    if (message.topic !== "logs" || !selected) return;
+    var payload = message.payload || {};
+    if (payload.vm_id !== "camera:" + selected || !payload.line) return;
+    logEntries.push({
+      level: payload.level || "info",
+      source: "ffmpeg",
+      line: payload.line,
+      timestamp: payload.timestamp,
+    });
+    logEntries = logEntries.slice(-500);
+    renderLogs();
+  });
 
   window.setInterval(function () {
     if (!watching || !selected) return;

@@ -164,6 +164,17 @@ class EpisodeEventBody(BaseModel):
     items: list[EpisodeEventItem] = Field(default_factory=list)
 
 
+class VideoLogItem(BaseModel):
+    camera_id: str = Field(min_length=1, max_length=64)
+    level: Literal["info", "error"] = "info"
+    source: str = "ffmpeg"
+    line: str = ""
+
+
+class VideoLogBody(BaseModel):
+    items: list[VideoLogItem] = Field(default_factory=list)
+
+
 class PreviewBody(BaseModel):
     active: bool = False
     camera: dict[str, Any] | None = None
@@ -1722,6 +1733,20 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
         _video_auth(request)
         repo.save_camera_status([item.model_dump() for item in payload.items])
         return {"ok": True}
+
+    @app.get("/api/v1/cameras/{camera_id}/logs")
+    async def camera_logs(camera_id: str, tail: int = Query(default=500, ge=1, le=2000), account=Depends(admin)):
+        _require_camera_id(camera_id)
+        return {"camera_id": camera_id, "tail": tail, "entries": repo.list_camera_logs(camera_id, limit=tail)}
+
+    @app.post("/api/v1/internal/video/logs")
+    async def video_logs(payload: VideoLogBody, request: Request):
+        _video_auth(request)
+        items = [item.model_dump() for item in payload.items if item.line.strip()]
+        repo.append_camera_logs(items)
+        for item in items:
+            await bus.publish_log(f"camera:{item['camera_id']}", item["line"], level=item["level"])
+        return {"ok": True, "count": len(items)}
 
     @app.post("/api/v1/internal/video/episodes")
     async def video_episode_events(payload: EpisodeEventBody, request: Request):

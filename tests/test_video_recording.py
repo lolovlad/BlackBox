@@ -102,7 +102,7 @@ def test_supervisor_records_one_episode_and_reports_when_it_ends(tmp_path: Path)
         return proc
 
     supervisor = Supervisor(tmp_path, spawn=spawn)
-    camera = _camera()
+    camera = _camera(url="rtsp://user:secret@10.0.0.8/stream")
     config = VideoConfig(cameras=[camera])
     assert supervisor.tick(config, [], [])["statuses"] == [{"id": "cam1", "state": "stopped", "message": ""}]
     assert started == []
@@ -119,6 +119,12 @@ def test_supervisor_records_one_episode_and_reports_when_it_ends(tmp_path: Path)
     assert first["episodes"][0]["state"] == "recording"
     assert first["statuses"][0]["state"] == "recording"
     assert supervisor.previews == {}
+    assert any("Эпизод ep1 запущен" in item["line"] and item["source"] == "hub" for item in first["logs"])
+    assert "user:secret" not in " ".join(item["line"] for item in first["logs"])
+
+    supervisor.episodes["ep1"]["lines"].append("Nothing was written into output file, because at least one of its streams received no packets.")
+    logged = supervisor.tick(config, [{"id": "ep1", "camera_id": "cam1", "state": "recording"}], [])
+    assert any(item["level"] == "error" and "Nothing was written" in item["line"] for item in logged["logs"])
 
     again = supervisor.tick(config, [{"id": "ep1", "camera_id": "cam1", "state": "recording"}], [])
     assert again["episodes"] == []
@@ -129,6 +135,7 @@ def test_supervisor_records_one_episode_and_reports_when_it_ends(tmp_path: Path)
     done = supervisor.tick(config, [{"id": "ep1", "camera_id": "cam1", "state": "recording"}], [])
     assert done["episodes"][0]["state"] == "finished"
     assert done["episodes"][0]["path"].endswith("ep1.mp4")
+    assert any("Эпизод ep1 завершён" in item["line"] for item in done["logs"])
 
     lost = supervisor.tick(config, [{"id": "ep9", "camera_id": "cam1", "state": "recording"}], [])
     assert lost["episodes"][0]["state"] == "error"
@@ -169,6 +176,7 @@ def test_camera_settings_roundtrip(tmp_path: Path, monkeypatch):
         assert "Добавить камеру" in page.text
         assert 'data-field="storage_resource_id"' in page.text
         assert "Носитель" in page.text
+        assert "Журнал" in page.text
         assert "bb-vm-step" in page.text
         assert "/static/cameras.js" in page.text
 
@@ -246,6 +254,18 @@ def test_camera_settings_roundtrip(tmp_path: Path, monkeypatch):
         assert listed[0]["state"] == "finished"
         assert client.get("/api/v1/internal/video/config", headers={"X-Video-Token": "video-secret"}).json()["episodes"] == []
         assert client.post("/api/v1/internal/video/episodes", json={"items": []}).status_code == 401
+        assert client.post("/api/v1/internal/video/logs", json={"items": []}).status_code == 401
+        written = client.post(
+            "/api/v1/internal/video/logs",
+            headers={"X-Video-Token": "video-secret"},
+            json={"items": [{"camera_id": "cam1", "level": "error", "source": "ffmpeg", "line": "Nothing was written into output file"}]},
+        )
+        assert written.status_code == 200
+        journal = client.get("/api/v1/cameras/cam1/logs")
+        assert journal.status_code == 200
+        assert journal.json()["entries"][-1]["line"] == "Nothing was written into output file"
+        assert journal.json()["entries"][-1]["level"] == "error"
+        assert journal.json()["entries"][-1]["source"] == "ffmpeg"
 
         watched = client.post(
             "/api/v1/cameras/cam1/preview",

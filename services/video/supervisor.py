@@ -38,6 +38,7 @@ class Supervisor:
         self.previews: dict[str, dict[str, Any]] = {}
         self.preview_errors: dict[str, str] = {}
         self.closed: dict[str, dict[str, str]] = {}
+        self.pending_logs: list[dict[str, str]] = []
 
     def tick(
         self,
@@ -53,7 +54,8 @@ class Supervisor:
         self._sync_episodes(config, episodes, events)
         recording = {str(slot["camera_id"]) for slot in self.episodes.values() if _running(slot["proc"])}
         self._sync_previews(previews, recording)
-        return {"statuses": self._statuses(config, previews, recording), "episodes": events}
+        self._drain_slots()
+        return {"statuses": self._statuses(config, previews, recording), "episodes": events, "logs": self._take_logs()}
 
     def stop_all(self) -> None:
         for slot in list(self.episodes.values()) + list(self.previews.values()):
@@ -67,12 +69,15 @@ class Supervisor:
             if _running(slot["proc"]):
                 continue
             code = slot["proc"].poll()
+            self._drain_slot(slot)
             message = _tail(slot)
             if code == 0:
                 state = "finished"
+                self._note(str(slot["camera_id"]), f"Эпизод {episode_id} завершён, код {code}", level="info", source="hub")
             else:
                 state = "error"
                 message = message or f"ffmpeg завершился с кодом {code}"
+                self._note(str(slot["camera_id"]), f"Эпизод {episode_id} завершился с кодом {code}", level="error", source="hub")
             event = {
                 "id": episode_id,
                 "state": state,
@@ -133,9 +138,11 @@ class Supervisor:
             stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
             directory = root / camera.id
             path = directory / episode_name(camera, episode_id, stamp)
+            argv = build_episode_argv(camera, path)
+            self._note(camera.id, f"Эпизод {episode_id} запущен: {_redact_argv(argv)}", level="info", source="hub")
             try:
                 directory.mkdir(parents=True, exist_ok=True)
-                proc = self.spawn(build_episode_argv(camera, path))
+                proc = self.spawn(argv)
             except OSError as exc:
                 event = {
                     "id": episode_id,
@@ -145,10 +152,12 @@ class Supervisor:
                     "started_at": "",
                     "ended_at": _now(),
                 }
+                self._note(camera.id, event["message"], level="error", source="hub")
                 self._close(episode_id, event)
                 events.append(event)
                 continue
             slot = _slot(proc, path, camera.id, started_at)
+            slot["log_source"] = "ffmpeg"
             self.episodes[episode_id] = slot
             events.append(_recording_event(episode_id, slot))
 
@@ -159,26 +168,34 @@ class Supervisor:
             camera = wanted.get(camera_id)
             signature = _preview_signature(camera) if camera is not None else ""
             if camera is None or slot["signature"] != signature or not _running(slot["proc"]):
+                self._drain_slot(slot)
                 if camera is not None and not _running(slot["proc"]):
                     self.preview_errors[camera_id] = _tail(slot) or "просмотр остановился"
+                elif camera is None:
+                    self._note(camera_id, "Просмотр остановлен", level="info", source="hub")
                 _stop(slot["proc"])
                 del self.previews[camera_id]
         for camera_id, camera in wanted.items():
             if camera_id in self.previews:
                 continue
             jpeg = self.data_root / "video" / ".preview" / f"{camera_id}.jpg"
+            argv = build_preview_argv(camera, jpeg)
+            self._note(camera_id, f"Просмотр запущен: {_redact_argv(argv)}", level="info", source="hub")
             try:
                 jpeg.parent.mkdir(parents=True, exist_ok=True)
-                proc = self.spawn(build_preview_argv(camera, jpeg))
+                proc = self.spawn(argv)
             except OSError as exc:
                 self.preview_errors[camera_id] = "ffmpeg не найден" if isinstance(exc, FileNotFoundError) else str(exc)
+                self._note(camera_id, self.preview_errors[camera_id], level="error", source="hub")
                 continue
             self.preview_errors.pop(camera_id, None)
             self.previews[camera_id] = {
                 "proc": proc,
                 "signature": _preview_signature(camera),
                 "lines": _watch(proc),
+                "sent": 0,
                 "camera_id": camera_id,
+                "log_source": "ffmpeg",
             }
 
     def _statuses(self, config: VideoConfig, previews: list[CameraSettings], recording: set[str]) -> list[dict[str, str]]:
@@ -201,8 +218,47 @@ class Supervisor:
 
     def _stop_preview(self, camera_id: str) -> None:
         slot = self.previews.pop(camera_id, None)
-        if slot is not None:
-            _stop(slot["proc"])
+        if slot is None:
+            return
+        self._drain_slot(slot)
+        self._note(camera_id, "Просмотр остановлен на время записи", level="info", source="hub")
+        _stop(slot["proc"])
+
+    def _drain_slots(self) -> None:
+        for slot in list(self.episodes.values()) + list(self.previews.values()):
+            self._drain_slot(slot)
+
+    def _drain_slot(self, slot: dict[str, Any]) -> None:
+        lines = slot.get("lines") or []
+        snapshot = list(lines)
+        sent = int(slot.get("sent") or 0)
+        camera_id = str(slot.get("camera_id") or "")
+        source = str(slot.get("log_source") or "ffmpeg")
+        for line in snapshot[sent:]:
+            self._note(camera_id, line, source=source)
+        slot["sent"] = len(snapshot)
+        if slot["sent"] > 400:
+            drop = slot["sent"] - 80
+            del lines[:drop]
+            slot["sent"] -= drop
+
+    def _note(self, camera_id: str, line: str, *, level: str | None = None, source: str = "ffmpeg") -> None:
+        text = str(line or "").strip()
+        if not camera_id or not text:
+            return
+        self.pending_logs.append(
+            {
+                "camera_id": camera_id,
+                "level": level or _log_level(text),
+                "source": source,
+                "line": text[:2000],
+            }
+        )
+
+    def _take_logs(self) -> list[dict[str, str]]:
+        items = self.pending_logs
+        self.pending_logs = []
+        return items
 
     def _close(self, episode_id: str, event: dict[str, str]) -> None:
         self.closed[episode_id] = event
@@ -223,7 +279,7 @@ def _recording_event(episode_id: str, slot: dict[str, Any]) -> dict[str, str]:
 
 
 def _slot(proc: Any, path: Path, camera_id: str, started_at: str) -> dict[str, Any]:
-    return {"proc": proc, "path": path, "camera_id": camera_id, "started_at": started_at, "lines": _watch(proc)}
+    return {"proc": proc, "path": path, "camera_id": camera_id, "started_at": started_at, "lines": _watch(proc), "sent": 0}
 
 
 def _watch(proc: Any) -> list[str]:
@@ -265,6 +321,24 @@ def _stop(proc: Any) -> None:
                 kill()
 
 
+def _redact_argv(argv: list[str]) -> str:
+    return " ".join(_redact_url(part) if part.startswith(("rtsp://", "rtsps://")) else part for part in argv)
+
+
+def _redact_url(url: str) -> str:
+    scheme, mark, rest = url.partition("://")
+    if "@" in rest:
+        rest = "***@" + rest.split("@", 1)[1]
+    return f"{scheme}{mark}{rest}"
+
+
+def _log_level(line: str) -> str:
+    lowered = line.lower()
+    if any(word in lowered for word in ("error", "failed", "nothing was written", "errno", "invalid", "denied", "refused")):
+        return "error"
+    return "info"
+
+
 def _tail(slot: dict[str, Any]) -> str:
     lines = slot.get("lines") or []
     if lines:
@@ -280,6 +354,5 @@ def _capture(stream: Any, lines: list[str]) -> None:
             if not text:
                 continue
             lines.append(text)
-            del lines[:-20]
     except Exception:
         return
