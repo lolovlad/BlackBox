@@ -10,15 +10,21 @@ class GpiodBackend:
         import gpiod
         from gpiod.line import Bias, Direction
 
-        config = {}
+        self._gpiod = gpiod
+        self._lines: dict[int, object] = {}
         for pin in pins:
             bias = {"up": Bias.PULL_UP, "down": Bias.PULL_DOWN}.get(pin.pull, Bias.DISABLED)
-            config[int(pin.bcm_pin)] = gpiod.LineSettings(direction=Direction.INPUT, bias=bias)
-        self._gpiod = gpiod
-        self._request = gpiod.request_lines(str(chip), consumer="blackbox-gpio", config=config)
+            config = {int(pin.bcm_pin): gpiod.LineSettings(direction=Direction.INPUT, bias=bias)}
+            try:
+                self._lines[int(pin.bcm_pin)] = gpiod.request_lines(str(chip), consumer="blackbox-gpio", config=config)
+            except OSError:
+                continue
 
-    def read_pin(self, bcm_pin: int) -> int:
-        value = self._request.get_value(int(bcm_pin))
+    def read_pin(self, bcm_pin: int) -> int | None:
+        request = self._lines.get(int(bcm_pin))
+        if request is None:
+            return None
+        value = request.get_value(int(bcm_pin))
         active = getattr(getattr(self._gpiod, "line", None), "Value", None)
         if active is not None and value == active.ACTIVE:
             return 1
@@ -30,9 +36,11 @@ class GpiodBackend:
             return 1 if str(value).endswith("ACTIVE") else 0
 
     def cleanup(self) -> None:
-        release = getattr(self._request, "release", None)
-        if callable(release):
-            release()
+        for request in self._lines.values():
+            release = getattr(request, "release", None)
+            if callable(release):
+                release()
+        self._lines.clear()
 
 
 def build_gpio_backend(chip: str, pins: list[PinSpec]) -> GpiodBackend:

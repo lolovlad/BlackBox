@@ -204,7 +204,7 @@ def test_values_charts_and_alarm_journal_for_many_sources(tmp_path: Path) -> Non
 
         dashboard = client.get("/dashboard").text
         assert "Главная панель" in dashboard
-        assert "GPIO (Raspberry)" in dashboard
+        assert "GPIO панель" in dashboard
         assert "Мониторинг устройства" in dashboard
         assert "gen-1" in dashboard and "gen-2" in dashboard
         data_page = client.get("/data").text

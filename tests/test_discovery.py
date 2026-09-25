@@ -87,8 +87,21 @@ def test_gpio_sysfs_label(tmp_path: Path, monkeypatch):
     (chip / "ngpio").write_text("58")
     items = discover_gpio_resources(sys_bus_gpio=tmp_path, sys_class_gpio=tmp_path)
     assert items[0]["resource_id"] == "gpio:/dev/gpiochip0"
+    assert items[0]["name"] == "GPIO панель"
     assert items[0]["metadata"]["ngpio"] == 58
-    assert "pinctrl-bcm2711" in items[0]["name"]
+    assert items[0]["metadata"]["label"] == "pinctrl-bcm2711"
+
+
+def test_gpio_chips_collapse_to_one_panel(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("BB_DISCOVERY_GPIO_PATHS", "/dev/gpiochip0,/dev/gpiochip4")
+    for name, lines, label in (("gpiochip0", "54", "pinctrl-rp1"), ("gpiochip4", "4", "gpio-brcmstb")):
+        chip = tmp_path / name
+        chip.mkdir()
+        (chip / "label").write_text(label)
+        (chip / "ngpio").write_text(lines)
+    items = discover_gpio_resources(sys_bus_gpio=tmp_path, sys_class_gpio=tmp_path)
+    assert [item["path"] for item in items] == ["/dev/gpiochip0"]
+    assert items[0]["name"] == "GPIO панель"
 
 
 def test_arp_and_tcp_probe(tmp_path: Path):
@@ -133,6 +146,7 @@ def test_hub_inventory_excludes_tcp_endpoints(tmp_path: Path):
 
     items = discover_resources(tmp_path, extra_tcp_endpoints=["10.0.0.8:502"], include_tcp=False)
     assert all(item.get("kind") != "tcp" for item in items)
+    assert all(item.get("kind") != "gpio" for item in items)
 
 
 def test_host_dev_uart_is_published_as_linux_path(tmp_path: Path, monkeypatch):

@@ -277,8 +277,13 @@
     const gpioList = root.querySelector('[data-gpio-list]');
     const empty = root.querySelector('[data-gpio-empty]');
     gpioList.innerHTML = gpio.map(function (item) {
-      const label = item.vm_name ? item.vm_name + ' · ' + item.name : item.name;
-      return '<li class="is-on"><span>' + esc(label) + '</span><strong>ACTIVE</strong></li>';
+      const on = !!item.is_on;
+      const missing = item.live === false;
+      const waiting = item.live == null;
+      const klass = missing ? 'is-dead' : (on ? 'is-on' : 'is-off');
+      const state = missing ? 'нет линии' : (waiting ? 'нет данных' : (on ? 'ACTIVE' : 'спокойно'));
+      const level = item.level === null || item.level === undefined ? '—' : String(item.level);
+      return '<article class="bb-gpio-pin ' + klass + '"><div class="bb-gpio-pin-head"><strong>' + esc(item.name) + '</strong><span>BCM ' + esc(item.bcm_pin) + '</span></div><div class="bb-gpio-pin-state">' + state + '</div><div class="bb-hint">Уровень ' + esc(level) + ' · подтяжка ' + esc(item.pull || 'up') + ' · удержание ' + esc(item.hold_sec) + ' с</div></article>';
     }).join('');
     empty.hidden = gpio.length > 0;
     const stamp = root.querySelector('[data-gpio-time]');

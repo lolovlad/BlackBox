@@ -141,31 +141,58 @@ def _cpu_fan_rpm(psutil: Any) -> int | None:
     return selected
 
 
-def gpio_panel(vms: list[dict[str, Any]], latest_by_vm: dict[str, Any]) -> dict[str, Any]:
-    """Active GPIO pins from every GPIO source, matching the legacy alert list."""
+def gpio_panel(
+    vms: list[dict[str, Any]],
+    latest_by_vm: dict[str, Any],
+    documents: dict[str, dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Every pin of the GPIO panel, quiet ones included."""
+    maps = documents or {}
     items: list[dict[str, Any]] = []
     updated_at: datetime | None = None
     for vm in vms:
         if str(vm.get("protocol") or "") != "gpio":
             continue
-        sample = latest_by_vm.get(str(vm.get("id")))
-        if sample is None:
-            continue
-        captured = getattr(sample, "captured_at", None)
+        vm_id = str(vm.get("id"))
+        sample = latest_by_vm.get(vm_id)
+        captured = getattr(sample, "captured_at", None) if sample is not None else None
         if isinstance(captured, datetime) and (updated_at is None or captured > updated_at):
             updated_at = captured
         discrete = getattr(sample, "discrete", None) or {}
+        tags = getattr(sample, "tags", None) or {}
         if not isinstance(discrete, dict):
-            continue
-        for name, value in discrete.items():
-            if not value:
-                continue
+            discrete = {}
+        if not isinstance(tags, dict):
+            tags = {}
+        fields = [
+            field
+            for field in (maps.get(vm_id) or {}).get("fields") or []
+            if isinstance(field, dict) and "bcm_pin" in field and field.get("source") == "pins"
+        ]
+        fields.sort(key=lambda field: int(field.get("bcm_pin") or 0))
+        for field in fields:
+            name = str(field.get("name") or "")
+            live_key = f"{name}_live"
+            level_key = f"{name}_level"
+            if sample is None:
+                live = None
+                level = None
+            elif live_key in tags:
+                live = bool(tags.get(live_key))
+                level = int(tags.get(level_key) or 0) if live else None
+            else:
+                live = True
+                level = None
             items.append(
                 {
-                    "vm_id": str(vm.get("id")),
-                    "vm_name": str(vm.get("name") or vm.get("id")),
-                    "name": str(name),
-                    "is_on": True,
+                    "name": name,
+                    "bcm_pin": int(field.get("bcm_pin") or 0),
+                    "is_on": bool(discrete.get(name)),
+                    "level": level,
+                    "live": live,
+                    "pull": field.get("pull") or "up",
+                    "trigger_level": field.get("trigger_level"),
+                    "hold_sec": field.get("hold_sec"),
                 }
             )
     return {

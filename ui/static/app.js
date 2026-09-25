@@ -149,10 +149,13 @@
   }
 
   function syncGpioChip(form) {
-    const select = enabledField(form, 'gpio_resource_id');
     const chip = enabledField(form, 'gpio_chip');
-    const option = selectedOption(select);
-    if (chip && option && option.dataset.path) chip.value = option.dataset.path;
+    const note = form.querySelector('[data-gpio-panel]');
+    if (!note) return;
+    const path = chip && chip.value;
+    note.textContent = path
+      ? ('GPIO панель есть, чип ' + path + '. Читаются все пины BCM 2–27.')
+      : 'Hub только проверяет, что GPIO панель есть. В сканирование ресурсов она не входит.';
   }
 
   function gpioPinsFromForm(form) {
@@ -180,11 +183,6 @@
     if (serial) serial.addEventListener('change', function () { syncSerialPort(form); });
     const can = form.querySelector('[name="can_resource_id"]');
     if (can) can.addEventListener('change', function () { syncCanInterface(form); });
-    const gpio = form.querySelector('[name="gpio_resource_id"]');
-    if (gpio && !gpio.dataset.bound) {
-      gpio.dataset.bound = '1';
-      gpio.addEventListener('change', function () { syncGpioChip(form); });
-    }
   }
 
   function readResourcesFromForm(form, protocol) {
@@ -195,10 +193,6 @@
     }
     if (protocol === 'can') {
       const value = enabledField(form, 'can_resource_id')?.value;
-      return value ? [{ resource_id: value }] : [];
-    }
-    if (protocol === 'gpio') {
-      const value = enabledField(form, 'gpio_resource_id')?.value;
       return value ? [{ resource_id: value }] : [];
     }
     return [];
@@ -276,7 +270,7 @@
     }
     if (protocol === 'gpio') {
       Object.assign(reader, {
-        gpio_chip: get('gpio_chip')?.value || selectedOption(get('gpio_resource_id'))?.dataset.path || '',
+        gpio_chip: get('gpio_chip')?.value || '',
         poll_interval_sec: numberOr(get('poll_interval_sec')?.value, 0.05),
       });
     }
@@ -309,7 +303,6 @@
   function deviceSelectName(protocol) {
     if (protocol === 'modbus_rtu') return 'serial_resource_id';
     if (protocol === 'can') return 'can_resource_id';
-    if (protocol === 'gpio') return 'gpio_resource_id';
     return '';
   }
 
@@ -402,10 +395,8 @@
     const grouped = candidates || {};
     fillResourceSelect(form.querySelector('[name="serial_resource_id"]'), grouped.modbus_rtu, 'path', 'path');
     fillResourceSelect(form.querySelector('[name="can_resource_id"]'), grouped.can, 'interface', 'name');
-    fillResourceSelect(form.querySelector('[name="gpio_resource_id"]'), grouped.gpio, 'path', 'path');
     renderDeviceList(form, 'modbus_rtu', grouped.modbus_rtu);
     renderDeviceList(form, 'can', grouped.can);
-    renderDeviceList(form, 'gpio', grouped.gpio);
     syncSerialPort(form);
     syncCanInterface(form);
     syncGpioChip(form);
@@ -1233,10 +1224,6 @@
         toast('Выберите CAN-интерфейс', 'error');
         return;
       }
-      if (protocol === 'gpio' && !payload.read_resources.length) {
-        toast('Выберите GPIO-чип', 'error');
-        return;
-      }
       try {
         await mutate('/api/v1/vms', {
           method: 'POST',
@@ -1322,7 +1309,6 @@
         const parts = [];
         if (summary.serial) parts.push(summary.serial + ' serial');
         if (summary.can) parts.push(summary.can + ' CAN');
-        if (summary.gpio) parts.push(summary.gpio + ' GPIO');
         const text = parts.length ? ('Найдено: ' + parts.join(', ')) : 'Подходящих устройств нет';
         sessionStorage.setItem('bb-scan-msg', text);
         toast(text, 'ok');

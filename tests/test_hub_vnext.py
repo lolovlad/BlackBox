@@ -431,17 +431,19 @@ def test_scan_lists_forced_physical_resources_for_each_protocol(tmp_path: Path, 
         scanned = client.post("/api/v1/resources/scan", headers={"X-CSRF-Token": csrf})
         payload = scanned.json()
         ids = {item["resource_id"] for item in payload["items"]}
-        assert ids >= {"serial:/dev/ttyUSB0", "can:can0", "gpio:/dev/gpiochip0", "storage:data"}
+        assert ids >= {"serial:/dev/ttyUSB0", "can:can0", "storage:data"}
+        assert "gpio:/dev/gpiochip0" not in ids
         assert "tcp:10.0.0.8:502" not in ids
         assert payload["summary"]["serial"] >= 1
         assert payload["summary"]["can"] >= 1
-        assert payload["summary"]["gpio"] >= 1
+        assert "gpio" not in payload["summary"]
         assert payload["summary"]["tcp"] == 0
         html = client.get("/admin/resources").text
         assert "Serial · Modbus RTU" in html
         assert "TCP · Modbus TCP" not in html
         assert "CAN" in html
-        assert "GPIO" in html
+        assert "GPIO</h2>" not in html
+        assert "gpio:/dev/gpiochip0" not in html
         assert "USB serial (ttyUSB0)" in html or "ttyUSB0" in html
 
 
@@ -1166,13 +1168,16 @@ def test_gpio_chip_seeds_running_vm_once(tmp_path: Path, monkeypatch):
         assert client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin-password"}).status_code == 200
         csrf = client.cookies.get("bb_csrf")
         maps = client.get("/api/v1/maps").json()["items"]
-        assert any(item["protocol"] == "gpio" and item["version"] == "gpio-default-v1" for item in maps)
+        assert any(item["protocol"] == "gpio" and item["version"] == "gpio-panel-v1" for item in maps)
         vms = [item for item in client.get("/api/v1/vms").json()["items"] if item["protocol"] == "gpio"]
         assert len(vms) == 1
         assert vms[0]["desired_state"] == "running"
-        assert vms[0]["map_version"] == "gpio-default-v1"
+        assert vms[0]["map_version"] == "gpio-panel-v1"
         assert vms[0]["config"]["reader"]["gpio_chip"] == "/dev/gpiochip0"
-        assert vms[0]["read_resources"][0]["resource_id"] == "gpio:/dev/gpiochip0"
+        assert vms[0]["read_resources"] == []
+        document = client.get("/api/v1/maps/gpio-panel-v1", params={"protocol": "gpio"}).json()["document"]
+        bcm = [field["bcm_pin"] for field in document["fields"] if "bcm_pin" in field]
+        assert bcm == list(range(2, 28))
         stopped = client.post(f"/api/v1/vms/{vms[0]['id']}/stop", headers={"X-CSRF-Token": csrf})
         assert stopped.status_code == 200
     cfg = HubConfig(

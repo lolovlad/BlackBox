@@ -57,9 +57,9 @@ def run() -> int:
                     pass
                 time.sleep(1)
                 continue
-        flags = step_pins(pins, backend, states, engines, time.monotonic())
+        frame = step_pins(pins, backend, states, engines, time.monotonic())
         try:
-            client.batch({"pins": flags}, map_version)
+            client.batch({"pins": frame.active, "levels": frame.levels, "live": frame.live}, map_version)
             client.heartbeat()
         except Exception:
             time.sleep(1)

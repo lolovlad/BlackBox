@@ -453,7 +453,34 @@ def discover_gpio_resources(*, sys_bus_gpio: Path | None = None, sys_class_gpio:
                 },
             ).model_dump(mode="json")
         )
-    return resources
+    return _gpio_panel_resource(resources)
+
+
+def _gpio_panel_resource(resources: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """One panel for the header chip. Extra gpiochips are not separate devices."""
+    if not resources:
+        return []
+    def rank(item: dict[str, Any]) -> tuple:
+        lines = (item.get("metadata") or {}).get("ngpio")
+        count = int(lines) if isinstance(lines, int) else 0
+        name = Path(str(item.get("path") or "")).name
+        return (-count, 0 if name == "gpiochip0" else 1, name)
+
+    chosen = dict(sorted(resources, key=rank)[0])
+    metadata = dict(chosen.get("metadata") or {})
+    path = str(chosen.get("path") or "")
+    label = metadata.get("label")
+    lines = metadata.get("ngpio")
+    detail = ["пины BCM 2–27", path]
+    if label:
+        detail.append(str(label))
+    if lines:
+        detail.append(f"{lines} линий чипа")
+    metadata["detail"] = " · ".join(part for part in detail if part)
+    metadata["panel"] = True
+    chosen["name"] = "GPIO панель"
+    chosen["metadata"] = metadata
+    return [chosen]
 
 
 def parse_tcp_endpoint(raw: str, *, default_port: int = DEFAULT_MODBUS_TCP_PORT) -> tuple[str, int] | None:
@@ -818,7 +845,6 @@ def discover_resources(
 ) -> list[dict[str, Any]]:
     found = [
         *discover_serial_resources(),
-        *discover_gpio_resources(sys_bus_gpio=sys_bus_gpio, sys_class_gpio=sys_class_gpio),
         *discover_can_resources(sys_class_net=sys_class_net),
         *discover_storage_resources(data_root),
     ]
@@ -830,7 +856,6 @@ def discover_resources(
 PROTOCOL_RESOURCE_KIND = {
     "modbus_rtu": ResourceKind.SERIAL.value,
     "can": ResourceKind.CAN.value,
-    "gpio": ResourceKind.GPIO.value,
 }
 
 
@@ -863,6 +888,5 @@ def discovery_summary(items: list[dict[str, Any]]) -> dict[str, int]:
         "serial": sum(1 for item in present if item.get("kind") == ResourceKind.SERIAL.value),
         "tcp": sum(1 for item in present if item.get("kind") == ResourceKind.TCP.value),
         "can": sum(1 for item in present if item.get("kind") == ResourceKind.CAN.value),
-        "gpio": sum(1 for item in present if item.get("kind") == ResourceKind.GPIO.value),
         "storage": sum(1 for item in present if item.get("kind") == ResourceKind.STORAGE.value),
     }

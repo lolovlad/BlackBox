@@ -52,6 +52,7 @@ class DockerManager:
         config = vm.get("config") if isinstance(vm.get("config"), dict) else {}
         reader = config.get("reader") if isinstance(config.get("reader"), dict) else {}
         add(reader.get("port"))
+        add(reader.get("gpio_chip"))
         return [f"{path}:{path}:rwm" for path in sorted(paths)]
 
     @staticmethod

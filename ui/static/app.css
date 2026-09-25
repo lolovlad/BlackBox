@@ -2018,7 +2018,15 @@
 .bb-monitor-disks { margin-top: 1rem; }
 .bb-monitor-disk-grid { grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); }
 .bb-monitor-disk { padding: 0.7rem; border: 1px solid var(--bb-border); border-radius: 10px; }
-.bb-monitor-disk-head { display: flex; justify-content: space-between; gap: 0.5rem; }
+.bb-gpio-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 0.55rem; }
+.bb-gpio-pin { padding: 0.7rem 0.75rem; border: 1px solid var(--bb-border); border-radius: 10px; background: #f8fafc; }
+.bb-gpio-pin-head { display: flex; justify-content: space-between; gap: 0.5rem; }
+.bb-gpio-pin-state { margin: 0.25rem 0; font-weight: 700; }
+.bb-gpio-pin.is-on { background: #e5f6f1; color: var(--bb-ok); }
+.bb-gpio-pin.is-off { background: #f4f6fa; }
+.bb-gpio-pin.is-dead { background: #f7f7f8; color: #6b7280; }
+[data-gpio-pins] input,
+[data-gpio-pins] select { width: 100%; }
 .bb-field-tools { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-bottom: 0.6rem; }
 .bb-field-tools input { flex: 1; min-width: 160px; font: inherit; padding: 0.4rem 0.55rem; border: 1px solid var(--bb-border); border-radius: 8px; }
 .bb-echarts {

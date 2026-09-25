@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Protocol
 
 from workers.gpio.hold import HoldEngine, PinState
@@ -7,7 +8,14 @@ from workers.gpio.pins import PinSpec
 
 
 class PinReader(Protocol):
-    def read_pin(self, bcm_pin: int) -> int: ...
+    def read_pin(self, bcm_pin: int) -> int | None: ...
+
+
+@dataclass
+class PinFrame:
+    active: list[int]
+    levels: list[int]
+    live: list[int]
 
 
 def engines_for(pins: list[PinSpec]) -> dict[int, HoldEngine]:
@@ -26,16 +34,24 @@ def step_pins(
     states: dict[int, PinState],
     engines: dict[int, HoldEngine],
     now: float,
-) -> list[int]:
-    """Return 1 only for pins whose hold timer has latched, matching the legacy ACTIVE list."""
+) -> PinFrame:
+    """Read every pin. Active is 1 only after the hold timer latches."""
     width = max((pin.address for pin in pins), default=-1) + 1
     flags = [0] * width
+    levels = [0] * width
+    live = [0] * width
     for pin in pins:
-        raw = 1 if backend.read_pin(pin.bcm_pin) else 0
-        state = states.get(pin.bcm_pin) or PinState(last_value=raw, pending_since=None, alarm_active=False)
+        if not (0 <= pin.address < width):
+            continue
+        raw = backend.read_pin(pin.bcm_pin)
+        if raw is None:
+            continue
+        level = 1 if raw else 0
+        state = states.get(pin.bcm_pin) or PinState(last_value=level, pending_since=None, alarm_active=False)
         engine = engines[pin.bcm_pin]
-        new_state, _opened, _closed = engine.step(now_mono=now, value=raw, state=state)
+        new_state, _opened, _closed = engine.step(now_mono=now, value=level, state=state)
         states[pin.bcm_pin] = new_state
-        if 0 <= pin.address < width:
-            flags[pin.address] = 1 if new_state.alarm_active else 0
-    return flags
+        flags[pin.address] = 1 if new_state.alarm_active else 0
+        levels[pin.address] = level
+        live[pin.address] = 1
+    return PinFrame(active=flags, levels=levels, live=live)

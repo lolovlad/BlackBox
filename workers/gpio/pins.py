@@ -8,9 +8,12 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from bb_platform.contracts import MapDocument, VmProtocol
 
-DEFAULT_GPIO_VERSION = "gpio-default-v1"
+DEFAULT_GPIO_VERSION = "gpio-panel-v1"
+# BCM numbers broken out on the 40-pin header. One panel reads this whole set.
+HEADER_BCM_PINS = tuple(range(2, 28))
 DEFAULT_GPIO_PINS = [
-    {"bcm_pin": 27, "name": "GPIO_27", "trigger_level": 0, "hold_sec": 0.5, "pull": "up", "invert": False},
+    {"bcm_pin": bcm, "name": f"GPIO_{bcm}", "trigger_level": 0, "hold_sec": 0.5, "pull": "up", "invert": False}
+    for bcm in HEADER_BCM_PINS
 ]
 
 
@@ -98,22 +101,47 @@ def pins_from_fields(fields: list[dict]) -> list[PinSpec]:
 
 def build_gpio_map(pins: list[dict], version: str = DEFAULT_GPIO_VERSION) -> dict:
     normalized = normalize_pins(pins)
-    fields = [
-        {
-            "name": pin["name"],
-            "type": "bool",
-            "kind": "discrete",
-            "source": "pins",
-            "address": index,
-            "bcm_pin": pin["bcm_pin"],
-            "trigger_level": pin["trigger_level"],
-            "hold_sec": pin["hold_sec"],
-            "pull": pin["pull"],
-            "invert": pin["invert"],
-        }
-        for index, pin in enumerate(normalized)
+    fields: list[dict] = []
+    for index, pin in enumerate(normalized):
+        fields.append(
+            {
+                "name": pin["name"],
+                "type": "bool",
+                "kind": "discrete",
+                "source": "pins",
+                "address": index,
+                "bcm_pin": pin["bcm_pin"],
+                "trigger_level": pin["trigger_level"],
+                "hold_sec": pin["hold_sec"],
+                "pull": pin["pull"],
+                "invert": pin["invert"],
+            }
+        )
+        fields.append(
+            {
+                "name": f"{pin['name']}_level",
+                "type": "uint16",
+                "kind": "analog",
+                "source": "levels",
+                "address": index,
+                "system": True,
+            }
+        )
+        fields.append(
+            {
+                "name": f"{pin['name']}_live",
+                "type": "bool",
+                "kind": "discrete",
+                "source": "live",
+                "address": index,
+                "system": True,
+            }
+        )
+    requests = [
+        {"name": "pins", "address": 0, "count": len(normalized)},
+        {"name": "levels", "address": 0, "count": len(normalized)},
+        {"name": "live", "address": 0, "count": len(normalized)},
     ]
-    requests = [{"name": "pins", "address": 0, "count": len(fields)}]
     canonical = {
         "protocol": VmProtocol.GPIO.value,
         "preset_id": "gpio-raspberry",

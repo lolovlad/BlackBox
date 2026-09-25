@@ -172,68 +172,44 @@
     </div>
   </fieldset>
 
-  <fieldset class="bb-protocol-panel" data-protocol-panel="gpio" data-discovers="true" {% if active_protocol != 'gpio' %}hidden{% endif %}>
+  <fieldset class="bb-protocol-panel" data-protocol-panel="gpio" data-discovers="false" {% if active_protocol != 'gpio' %}hidden{% endif %}>
     <legend class="bb-sr-only">GPIO</legend>
-    <div class="bb-device-toolbar" data-probe-bar>
-      <button type="button" class="bb-btn bb-btn-secondary bb-btn-sm" data-probe-scan><i class="bi bi-radar"></i> Найти GPIO</button>
-      <span class="bb-probe-status bb-muted" data-probe-status></span>
-    </div>
-    <div class="bb-device-list" data-device-list="gpio">
-      {% for r in gpio_resources %}
-      <button type="button" class="bb-device-card{% if r.resource_id in selected_read_ids or r.path == reader.get('gpio_chip') %} is-selected{% endif %}" data-resource-id="{{ r.resource_id }}">
-        <strong>{{ r.name }}</strong>
-        <span class="bb-mono">{{ r.path }}</span>
-        {% if r.leased_name %}<span class="bb-device-meta">занят {{ r.leased_name }}</span>{% endif %}
-        {% if not r.approved %}<span class="bb-device-meta">подтвердится при создании</span>{% endif %}
-      </button>
-      {% else %}
-      <p class="bb-muted">Найдите GPIO-чип. Карта чтения по умолчанию — GPIO 27, удержание 0.5 с.</p>
-      {% endfor %}
-    </div>
-    <select class="bb-sr-only" name="gpio_resource_id" aria-label="GPIO-чип">
-      <option value="">— выберите чип —</option>
-      {% for r in gpio_resources %}
-      <option value="{{ r.resource_id }}" data-path="{{ r.path or '' }}" {% if r.resource_id in selected_read_ids or r.path == reader.get('gpio_chip') %}selected{% endif %}>{{ r.name }} — {{ r.path }}</option>
-      {% endfor %}
-    </select>
+    <p class="bb-muted" data-gpio-panel>{% if reader.get('gpio_chip') %}GPIO панель есть: {{ reader.get('gpio_chip') }}. Читаются все пины BCM 2–27.{% else %}Hub только проверяет, что GPIO панель есть. В сканирование ресурсов она не входит.{% endif %}</p>
     <input type="hidden" name="gpio_chip" value="{{ reader.get('gpio_chip', '') }}">
     <div class="bb-settings-grid">
-      {% call field('Опрос, секунд', 'Как часто читать пины. Как в легаси, 0.05 с.', 'bi-stopwatch') %}
+      {% call field('Опрос, секунд', 'Как часто читать всю панель. 0.05 с.', 'bi-stopwatch') %}
       <input name="poll_interval_sec" type="number" value="{{ reader.get('poll_interval_sec', 0.05) }}" min="0.01" step="0.01">
       {% endcall %}
-      {% call check('Включить чтение', 'Выключите, чтобы ВМ не опрашивала пины.') %}
+      {% call check('Включить чтение', 'Выключите, чтобы панель не опрашивала пины.') %}
       <input name="enabled" type="checkbox" {% if reader.get('enabled', True) %}checked{% endif %}>
       {% endcall %}
     </div>
     {% if gpio_pins %}
-    <div class="bb-gpio-pins" data-gpio-pins>
-      <h4 class="bb-section-title">Карта чтения</h4>
-      {% for pin in gpio_pins %}
-      <div class="bb-settings-grid" data-gpio-pin>
-        {% call field('BCM', 'Номер пина 0–27.', 'bi-pin-map') %}
-        <input name="gpio_bcm" type="number" min="0" max="27" value="{{ pin.bcm_pin }}" required>
-        {% endcall %}
-        {% call field('Имя', 'Как пин виден на дашборде.', 'bi-tag') %}
-        <input name="gpio_name" value="{{ pin.name }}" required>
-        {% endcall %}
-        {% call field('Уровень срабатывания', '0 или 1. ACTIVE после удержания.', 'bi-lightning') %}
-        <input name="gpio_trigger" type="number" min="0" max="1" value="{{ pin.trigger_level }}" required>
-        {% endcall %}
-        {% call field('Удержание, секунд', 'Сколько уровень должен держаться.', 'bi-hourglass') %}
-        <input name="gpio_hold" type="number" min="0" max="60" step="0.1" value="{{ pin.hold_sec }}" required>
-        {% endcall %}
-        {% call field('Подтяжка', 'up, down или none.', 'bi-arrow-down-up') %}
-        <select name="gpio_pull">
-          <option value="up" {% if pin.pull == 'up' %}selected{% endif %}>up</option>
-          <option value="down" {% if pin.pull == 'down' %}selected{% endif %}>down</option>
-          <option value="none" {% if pin.pull == 'none' %}selected{% endif %}>none</option>
-        </select>
-        {% endcall %}
-        {% call check('Инверсия', 'Считать противоположный уровень триггером.') %}
-        <input name="gpio_invert" type="checkbox" {% if pin.invert %}checked{% endif %}>
-        {% endcall %}
-      </div>
-      {% endfor %}
+    <div class="bb-table-wrap" data-gpio-pins>
+      <h4 class="bb-section-title">Пины панели</h4>
+      <table class="bb-table">
+        <thead>
+          <tr><th>BCM</th><th>Имя</th><th>Уровень</th><th>Удержание, с</th><th>Подтяжка</th><th>Инверсия</th></tr>
+        </thead>
+        <tbody>
+        {% for pin in gpio_pins %}
+          <tr data-gpio-pin>
+            <td><input name="gpio_bcm" type="number" min="0" max="27" value="{{ pin.bcm_pin }}" readonly></td>
+            <td><input name="gpio_name" value="{{ pin.name }}" required></td>
+            <td><input name="gpio_trigger" type="number" min="0" max="1" value="{{ pin.trigger_level }}" required></td>
+            <td><input name="gpio_hold" type="number" min="0" max="60" step="0.1" value="{{ pin.hold_sec }}" required></td>
+            <td>
+              <select name="gpio_pull">
+                <option value="up" {% if pin.pull == 'up' %}selected{% endif %}>up</option>
+                <option value="down" {% if pin.pull == 'down' %}selected{% endif %}>down</option>
+                <option value="none" {% if pin.pull == 'none' %}selected{% endif %}>none</option>
+              </select>
+            </td>
+            <td><input name="gpio_invert" type="checkbox" {% if pin.invert %}checked{% endif %}></td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
     </div>
     {% endif %}
   </fieldset>

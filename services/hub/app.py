@@ -29,7 +29,7 @@ from workers.gpio.pins import pins_from_fields
 from .config import HubConfig
 from .connection import PROFILES, connection_profile, inventory_kinds
 from .db import HubRepository
-from .discovery import KIND_LABELS, PROTOCOL_RESOURCE_KIND, discover_resources, discovery_summary, is_usable_can_interface, is_usable_serial_port
+from .discovery import KIND_LABELS, PROTOCOL_RESOURCE_KIND, discover_gpio_resources, discover_resources, discovery_summary, is_usable_can_interface, is_usable_serial_port
 from .docker_manager import DockerManager, DockerUnavailable
 from .gpio_seed import ensure_gpio_vm, publish_gpio_pins
 from .link import vm_link_status
@@ -523,10 +523,12 @@ def _validate_reader_allowlist(repo: HubRepository, protocol: str, runtime_confi
         reader["can_interface"] = iface
         return
     if profile.link == "gpio":
-        chips = by_kind.get(ResourceKind.GPIO.value, [])
-        path = str((chips[0].get("path") if chips else "") or reader.get("gpio_chip") or "")
-        if not chips or not path:
-            raise HTTPException(409, detail={"code": "read_resource_required", "message": "Нужен GPIO-чип, например /dev/gpiochip0."})
+        path = str(reader.get("gpio_chip") or "").strip()
+        if not path:
+            panel = discover_gpio_resources()
+            path = str(panel[0].get("path") or "") if panel else ""
+        if not path:
+            raise HTTPException(409, detail={"code": "gpio_panel_missing", "message": "GPIO панель на этой плате не найдена."})
         reader["gpio_chip"] = path
         return
 
@@ -757,7 +759,12 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
             payload = collect_system_monitor(cfg.data_root)
             vms = repo.list_vms()
             latest = {str(vm["id"]): sample for vm in vms if (sample := bus.latest_tags(str(vm["id"]))) is not None}
-            gpio = gpio_panel(vms, latest)
+            gpio_documents = {
+                str(vm["id"]): repo.map_by_version(str(vm.get("map_version") or ""), "gpio") or {}
+                for vm in vms
+                if str(vm.get("protocol") or "") == "gpio"
+            }
+            gpio = gpio_panel(vms, latest, gpio_documents)
             payload["gpio_items"] = gpio["items"]
             payload["gpio_time"] = gpio["updated_at"]
             payload["server_time"] = datetime.now().astimezone().strftime("%d.%m.%Y %H:%M:%S")
@@ -2067,7 +2074,7 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
         return templates.TemplateResponse(
             request=request,
             name="dashboard.html",
-            context={"user": account, "vms": repo.list_vms(), "sources": _sources()},
+            context={"user": account, "vms": repo.list_vms(), "sources": [item for item in _sources() if item.get("protocol") != "gpio"]},
         )
 
     @app.get("/data", response_class=HTMLResponse)

@@ -88,13 +88,13 @@ PROFILES: dict[str, ConnectionProfile] = {
     VmProtocol.GPIO.value: ConnectionProfile(
         protocol=VmProtocol.GPIO.value,
         link="gpio",
-        discovers=True,
-        exclusive=True,
-        requires_resource=True,
-        resource_kind=ResourceKind.GPIO.value,
+        discovers=False,
+        exclusive=False,
+        requires_resource=False,
+        resource_kind=None,
         probe_read=False,
-        scan_label="Найти GPIO",
-        hint="GPIO-чип на этом хосте.",
+        scan_label=None,
+        hint="Одна GPIO панель. Сканирование ресурсов её не ищет: Hub только проверяет, что панель есть.",
     ),
 }
 

@@ -23,14 +23,17 @@ def test_physical_buses_scan_and_lease_exclusive_nodes():
     assert rtu.resource_kind == "serial"
     assert can.resource_kind == "can"
     assert rtu.probe_read and can.probe_read
-    assert inventory_kinds() == ("serial", "can", "gpio")
+    assert inventory_kinds() == ("serial", "can")
     assert "tcp" not in inventory_kinds()
+    assert "gpio" not in inventory_kinds()
 
 
-def test_gpio_has_scan_but_no_live_read_test():
+def test_gpio_panel_is_not_an_inventory_device():
     gpio = connection_profile("gpio")
-    assert gpio.discovers is True
+    assert gpio.discovers is False
+    assert gpio.requires_resource is False
     assert gpio.probe_read is False
+    assert gpio.scan_label is None
 
 
 def test_every_protocol_has_a_profile():
