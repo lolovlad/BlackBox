@@ -81,26 +81,26 @@ class CameraSettings(BaseModel):
 class VideoConfig(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
-    storage_dir: str = ""
+    storage_resource_id: str = "storage:data"
+    video_subdir: str = "video"
     cameras: list[CameraSettings] = Field(default_factory=list, max_length=16)
 
-    @field_validator("storage_dir")
+    @field_validator("storage_resource_id")
     @classmethod
-    def _storage_dir(cls, value: str) -> str:
-        text = str(value or "").strip().replace("\\", "/")
-        if not text:
-            return ""
-        parts = [part for part in text.split("/") if part not in {"", "."}]
-        if ".." in parts or not parts:
-            raise ValueError("Каталог записи должен быть абсолютным путём")
-        if text.startswith("/"):
-            if len(parts) < 2:
-                raise ValueError("Укажите каталог, а не корень диска")
-            return "/" + "/".join(parts)
-        windows = len(text) >= 3 and text[1] == ":" and text[2] == "/"
-        if windows and len(parts) >= 2:
-            return text[0] + ":/" + "/".join(parts[1:])
-        raise ValueError("Каталог записи должен быть абсолютным путём")
+    def _storage_resource_id(cls, value: str) -> str:
+        text = str(value or "").strip() or "storage:data"
+        if not text.startswith("storage:") or len(text) <= len("storage:") or any(ch in text for ch in "\\/\0"):
+            raise ValueError("Выберите носитель из списка ресурсов")
+        return text
+
+    @field_validator("video_subdir")
+    @classmethod
+    def _video_subdir(cls, value: str) -> str:
+        text = str(value or "").strip().strip("/\\") or "video"
+        allowed = set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_./-")
+        if ".." in Path(text).parts or any(ch not in allowed for ch in text):
+            raise ValueError("Каталог на носителе может содержать только буквы, цифры, _, . и -")
+        return text
 
     @model_validator(mode="after")
     def _unique_ids(self) -> "VideoConfig":
@@ -168,12 +168,6 @@ def config_estimates(config: VideoConfig) -> dict:
             "copy": any(row["copy"] for row in rows),
         },
     }
-
-
-def storage_root(config: VideoConfig, data_root: Path) -> Path:
-    if config.storage_dir:
-        return Path(config.storage_dir)
-    return Path(data_root) / "video"
 
 
 def _input_argv(camera: CameraSettings) -> list[str]:

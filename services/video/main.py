@@ -62,7 +62,9 @@ def run() -> int:
                     previews.append(CameraSettings.model_validate(item))
                 except ValueError:
                     continue
-            result = supervisor.tick(config, list(payload.get("episodes") or []), previews)
+            raw_root = str(payload.get("storage_dir") or "").strip()
+            output_root = Path(raw_root) if raw_root else root / "video"
+            result = supervisor.tick(config, list(payload.get("episodes") or []), previews, output_root=output_root)
             post_status(hub_url, token, result["statuses"])
             if result["episodes"]:
                 post_episodes(hub_url, token, result["episodes"])

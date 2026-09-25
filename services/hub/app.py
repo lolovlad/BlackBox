@@ -456,6 +456,13 @@ def _approved_storage_resource(repo: HubRepository, resource_id: str | None) -> 
     return resource_id
 
 
+def _video_output_dir(repo: HubRepository, cfg: HubConfig, config: VideoConfig) -> str:
+    resource_id = _approved_storage_resource(repo, config.storage_resource_id)
+    descriptor = repo.resource_by_id(resource_id) or {}
+    base = Path(str(descriptor.get("path") or cfg.data_root))
+    return str(base / config.video_subdir)
+
+
 def _vm_storage_roots(vm: dict[str, Any], repo: HubRepository, cfg: HubConfig) -> list[Path]:
     roots: list[Path] = []
     seen: set[str] = set()
@@ -1604,10 +1611,19 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
         repo.record_audit(int(account["id"]), "resource.approve", resource_id)
         return {"ok": True, "resource_id": resource_id}
 
+    def _storage_choices() -> list[dict[str, Any]]:
+        return [
+            {"resource_id": item["resource_id"], "name": item.get("name") or item["resource_id"], "path": item.get("path") or ""}
+            for item in repo.list_resources()
+            if item.get("kind") == ResourceKind.STORAGE.value and item.get("approved") and item.get("available") and item.get("path")
+        ]
+
     def _camera_payload() -> dict[str, Any]:
         config = VideoConfig.model_validate(repo.camera_document())
         return {
             "config": config.model_dump(mode="json"),
+            "storage_dir": _video_output_dir(repo, cfg, config),
+            "storage_resources": _storage_choices(),
             "estimates": config_estimates(config),
             "status": repo.camera_status(),
             "episodes": repo.list_episodes(),
@@ -1642,6 +1658,7 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
 
     @app.put("/api/v1/cameras", dependencies=[Depends(csrf_protect)])
     async def put_cameras(payload: VideoConfig, account=Depends(admin)):
+        _approved_storage_resource(repo, payload.storage_resource_id)
         repo.save_camera_document(payload.model_dump(mode="json"))
         repo.record_audit(int(account["id"]), "cameras.update", None, {"count": len(payload.cameras)})
         return _camera_payload()
@@ -1695,6 +1712,7 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
         config = VideoConfig.model_validate(repo.camera_document())
         return {
             "config": config.model_dump(mode="json"),
+            "storage_dir": _video_output_dir(repo, cfg, config),
             "episodes": repo.open_episodes(),
             "previews": _live_previews(),
         }

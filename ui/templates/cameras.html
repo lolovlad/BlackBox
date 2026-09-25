@@ -29,10 +29,16 @@
       </div>
       <form id="cameras-form" class="bb-form bb-vm-form">
         <section class="bb-vm-step">
-          <h3 class="bb-vm-step-title"><span class="bb-step-num">1</span> Каталог записей</h3>
-          {% call field('Куда сохранять', 'Пусто — /data/video. Для SSD укажите абсолютный путь, например /mnt/nvme/video.', 'bi-folder2') %}
-          <input data-field="storage_dir" placeholder="/mnt/nvme/video">
-          {% endcall %}
+          <h3 class="bb-vm-step-title"><span class="bb-step-num">1</span> Носитель</h3>
+          <p class="bb-panel-lead">Тот же список дисков, что у ВМ. Эпизоды пишутся в каталог на выбранном носителе.</p>
+          <div class="bb-settings-grid">
+            {% call field('Носитель', 'Куда писать файлы. Список берётся из одобренных ресурсов хранения.', 'bi-hdd') %}
+            <select data-field="storage_resource_id"></select>
+            {% endcall %}
+            {% call field('Каталог на носителе', 'Подкаталог, как telemetry у ВМ. По умолчанию video.', 'bi-folder') %}
+            <input data-field="video_subdir" value="video" pattern="[A-Za-z0-9_./-]+">
+            {% endcall %}
+          </div>
         </section>
         <div id="camera-steps" hidden>
           <section class="bb-vm-step">

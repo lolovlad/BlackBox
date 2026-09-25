@@ -15,7 +15,6 @@ from services.video.settings import (
     build_episode_argv,
     build_preview_argv,
     episode_name,
-    storage_root,
 )
 
 
@@ -34,12 +33,21 @@ class Supervisor:
     def __init__(self, data_root: Path, spawn: Callable[[list[str]], Any] | None = None) -> None:
         self.data_root = data_root
         self.spawn = spawn or _popen
+        self.output_root = data_root / "video"
         self.episodes: dict[str, dict[str, Any]] = {}
         self.previews: dict[str, dict[str, Any]] = {}
         self.preview_errors: dict[str, str] = {}
         self.closed: dict[str, dict[str, str]] = {}
 
-    def tick(self, config: VideoConfig, episodes: list[dict[str, Any]], previews: list[CameraSettings]) -> dict[str, list[dict[str, str]]]:
+    def tick(
+        self,
+        config: VideoConfig,
+        episodes: list[dict[str, Any]],
+        previews: list[CameraSettings],
+        output_root: Path | None = None,
+    ) -> dict[str, list[dict[str, str]]]:
+        if output_root is not None:
+            self.output_root = Path(output_root)
         events: list[dict[str, str]] = []
         self._reap_episodes(events)
         self._sync_episodes(config, episodes, events)
@@ -80,7 +88,7 @@ class Supervisor:
     def _sync_episodes(self, config: VideoConfig, episodes: list[dict[str, Any]], events: list[dict[str, str]]) -> None:
         cameras = {camera.id: camera for camera in config.cameras}
         emitted = {event["id"] for event in events}
-        root = storage_root(config, self.data_root)
+        root = self.output_root
         for item in episodes:
             episode_id = str(item.get("id") or "")
             state = str(item.get("state") or "")

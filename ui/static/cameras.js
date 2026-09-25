@@ -1,5 +1,6 @@
 (function () {
   var cameras = [];
+  var disks = [];
   var episodes = [];
   var status = {};
   var selected = "";
@@ -115,12 +116,36 @@
     renderLive();
   }
 
-  function storageDir() {
-    return (field("storage_dir").value || "").trim();
+  function fillDisks(items, preferred) {
+    disks = items || [];
+    var select = field("storage_resource_id");
+    var keep = preferred || select.value || "storage:data";
+    select.replaceChildren();
+    disks.forEach(function (item) {
+      var option = document.createElement("option");
+      option.value = item.resource_id;
+      option.textContent = item.name + (item.path ? " · " + item.path : "");
+      option.setAttribute("data-path", item.path || "");
+      select.appendChild(option);
+    });
+    if (!select.options.length) {
+      var fallback = document.createElement("option");
+      fallback.value = "storage:data";
+      fallback.textContent = "Внутренний диск Hub";
+      fallback.setAttribute("data-path", "/data");
+      select.appendChild(fallback);
+    }
+    if (Array.prototype.some.call(select.options, function (option) { return option.value === keep; })) {
+      select.value = keep;
+    }
   }
 
   function folder() {
-    return (storageDir() || "/data/video").replace(/\/+$/, "");
+    var select = field("storage_resource_id");
+    var option = select.options[select.selectedIndex];
+    var base = ((option && option.getAttribute("data-path")) || "/data").replace(/[\\/]+$/, "");
+    var sub = (field("video_subdir").value || "video").trim().replace(/^[\\/]+/, "") || "video";
+    return base + "/" + sub;
   }
 
   function estimateMib(videoKbps, audioKbps, seconds) {
@@ -272,7 +297,8 @@
   function payload() {
     readForm();
     return {
-      storage_dir: storageDir(),
+      storage_resource_id: field("storage_resource_id").value || "storage:data",
+      video_subdir: (field("video_subdir").value || "video").trim() || "video",
       cameras: cameras.map(function (camera) {
         return {
           id: camera.id,
@@ -310,12 +336,14 @@
     episodes = body.episodes || [];
     if (replace) {
       cameras = (body.config && body.config.cameras) || [];
-      field("storage_dir").value = (body.config && body.config.storage_dir) || "";
+      fillDisks(body.storage_resources, (body.config && body.config.storage_resource_id) || "storage:data");
+      field("video_subdir").value = (body.config && body.config.video_subdir) || "video";
       if (!cameras.some(function (camera) { return camera.id === selected; })) {
         selected = cameras.length ? cameras[0].id : "";
       }
       writeForm();
     } else {
+      fillDisks(body.storage_resources, field("storage_resource_id").value);
       renderEpisodes();
       renderLive();
     }
@@ -452,6 +480,9 @@
 
   document.getElementById("cameras-form").addEventListener("input", function () {
     syncPicture();
+    renderEstimate();
+  });
+  document.getElementById("cameras-form").addEventListener("change", function () {
     renderEstimate();
   });
 

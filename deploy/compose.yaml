@@ -134,7 +134,12 @@ services:
       - blackbox-data:/data
       - type: bind
         source: /mnt
-        target: /mnt
+        target: /host/mnt
+        bind:
+          propagation: rslave
+      - type: bind
+        source: /media
+        target: /host/media
         bind:
           propagation: rslave
     restart: unless-stopped

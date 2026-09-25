@@ -66,13 +66,14 @@ def test_ffmpeg_argv_copy_skips_scale_and_libx264_limits_bitrate(tmp_path: Path)
     assert "scale=" not in " ".join(plain)
 
 
-def test_storage_dir_must_be_absolute():
-    assert VideoConfig(storage_dir="/mnt/nvme/video").storage_dir == "/mnt/nvme/video"
-    assert VideoConfig(storage_dir="").storage_dir == ""
+def test_storage_picks_a_resource_and_a_folder():
+    assert VideoConfig().storage_resource_id == "storage:data"
+    assert VideoConfig(video_subdir="").video_subdir == "video"
+    assert VideoConfig(storage_resource_id="storage:nvme0n1p1", video_subdir="clips").video_subdir == "clips"
     with pytest.raises(ValidationError):
-        VideoConfig(storage_dir="videos")
+        VideoConfig(storage_resource_id="nvme")
     with pytest.raises(ValidationError):
-        VideoConfig(storage_dir="/mnt/../etc")
+        VideoConfig(video_subdir="../etc")
 
 
 class _Proc:
@@ -109,9 +110,8 @@ def test_supervisor_records_one_episode_and_reports_when_it_ends(tmp_path: Path)
     assert started == []
 
     archive = tmp_path / "archive"
-    stored = VideoConfig(cameras=[camera], storage_dir=str(archive))
     job = {"id": "ep1", "camera_id": "cam1", "state": "queued"}
-    first = supervisor.tick(stored, [job], [camera])
+    first = supervisor.tick(config, [job], [camera], output_root=archive)
     assert len(started) == 1
     assert "-t" in started[0].argv
     assert "segment" not in started[0].argv
@@ -120,17 +120,17 @@ def test_supervisor_records_one_episode_and_reports_when_it_ends(tmp_path: Path)
     assert first["statuses"][0]["state"] == "recording"
     assert supervisor.previews == {}
 
-    again = supervisor.tick(stored, [{"id": "ep1", "camera_id": "cam1", "state": "recording"}], [])
+    again = supervisor.tick(config, [{"id": "ep1", "camera_id": "cam1", "state": "recording"}], [])
     assert again["episodes"] == []
     assert len(started) == 1
 
     started[0].alive = False
     started[0].code = 0
-    done = supervisor.tick(stored, [{"id": "ep1", "camera_id": "cam1", "state": "recording"}], [])
+    done = supervisor.tick(config, [{"id": "ep1", "camera_id": "cam1", "state": "recording"}], [])
     assert done["episodes"][0]["state"] == "finished"
     assert done["episodes"][0]["path"].endswith("ep1.mp4")
 
-    lost = supervisor.tick(stored, [{"id": "ep9", "camera_id": "cam1", "state": "recording"}], [])
+    lost = supervisor.tick(config, [{"id": "ep9", "camera_id": "cam1", "state": "recording"}], [])
     assert lost["episodes"][0]["state"] == "error"
     assert lost["episodes"][0]["message"] == "запись прервана"
 
@@ -167,20 +167,40 @@ def test_camera_settings_roundtrip(tmp_path: Path, monkeypatch):
         page = client.get("/cameras")
         assert page.status_code == 200
         assert "Добавить камеру" in page.text
-        assert "Каталог записей" in page.text
+        assert 'data-field="storage_resource_id"' in page.text
+        assert "Носитель" in page.text
         assert "bb-vm-step" in page.text
         assert "/static/cameras.js" in page.text
 
         csrf = client.cookies.get("bb_csrf")
-        body = {"storage_dir": "/mnt/nvme/video", "cameras": [_camera().model_dump(mode="json")]}
+        disk = tmp_path / "nvme"
+        disk.mkdir()
+        client.app.state.repo.upsert_resources(
+            [
+                {
+                    "resource_id": "storage:nvme0n1p1",
+                    "kind": "storage",
+                    "name": "NVMe SSD",
+                    "path": str(disk),
+                    "available": True,
+                    "metadata": {},
+                }
+            ]
+        )
+        assert client.app.state.repo.approve_resource("storage:nvme0n1p1", None)
+        body = {"storage_resource_id": "storage:nvme0n1p1", "video_subdir": "clips", "cameras": [_camera().model_dump(mode="json")]}
         saved = client.put("/api/v1/cameras", json=body, headers={"X-CSRF-Token": csrf})
         assert saved.status_code == 200
         payload = saved.json()
-        assert payload["config"]["storage_dir"] == "/mnt/nvme/video"
+        assert payload["config"]["storage_resource_id"] == "storage:nvme0n1p1"
+        assert payload["config"]["video_subdir"] == "clips"
+        assert Path(payload["storage_dir"]) == disk / "clips"
+        assert any(item["resource_id"] == "storage:nvme0n1p1" for item in payload["storage_resources"])
         assert payload["config"]["cameras"][0]["resolution"] == "1920x1080"
         assert payload["config"]["cameras"][0]["bitrate_kbps"] == 2000
         assert payload["estimates"]["cameras"][0]["fragment_mib"] == round(2000 * 60 / 8 / 1024, 2)
-        assert client.put("/api/v1/cameras", json={"storage_dir": "relative/video", "cameras": []}, headers={"X-CSRF-Token": csrf}).status_code == 422
+        assert client.put("/api/v1/cameras", json={"storage_resource_id": "storage:missing", "cameras": []}, headers={"X-CSRF-Token": csrf}).status_code == 409
+        assert client.put("/api/v1/cameras", json={"video_subdir": "../etc", "cameras": []}, headers={"X-CSRF-Token": csrf}).status_code == 422
 
         loaded = client.get("/api/v1/cameras")
         assert loaded.json()["config"]["cameras"][0]["codec"] == "libx264"
@@ -189,6 +209,7 @@ def test_camera_settings_roundtrip(tmp_path: Path, monkeypatch):
         internal = client.get("/api/v1/internal/video/config", headers={"X-Video-Token": "video-secret"})
         assert internal.status_code == 200
         assert internal.json()["config"]["cameras"][0]["id"] == "cam1"
+        assert Path(internal.json()["storage_dir"]) == disk / "clips"
         assert internal.json()["episodes"] == []
 
         started = client.post("/api/v1/cameras/cam1/episodes", headers={"X-CSRF-Token": csrf})
