@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block title %}Аварии · BlackBox{% endblock %}
+{% block content %}
+<section class="bb-card" id="bb-alarms-page" data-is-admin="{{ 'true' if user.role == 'admin' else 'false' }}">
+  <div class="bb-page-toolbar">
+    <div><h1 class="bb-page-title">Аварийные события</h1></div>
+    <a class="bb-btn bb-btn-secondary" href="/incidents"><i class="bi bi-camera-video"></i> Инциденты</a>
+  </div>
+  <section class="bb-incident-section" id="bb-rule-admin" {% if user.role != 'admin' %}hidden{% endif %}>
+    <h2 class="bb-section-title">Правила аварийности</h2>
+    <form id="bb-rule-form" class="bb-rule-form">
+      <input type="hidden" name="rule_id">
+      <label class="bb-filter-field">Название<input name="name" maxlength="255" required></label>
+      <label class="bb-filter-field bb-rule-expression">Условие<input name="expression" maxlength="2000" required placeholder="('Низкое давление' in active_alarms) and RPM < 300"></label>
+      <div class="bb-actions"><button class="bb-btn" type="submit"><i class="bi bi-check-lg"></i> Сохранить правило</button><button class="bb-btn bb-btn-ghost" type="button" id="bb-rule-cancel" hidden>Отмена</button></div>
+      <p class="bb-muted" id="bb-rule-error" role="status"></p>
+    </form>
+    <div class="bb-table-wrap"><table class="bb-table"><thead><tr><th>Название</th><th>Условие</th><th></th></tr></thead><tbody id="bb-rule-rows"></tbody></table></div>
+  </section>
+  <section class="bb-incident-section">
+    <div class="bb-page-toolbar"><h2 class="bb-section-title">История срабатываний</h2><button class="bb-btn bb-btn-secondary" id="bb-emergency-refresh" type="button"><i class="bi bi-arrow-clockwise"></i> Обновить</button></div>
+    <div class="bb-table-wrap"><table class="bb-table"><thead><tr><th>Начало</th><th>Окончание</th><th>ВМ</th><th>Правило</th><th>Условие</th><th></th></tr></thead><tbody id="bb-emergency-rows"><tr><td colspan="6" class="bb-muted">Загрузка…</td></tr></tbody></table></div>
+  </section>
+</section>
+<script defer src="/static/alarms.js?v={{ app_version }}"></script>
+{% endblock %}

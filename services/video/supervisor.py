@@ -245,7 +245,13 @@ class Supervisor:
                 "segment_sec": segment_sec,
                 "log_source": "ffmpeg-buffer",
             }
-            self._note(camera_id, f"Кольцевой буфер запущен, сегмент {segment_sec} с", level="info", source="hub")
+            keep = max(10, config.incident_pre_sec + segment_sec * 2 + 5)
+            self._note(
+                camera_id,
+                f"Кольцевой буфер запущен: последние {keep} с, кусками по {segment_sec} с. Старые куски удаляются.",
+                level="info",
+                source="hub",
+            )
 
     def _sync_incident_episodes(
         self,
@@ -476,6 +482,8 @@ class Supervisor:
         camera_id = str(slot.get("camera_id") or "")
         source = str(slot.get("log_source") or "ffmpeg")
         for line in snapshot[sent:]:
+            if source == "ffmpeg-buffer" and _routine_buffer_line(line):
+                continue
             self._note(camera_id, line, source=source)
         slot["sent"] = len(snapshot)
         if slot["sent"] > 400:
@@ -584,6 +592,13 @@ def _redact_url(url: str) -> str:
     if "@" in rest:
         rest = "***@" + rest.split("@", 1)[1]
     return f"{scheme}{mark}{rest}"
+
+
+def _routine_buffer_line(line: str) -> bool:
+    text = str(line or "").strip()
+    if text.startswith("frame="):
+        return True
+    return "[segment " in text and "Opening " in text and text.endswith("for writing")
 
 
 def _log_level(line: str) -> str:

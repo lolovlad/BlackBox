@@ -242,6 +242,8 @@ def build_episode_argv(camera: CameraSettings, output_file: Path, duration_sec: 
 def build_buffer_argv(camera: CameraSettings, output_pattern: Path, segment_sec: int = 2) -> list[str]:
     """Continuously save independently readable Matroska transport segments."""
     argv = _input_argv(camera)
+    argv[argv.index("-loglevel") + 1] = "warning"
+    argv.insert(1, "-nostats")
     argv.extend(
         [
             "-map",

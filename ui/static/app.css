@@ -2180,10 +2180,15 @@
 .bb-export-options legend { padding: 0 0.35rem; font-weight: 650; }
 .bb-export-checks { display: flex; flex-wrap: wrap; gap: 0.5rem 1rem; flex: 1 1 100%; }
 .bb-export-checks label { display: inline-flex; align-items: center; gap: 0.4rem; }
+.bb-rule-form { display: grid; grid-template-columns: minmax(160px, 0.8fr) minmax(260px, 2fr) auto; gap: 0.8rem; align-items: end; margin: 1rem 0; }
+.bb-rule-expression { min-width: 0; }
+.bb-video-fragment { display: grid; width: min(100%, 440px); gap: 0.45rem; margin: 0.35rem 0 0.8rem; }
+.bb-video-fragment video { display: block; width: 100%; aspect-ratio: 16 / 9; background: #111; border-radius: 6px; }
 @media (max-width: 640px) {
   .bb-page-toolbar { align-items: stretch; flex-direction: column; }
   .bb-incident-chart { height: 300px; }
   .bb-export-options { align-items: stretch; flex-direction: column; }
+  .bb-rule-form { grid-template-columns: 1fr; }
 }
 @media (max-width: 860px) {
   .bb-camera-layout,
