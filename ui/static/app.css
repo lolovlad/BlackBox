@@ -2168,6 +2168,23 @@
 .bb-episode-list { list-style: none; padding: 0; margin: 0; display: grid; gap: 0.4rem; }
 .bb-episode-list li { display: grid; gap: 0.15rem; padding: 0.55rem 0.7rem; border-radius: 10px; background: #f6f8fc; }
 .bb-episode-list span { color: var(--bb-slate); font-size: 0.82rem; overflow-wrap: anywhere; }
+.bb-page-toolbar { display: flex; justify-content: space-between; align-items: flex-start; gap: 1rem; margin-bottom: 1rem; }
+.bb-incident-filters { align-items: end; margin-bottom: 1rem; }
+.bb-incident-section { margin-top: 1.5rem; }
+.bb-incident-facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 0.75rem 1.25rem; margin: 0; padding: 0.9rem 0; border-block: 1px solid var(--bb-border); }
+.bb-incident-facts div { min-width: 0; }
+.bb-incident-facts dt { color: var(--bb-slate); font-size: 0.82rem; }
+.bb-incident-facts dd { margin: 0.2rem 0 0; overflow-wrap: anywhere; }
+.bb-incident-chart { width: 100%; height: 380px; min-height: 240px; }
+.bb-export-options { display: flex; flex-wrap: wrap; align-items: end; gap: 0.8rem 1rem; margin: 1rem 0; padding: 0.8rem; border: 1px solid var(--bb-border); border-radius: 8px; }
+.bb-export-options legend { padding: 0 0.35rem; font-weight: 650; }
+.bb-export-checks { display: flex; flex-wrap: wrap; gap: 0.5rem 1rem; flex: 1 1 100%; }
+.bb-export-checks label { display: inline-flex; align-items: center; gap: 0.4rem; }
+@media (max-width: 640px) {
+  .bb-page-toolbar { align-items: stretch; flex-direction: column; }
+  .bb-incident-chart { height: 300px; }
+  .bb-export-options { align-items: stretch; flex-direction: column; }
+}
 @media (max-width: 860px) {
   .bb-camera-layout,
   .bb-camera-live { grid-template-columns: 1fr; }

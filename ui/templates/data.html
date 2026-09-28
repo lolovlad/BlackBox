@@ -37,6 +37,18 @@
       <button type="button" class="bb-btn" id="bb-data-refresh">Обновить таблицу</button>
       <button type="button" class="bb-btn bb-btn-ghost" id="bb-data-export"><i class="bi bi-download"></i> Экспорт CSV</button>
     </div>
+    <fieldset class="bb-export-options">
+      <legend>Пакетный экспорт</legend>
+      <div class="bb-export-checks">
+        {% for key, title in [('analog', 'Аналоги'), ('discrete', 'Дискреты'), ('alarms', 'Алерты'), ('gpio', 'GPIO'), ('incidents', 'Инциденты'), ('video', 'Видео')] %}
+        <label><input type="checkbox" name="package_include" value="{{ key }}" checked> {{ title }}</label>
+        {% endfor %}
+      </div>
+      <label class="bb-filter-field">Формат
+        <select id="bb-package-format"><option value="zip">ZIP с CSV и видео</option><option value="xlsx">Excel</option></select>
+      </label>
+      <button type="button" class="bb-btn" id="bb-package-export"><i class="bi bi-file-earmark-zip"></i> Скачать пакет</button>
+    </fieldset>
   </form>
   <div id="bb-data-table"><p class="bb-hint">Загрузка таблицы…</p></div>
   <div class="bb-busy" data-busy>

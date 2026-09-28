@@ -4,7 +4,7 @@ import json
 import secrets
 import sqlite3
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterator
 from uuid import UUID, uuid4
@@ -17,13 +17,52 @@ def _episode_dict(row: sqlite3.Row) -> dict[str, Any]:
     return {
         "id": str(row["id"]),
         "camera_id": str(row["camera_id"]),
+        "vm_id": str(row["vm_id"] or "") if "vm_id" in row.keys() else "",
+        "incident_id": str(row["incident_id"] or "") if "incident_id" in row.keys() else "",
         "state": str(row["state"]),
         "path": str(row["path"] or ""),
+        "paths": json.loads(row["paths_json"] or "[]") if "paths_json" in row.keys() else ([str(row["path"])] if row["path"] else []),
         "message": str(row["message"] or ""),
         "started_at": row["started_at"],
         "ended_at": row["ended_at"],
+        "stop_at": row["stop_at"] if "stop_at" in row.keys() else None,
+        "capture_from": row["capture_from"] if "capture_from" in row.keys() else None,
+        "duration_sec": int(row["duration_sec"]) if "duration_sec" in row.keys() and row["duration_sec"] is not None else None,
         "created_at": str(row["created_at"]),
     }
+
+
+def _incident_dict(row: sqlite3.Row) -> dict[str, Any]:
+    started_at = str(row["started_at"])
+    pre_seconds = int(row["pre_seconds"] or 0)
+    start_moment = _parse_iso(started_at)
+    window_from = (start_moment - timedelta(seconds=pre_seconds)).isoformat() if start_moment is not None else started_at
+    window_to = row["ended_at"] or row["stop_at"] or row["last_alert_at"]
+    return {
+        "id": str(row["id"]),
+        "vm_id": str(row["vm_id"]),
+        "state": str(row["state"]),
+        "started_at": started_at,
+        "last_alert_at": str(row["last_alert_at"]),
+        "stop_at": row["stop_at"],
+        "ended_at": row["ended_at"],
+        "pre_seconds": pre_seconds,
+        "post_seconds": int(row["post_seconds"] or 0),
+        "created_at": str(row["created_at"]),
+        "telemetry_from": window_from,
+        "telemetry_to": window_to,
+    }
+
+
+def _parse_iso(value: Any) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        moment = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return moment if moment.tzinfo is not None else moment.replace(tzinfo=timezone.utc)
 
 
 class HubRepository:
@@ -137,15 +176,56 @@ class HubRepository:
                 CREATE TABLE IF NOT EXISTS video_episodes (
                     id TEXT PRIMARY KEY,
                     camera_id TEXT NOT NULL,
+                    vm_id TEXT,
+                    incident_id TEXT,
                     state TEXT NOT NULL,
                     path TEXT NOT NULL DEFAULT '',
                     message TEXT NOT NULL DEFAULT '',
                     started_at TEXT,
                     ended_at TEXT,
+                    stop_at TEXT,
+                    duration_sec INTEGER,
+                    paths_json TEXT NOT NULL DEFAULT '[]',
+                    capture_from TEXT,
                     created_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS video_incidents (
+                    id TEXT PRIMARY KEY,
+                    vm_id TEXT NOT NULL,
+                    state TEXT NOT NULL,
+                    started_at TEXT NOT NULL,
+                    last_alert_at TEXT NOT NULL,
+                    stop_at TEXT,
+                    ended_at TEXT,
+                    pre_seconds INTEGER NOT NULL DEFAULT 0,
+                    post_seconds INTEGER NOT NULL DEFAULT 15,
+                    created_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_video_incidents_vm ON video_incidents(vm_id, state, started_at);
+                CREATE TABLE IF NOT EXISTS video_incident_alerts (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    incident_id TEXT NOT NULL,
+                    vm_id TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    kind TEXT NOT NULL,
+                    state TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_video_incident_alerts_incident ON video_incident_alerts(incident_id, created_at);
                 """
             )
+            episode_columns = {row[1] for row in c.execute("PRAGMA table_info(video_episodes)").fetchall()}
+            for name, definition in (
+                ("vm_id", "TEXT"),
+                ("incident_id", "TEXT"),
+                ("stop_at", "TEXT"),
+                ("duration_sec", "INTEGER"),
+                ("paths_json", "TEXT NOT NULL DEFAULT '[]'"),
+                ("capture_from", "TEXT"),
+            ):
+                if name not in episode_columns:
+                    c.execute(f"ALTER TABLE video_episodes ADD COLUMN {name} {definition}")
+            c.execute("CREATE INDEX IF NOT EXISTS idx_video_episodes_incident ON video_episodes(incident_id, state)")
             c.executemany("INSERT OR IGNORE INTO roles(name) VALUES (?)", [("admin",), ("user",)])
             columns = {row[1] for row in c.execute("PRAGMA table_info(virtual_machines)").fetchall()}
             if "heartbeat_at" not in columns:
@@ -411,6 +491,9 @@ class HubRepository:
                     )
                     c.execute("DELETE FROM alarm_active WHERE vm_id=? AND kind=? AND name=?", (vm_id, channel, name))
                     events.append({"vm_id": vm_id, "name": name, "state": "inactive", "kind": channel, "created_at": stamp})
+                has_active = c.execute("SELECT 1 FROM alarm_active WHERE vm_id=? LIMIT 1", (vm_id,)).fetchone() is not None
+                for event in events:
+                    event["has_active"] = has_active
                 c.execute("COMMIT")
             except Exception:
                 c.execute("ROLLBACK")
@@ -722,13 +805,21 @@ class HubRepository:
             for row in reversed(rows)
         ]
 
-    def enqueue_episode(self, camera_id: str) -> dict[str, Any]:
+    def enqueue_episode(
+        self,
+        camera_id: str,
+        *,
+        vm_id: str | None = None,
+        incident_id: str | None = None,
+        duration_sec: int | None = None,
+        stop_at: str | None = None,
+    ) -> dict[str, Any]:
         episode_id = secrets.token_hex(8)
         now = datetime.now(timezone.utc).isoformat()
         with self.connect() as c:
             c.execute(
-                "INSERT INTO video_episodes(id,camera_id,state,path,message,started_at,ended_at,created_at) VALUES(?,?,?,?,?,?,?,?)",
-                (episode_id, camera_id, "queued", "", "", None, None, now),
+                "INSERT INTO video_episodes(id,camera_id,vm_id,incident_id,state,path,message,started_at,ended_at,stop_at,duration_sec,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                (episode_id, camera_id, vm_id, incident_id, "queued", "", "", None, None, stop_at, duration_sec, now),
             )
         episode = self.get_episode(episode_id)
         if episode is None:
@@ -743,7 +834,7 @@ class HubRepository:
     def open_episodes(self) -> list[dict[str, Any]]:
         with self.connect() as c:
             rows = c.execute(
-                "SELECT * FROM video_episodes WHERE state IN ('queued','recording') ORDER BY created_at"
+                "SELECT * FROM video_episodes WHERE state IN ('queued','recording','stopping') ORDER BY created_at"
             ).fetchall()
         return [_episode_dict(row) for row in rows]
 
@@ -765,19 +856,210 @@ class HubRepository:
                 if row is None or row["state"] in {"finished", "error"}:
                     continue
                 if row["state"] == "recording" and state == "recording":
+                    paths = item.get("paths") or ([str(item.get("path"))] if item.get("path") else [])
+                    c.execute(
+                        "UPDATE video_episodes SET path=?, paths_json=?, started_at=? WHERE id=?",
+                        (str(item.get("path") or row["path"] or ""), json.dumps(paths), item.get("started_at") or row["started_at"], episode_id),
+                    )
                     continue
                 started = item.get("started_at") or row["started_at"]
                 ended = item.get("ended_at") if state in {"finished", "error"} else None
                 path = str(item.get("path") or row["path"] or "")
                 message = str(item.get("message") or "")[:500]
                 c.execute(
-                    "UPDATE video_episodes SET state=?, path=?, message=?, started_at=?, ended_at=? WHERE id=?",
-                    (state, path, message, started or None, ended or None, episode_id),
+                    "UPDATE video_episodes SET state=?, path=?, message=?, started_at=?, ended_at=?, paths_json=? WHERE id=?",
+                    (state, path, message, started or None, ended or None, json.dumps(item.get("paths") or ([path] if path else [])), episode_id),
                 )
                 updated = c.execute("SELECT * FROM video_episodes WHERE id=?", (episode_id,)).fetchone()
                 if updated is not None:
                     changed.append(_episode_dict(updated))
+                    incident_id = str(updated["incident_id"] or "") if "incident_id" in updated.keys() else ""
+                    if incident_id and state in {"finished", "error"}:
+                        self._finish_incident_if_complete(c, incident_id, ended or datetime.now(timezone.utc).isoformat())
         return changed
+
+    def register_incident_start(
+        self,
+        vm_id: str,
+        *,
+        name: str,
+        kind: str,
+        created_at: datetime,
+        camera_ids: list[str],
+        pre_seconds: int = 10,
+        post_seconds: int = 15,
+    ) -> dict[str, Any]:
+        """Open or extend one incident and create one long-running episode per camera."""
+        moment = created_at if created_at.tzinfo is not None else created_at.replace(tzinfo=timezone.utc)
+        stamp = moment.astimezone(timezone.utc).isoformat()
+        pre_seconds = max(0, min(int(pre_seconds), 3600))
+        post_seconds = max(0, min(int(post_seconds), 3600))
+        with self.connect() as c:
+            c.execute("BEGIN IMMEDIATE")
+            row = c.execute(
+                "SELECT * FROM video_incidents WHERE vm_id=? AND state IN ('active','finishing') ORDER BY started_at DESC LIMIT 1",
+                (vm_id,),
+            ).fetchone()
+            if row is not None and row["state"] == "finishing":
+                stop_at = _parse_iso(row["stop_at"])
+                if stop_at is None or moment <= stop_at:
+                    c.execute(
+                        "UPDATE video_incidents SET state='active', last_alert_at=?, stop_at=NULL WHERE id=?",
+                        (stamp, row["id"]),
+                    )
+                    c.execute(
+                        "UPDATE video_episodes SET stop_at=NULL WHERE incident_id=? AND state IN ('queued','recording')",
+                        (row["id"],),
+                    )
+                    row = c.execute("SELECT * FROM video_incidents WHERE id=?", (row["id"],)).fetchone()
+                else:
+                    row = None
+            if row is None:
+                incident_id = secrets.token_hex(10)
+                c.execute(
+                    "INSERT INTO video_incidents(id,vm_id,state,started_at,last_alert_at,stop_at,ended_at,pre_seconds,post_seconds,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                    (incident_id, vm_id, "active", stamp, stamp, None, None, pre_seconds, post_seconds, stamp),
+                )
+                row = c.execute("SELECT * FROM video_incidents WHERE id=?", (incident_id,)).fetchone()
+            else:
+                c.execute(
+                    "UPDATE video_incidents SET state='active', last_alert_at=?, stop_at=NULL WHERE id=?",
+                    (stamp, row["id"]),
+                )
+                row = c.execute("SELECT * FROM video_incidents WHERE id=?", (row["id"],)).fetchone()
+            incident_id = str(row["id"])
+            c.execute(
+                "INSERT INTO video_incident_alerts(incident_id,vm_id,name,kind,state,created_at) VALUES(?,?,?,?,?,?)",
+                (incident_id, vm_id, str(name), "gpio" if kind == "gpio" else "alert", "active", stamp),
+            )
+            existing = {
+                str(item["camera_id"])
+                for item in c.execute(
+                    "SELECT camera_id FROM video_episodes WHERE incident_id=? AND state <> 'error'",
+                    (incident_id,),
+                ).fetchall()
+            }
+            busy = {
+                str(item["camera_id"])
+                for item in c.execute(
+                    "SELECT camera_id FROM video_episodes WHERE state IN ('queued','recording','stopping')"
+                ).fetchall()
+            }
+            for camera_id in sorted({str(item).strip() for item in camera_ids if str(item).strip()} - existing - busy):
+                c.execute(
+                    "INSERT INTO video_episodes(id,camera_id,vm_id,incident_id,state,path,message,started_at,ended_at,stop_at,duration_sec,paths_json,capture_from,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (secrets.token_hex(8), camera_id, vm_id, incident_id, "queued", "", "", stamp, None, None, 86400, "[]", (moment - timedelta(seconds=pre_seconds)).isoformat(), stamp),
+                )
+            c.execute("COMMIT")
+        return self.get_incident(incident_id) or {}
+
+    def register_incident_end(
+        self,
+        vm_id: str,
+        *,
+        name: str | None = None,
+        kind: str = "alert",
+        created_at: datetime,
+        post_seconds: int = 15,
+        has_active: bool | None = None,
+    ) -> dict[str, Any] | None:
+        moment = created_at if created_at.tzinfo is not None else created_at.replace(tzinfo=timezone.utc)
+        stamp = moment.astimezone(timezone.utc).isoformat()
+        post_seconds = max(0, min(int(post_seconds), 3600))
+        with self.connect() as c:
+            c.execute("BEGIN IMMEDIATE")
+            active = (
+                c.execute("SELECT 1 FROM alarm_active WHERE vm_id=? LIMIT 1", (vm_id,)).fetchone()
+                if has_active is None
+                else bool(has_active)
+            )
+            row = c.execute(
+                "SELECT * FROM video_incidents WHERE vm_id=? AND state IN ('active','finishing') ORDER BY started_at DESC LIMIT 1",
+                (vm_id,),
+            ).fetchone()
+            if row is not None and name:
+                c.execute(
+                    "INSERT INTO video_incident_alerts(incident_id,vm_id,name,kind,state,created_at) VALUES(?,?,?,?,?,?)",
+                    (row["id"], vm_id, str(name), "gpio" if kind == "gpio" else "alert", "inactive", stamp),
+                )
+            if bool(active) or row is None:
+                c.execute("COMMIT")
+                return _incident_dict(row) if row is not None else None
+            stop_at = (moment + timedelta(seconds=post_seconds)).isoformat()
+            c.execute(
+                "UPDATE video_incidents SET state='finishing', stop_at=?, post_seconds=? WHERE id=?",
+                (stop_at, post_seconds, row["id"]),
+            )
+            c.execute(
+                "UPDATE video_episodes SET stop_at=? WHERE incident_id=? AND state IN ('queued','recording')",
+                (stop_at, row["id"]),
+            )
+            if c.execute("SELECT 1 FROM video_episodes WHERE incident_id=? LIMIT 1", (row["id"],)).fetchone() is None:
+                c.execute("UPDATE video_incidents SET state='closed', ended_at=?, stop_at=NULL WHERE id=?", (stamp, row["id"]))
+            c.execute("COMMIT")
+        return self.get_incident(str(row["id"]))
+
+    def get_incident(self, incident_id: str) -> dict[str, Any] | None:
+        with self.connect() as c:
+            row = c.execute(
+                """
+                SELECT i.*,
+                    (SELECT json_group_array(json_object('id',e.id,'camera_id',e.camera_id,'vm_id',e.vm_id,'incident_id',e.incident_id,'state',e.state,'path',e.path,'paths_json',e.paths_json,'message',e.message,'started_at',e.started_at,'ended_at',e.ended_at,'stop_at',e.stop_at,'capture_from',e.capture_from,'duration_sec',e.duration_sec,'created_at',e.created_at)) FROM video_episodes e WHERE e.incident_id=i.id) AS episodes_json,
+                    (SELECT json_group_array(json_object('id',a.id,'vm_id',a.vm_id,'name',a.name,'kind',a.kind,'state',a.state,'created_at',a.created_at)) FROM video_incident_alerts a WHERE a.incident_id=i.id) AS alerts_json
+                FROM video_incidents i WHERE i.id=?
+                """,
+                (incident_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            result = _incident_dict(row)
+            episodes = json.loads(row["episodes_json"] or "[]")
+            for episode in episodes:
+                episode["paths"] = json.loads(episode.pop("paths_json") or "[]")
+            result["episodes"] = episodes
+            result["alerts"] = json.loads(row["alerts_json"] or "[]")
+            return result
+
+    def list_incidents(self, *, vm_ids: list[str] | None = None, limit: int = 100) -> list[dict[str, Any]]:
+        cap = max(1, min(int(limit), 500))
+        if vm_ids is not None and not vm_ids:
+            return []
+        with self.connect() as c:
+            if vm_ids is not None:
+                placeholders = ",".join("?" for _ in vm_ids)
+                where = f"i.vm_id IN ({placeholders})"
+                args = [*vm_ids, cap]
+            else:
+                where = "1=1"
+                args = [cap]
+            rows = c.execute(
+                f"""
+                SELECT i.*,
+                    (SELECT json_group_array(json_object('id',e.id,'camera_id',e.camera_id,'vm_id',e.vm_id,'incident_id',e.incident_id,'state',e.state,'path',e.path,'paths_json',e.paths_json,'message',e.message,'started_at',e.started_at,'ended_at',e.ended_at,'stop_at',e.stop_at,'capture_from',e.capture_from,'duration_sec',e.duration_sec,'created_at',e.created_at)) FROM video_episodes e WHERE e.incident_id=i.id) AS episodes_json,
+                    (SELECT json_group_array(json_object('id',a.id,'vm_id',a.vm_id,'name',a.name,'kind',a.kind,'state',a.state,'created_at',a.created_at)) FROM video_incident_alerts a WHERE a.incident_id=i.id) AS alerts_json
+                FROM video_incidents i WHERE {where} ORDER BY i.started_at DESC LIMIT ?
+                """,
+                args,
+            ).fetchall()
+            results = []
+            for row in rows:
+                incident = _incident_dict(row)
+                incident["episodes"] = json.loads(row["episodes_json"] or "[]")
+                for episode in incident["episodes"]:
+                    episode["paths"] = json.loads(episode.pop("paths_json") or "[]")
+                incident["alerts"] = json.loads(row["alerts_json"] or "[]")
+                results.append(incident)
+            return results
+
+    @staticmethod
+    def _finish_incident_if_complete(c: sqlite3.Connection, incident_id: str, ended_at: str) -> None:
+        row = c.execute("SELECT state FROM video_incidents WHERE id=?", (incident_id,)).fetchone()
+        if row is None or row["state"] == "closed":
+            return
+        active = c.execute("SELECT 1 FROM video_episodes WHERE incident_id=? AND state IN ('queued','recording','stopping') LIMIT 1", (incident_id,)).fetchone()
+        if active is None:
+            c.execute("UPDATE video_incidents SET state='closed', ended_at=?, stop_at=NULL WHERE id=?", (ended_at, incident_id))
+
 
     def list_resource_leases(self) -> dict[str, str]:
         with self.connect() as c:

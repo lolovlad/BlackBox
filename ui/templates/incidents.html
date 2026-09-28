@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block title %}Инциденты · BlackBox{% endblock %}
+{% block content %}
+<section class="bb-card bb-incidents-page">
+  <div class="bb-page-toolbar">
+    <div>
+      <h1 class="bb-page-title">История инцидентов</h1>
+      <p class="bb-page-lead">Связанные алерты, телеметрия и записи камер.</p>
+    </div>
+    <a class="bb-btn bb-btn-secondary" href="/data"><i class="bi bi-table"></i> Данные</a>
+  </div>
+  <div class="bb-filter-grid bb-incident-filters">
+    <label class="bb-filter-field">Виртуальная машина
+      <select id="bb-incident-vm"><option value="">Все машины</option>{% for vm in vms %}<option value="{{ vm.id }}">{{ vm.name }}</option>{% endfor %}</select>
+    </label>
+    <button class="bb-btn" id="bb-incident-refresh" type="button"><i class="bi bi-arrow-clockwise"></i> Обновить</button>
+  </div>
+  <div class="bb-table-wrap">
+    <table class="bb-table">
+      <thead><tr><th>Начало</th><th>Машина</th><th>Состояние</th><th>Алерты</th><th>Камеры</th><th></th></tr></thead>
+      <tbody id="bb-incident-rows"><tr><td colspan="6" class="bb-muted">Загрузка…</td></tr></tbody>
+    </table>
+  </div>
+</section>
+<script defer src="/static/incidents.js?v={{ app_version }}"></script>
+{% endblock %}

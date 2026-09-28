@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block title %}Инцидент {{ incident.id }} · BlackBox{% endblock %}
+{% block content %}
+<section class="bb-card bb-incident-detail" id="bb-incident-detail" data-incident-id="{{ incident.id }}" data-telemetry-from="{{ incident.telemetry_from }}" data-telemetry-to="{{ incident.telemetry_to }}" data-vm-id="{{ incident.vm_id }}">
+  <div class="bb-page-toolbar">
+    <div>
+      <p class="bb-kicker">{{ vm_name }} · {{ incident.id }}</p>
+      <h1 class="bb-page-title">Инцидент</h1>
+      <p class="bb-page-lead">{{ incident.started_at }} — {{ incident.telemetry_to or incident.last_alert_at }}</p>
+    </div>
+    <div class="bb-actions">
+      <a class="bb-btn bb-btn-secondary" href="/incidents"><i class="bi bi-arrow-left"></i> История</a>
+      <a class="bb-btn" href="/api/v1/video/incidents/{{ incident.id }}/export"><i class="bi bi-download"></i> Скачать пакет</a>
+    </div>
+  </div>
+  <dl class="bb-incident-facts">
+    <div><dt>Состояние</dt><dd>{{ incident.state }}</dd></div>
+    <div><dt>Окно графиков</dt><dd>{{ incident.telemetry_from }} — {{ incident.telemetry_to or incident.last_alert_at }}</dd></div>
+    <div><dt>До алерта</dt><dd>{{ incident.pre_seconds }} с</dd></div>
+    <div><dt>После снятия</dt><dd>{{ incident.post_seconds }} с</dd></div>
+  </dl>
+  <section class="bb-incident-section">
+    <h2 class="bb-section-title">Телеметрия</h2>
+    <p class="bb-muted" id="bb-incident-chart-meta">Загрузка графика…</p>
+    <div id="bb-incident-chart" class="bb-incident-chart" aria-busy="true"></div>
+  </section>
+  <section class="bb-incident-section">
+    <h2 class="bb-section-title">Алерты</h2>
+    <div class="bb-table-wrap"><table class="bb-table"><thead><tr><th>Время</th><th>Тип</th><th>Название</th><th>Состояние</th></tr></thead><tbody>
+      {% for alert in incident.alerts %}<tr><td>{{ alert.created_at }}</td><td>{{ alert.kind }}</td><td>{{ alert.name }}</td><td>{{ alert.state }}</td></tr>{% else %}<tr><td colspan="4" class="bb-muted">Алерты не записаны.</td></tr>{% endfor %}
+    </tbody></table></div>
+  </section>
+  <section class="bb-incident-section">
+    <h2 class="bb-section-title">Видеофрагменты</h2>
+    <div class="bb-table-wrap"><table class="bb-table"><thead><tr><th>Камера</th><th>Состояние</th><th>Интервал</th><th>Файлы</th></tr></thead><tbody>
+      {% for episode in incident.episodes %}
+      <tr><td>{{ episode.camera_id }}</td><td>{{ episode.state }}</td><td>{{ episode.started_at or incident.started_at }} — {{ episode.ended_at or incident.stop_at or 'запись продолжается' }}</td><td>
+        {% for path in episode.paths %}<a class="bb-btn bb-btn-sm bb-btn-secondary" href="/api/v1/video/incidents/{{ incident.id }}/videos/{{ episode.id }}/{{ loop.index0 }}" download><i class="bi bi-download"></i> Фрагмент {{ loop.index }}</a>{% else %}<span class="bb-muted">Фрагменты появятся после закрытия сегментов камеры.</span>{% endfor %}
+      </td></tr>
+      {% else %}<tr><td colspan="4" class="bb-muted">Камеры для этого инцидента не настроены.</td></tr>{% endfor %}
+    </tbody></table></div>
+  </section>
+</section>
+<script src="/static/vendor/echarts.min.js"></script>
+<script defer src="/static/incident-detail.js?v={{ app_version }}"></script>
+{% endblock %}

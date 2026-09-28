@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 import threading
 from datetime import datetime, timezone
@@ -14,6 +15,7 @@ from services.video.settings import (
     CameraSettings,
     VideoConfig,
     build_episode_argv,
+    build_buffer_argv,
     build_preview_argv,
     episode_name,
 )
@@ -43,6 +45,8 @@ class Supervisor:
         self._hw_h264: bool | None = None
         self.output_root = data_root / "video"
         self.episodes: dict[str, dict[str, Any]] = {}
+        self.incident_episodes: dict[str, dict[str, Any]] = {}
+        self.buffers: dict[str, dict[str, Any]] = {}
         self.previews: dict[str, dict[str, Any]] = {}
         self.preview_errors: dict[str, str] = {}
         self.closed: dict[str, dict[str, str]] = {}
@@ -59,16 +63,27 @@ class Supervisor:
             self.output_root = Path(output_root)
         events: list[dict[str, str]] = []
         self._reap_episodes(events)
-        self._sync_episodes(config, episodes, events)
-        recording = {str(slot["camera_id"]) for slot in self.episodes.values() if _running(slot["proc"])}
-        self._sync_previews(previews, recording)
+        manual_jobs = [item for item in episodes if not item.get("incident_id")]
+        self._sync_episodes(config, manual_jobs, events)
+        manual_recording = {str(slot["camera_id"]) for slot in self.episodes.values() if _running(slot["proc"])}
+        self._sync_previews(previews, manual_recording | {str(item.get("camera_id")) for item in episodes if item.get("incident_id")})
+        self._sync_buffers(config, set())
+        self._sync_incident_episodes(config, episodes, events)
+        recording = manual_recording | {
+            str(slot["camera_id"])
+            for slot in self.incident_episodes.values()
+            if not slot.get("finished")
+        }
         self._drain_slots()
+        self._collect_buffer_logs()
         return {"statuses": self._statuses(config, previews, recording), "episodes": events, "logs": self._take_logs()}
 
     def stop_all(self) -> None:
-        for slot in list(self.episodes.values()) + list(self.previews.values()):
+        for slot in list(self.episodes.values()) + list(self.previews.values()) + list(self.buffers.values()):
             _stop(slot["proc"])
         self.episodes.clear()
+        self.incident_episodes.clear()
+        self.buffers.clear()
         self.previews.clear()
 
     def _reap_episodes(self, events: list[dict[str, str]]) -> None:
@@ -105,16 +120,33 @@ class Supervisor:
         for item in episodes:
             episode_id = str(item.get("id") or "")
             state = str(item.get("state") or "")
-            if not episode_id or state not in {"queued", "recording"}:
+            if not episode_id or state not in {"queued", "recording", "stopping"}:
+                continue
+            if item.get("incident_id"):
                 continue
             if episode_id in self.closed:
                 if episode_id not in emitted:
                     events.append(dict(self.closed[episode_id]))
                 continue
+            due = _due(item.get("stop_at"))
             if episode_id in self.episodes:
-                if state == "queued":
-                    slot = self.episodes[episode_id]
+                slot = self.episodes[episode_id]
+                if state == "stopping" or due:
+                    _stop(slot["proc"])
+                elif state == "queued":
                     events.append(_recording_event(episode_id, slot))
+                continue
+            if state == "stopping" or due:
+                event = {
+                    "id": episode_id,
+                    "state": "error",
+                    "path": str(item.get("path") or ""),
+                    "message": "инцидент завершился до запуска записи",
+                    "started_at": str(item.get("started_at") or ""),
+                    "ended_at": _now(),
+                }
+                self._close(episode_id, event)
+                events.append(event)
                 continue
             if state == "recording":
                 event = {
@@ -147,7 +179,11 @@ class Supervisor:
             directory = root / camera.id
             path = directory / episode_name(camera, episode_id, stamp)
             encode_as = self._encoder(camera)
-            argv = build_episode_argv(encode_as, path)
+            # Incident episodes are stopped by the Hub at stop_at. A long
+            # upper bound prevents a lost stop command from creating a
+            # permanently running ffmpeg process.
+            duration = item.get("duration_sec")
+            argv = build_episode_argv(encode_as, path, duration_sec=duration)
             self._note(camera.id, f"Эпизод {episode_id} запущен: {_redact_argv(argv)}", level="info", source="hub")
             try:
                 directory.mkdir(parents=True, exist_ok=True)
@@ -169,6 +205,183 @@ class Supervisor:
             slot["log_source"] = "ffmpeg"
             self.episodes[episode_id] = slot
             events.append(_recording_event(episode_id, slot))
+
+    def _sync_buffers(self, config: VideoConfig, suspended: set[str]) -> None:
+        wanted = {
+            camera.id: camera
+            for camera in config.cameras
+            if camera.enabled and camera.url and camera.id not in suspended
+        }
+        segment_sec = config.incident_segment_sec
+        for camera_id in list(self.buffers):
+            slot = self.buffers[camera_id]
+            camera = wanted.get(camera_id)
+            signature = f"{_preview_signature(camera)}|segment:{segment_sec}" if camera is not None else ""
+            if camera is None or signature != slot["signature"] or not _running(slot["proc"]):
+                self._drain_slot(slot)
+                _stop(slot["proc"])
+                self.buffers.pop(camera_id, None)
+        for camera_id, camera in wanted.items():
+            if camera_id in self.buffers:
+                continue
+            directory = self.output_root / ".buffer" / camera_id
+            pattern = directory / "%Y%m%d_%H%M%S.mkv"
+            argv = build_buffer_argv(camera, pattern, segment_sec)
+            signature = f"{_preview_signature(camera)}|segment:{segment_sec}"
+            try:
+                directory.mkdir(parents=True, exist_ok=True)
+                proc = self.spawn(argv)
+            except OSError as exc:
+                self.preview_errors[camera_id] = "ffmpeg не найден" if isinstance(exc, FileNotFoundError) else str(exc)
+                self._note(camera_id, f"Не удалось запустить кольцевой буфер: {self.preview_errors[camera_id]}", level="error", source="hub")
+                continue
+            self.buffers[camera_id] = {
+                "proc": proc,
+                "signature": signature,
+                "camera_id": camera_id,
+                "directory": directory,
+                "lines": _watch(proc),
+                "sent": 0,
+                "segment_sec": segment_sec,
+                "log_source": "ffmpeg-buffer",
+            }
+            self._note(camera_id, f"Кольцевой буфер запущен, сегмент {segment_sec} с", level="info", source="hub")
+
+    def _sync_incident_episodes(
+        self,
+        config: VideoConfig,
+        episodes: list[dict[str, Any]],
+        events: list[dict[str, str]],
+    ) -> None:
+        cameras = {camera.id: camera for camera in config.cameras}
+        now = datetime.now(timezone.utc).timestamp()
+        segment_sec = max(1, config.incident_segment_sec)
+        active_ids: set[str] = set()
+        for item in episodes:
+            episode_id = str(item.get("id") or "")
+            if not episode_id or not item.get("incident_id") or item.get("state") not in {"queued", "recording"}:
+                continue
+            if episode_id in self.closed:
+                events.append(dict(self.closed[episode_id]))
+                continue
+            camera_id = str(item.get("camera_id") or "")
+            camera = cameras.get(camera_id)
+            if camera is None or not camera.enabled or not camera.url:
+                if episode_id not in self.closed:
+                    event = {
+                        "id": episode_id,
+                        "state": "error",
+                        "path": "",
+                        "paths": [],
+                        "message": "камера недоступна",
+                        "started_at": str(item.get("started_at") or ""),
+                        "ended_at": _now(),
+                    }
+                    self._close(episode_id, event)
+                    events.append(event)
+                continue
+            active_ids.add(episode_id)
+            slot = self.incident_episodes.get(episode_id)
+            incident_id = str(item.get("incident_id") or "")
+            output_dir = self.output_root / "incidents" / incident_id / camera_id
+            output_dir.mkdir(parents=True, exist_ok=True)
+            known = set(str(path) for path in item.get("paths") or [])
+            if slot is None:
+                slot = {
+                    "camera_id": camera_id,
+                    "incident_id": incident_id,
+                    "path": output_dir,
+                    "paths": known,
+                    "capture_from": str(item.get("capture_from") or item.get("started_at") or _now()),
+                    "started_at": str(item.get("started_at") or _now()),
+                    "stop_at": item.get("stop_at"),
+                    "finished": False,
+                }
+                self.incident_episodes[episode_id] = slot
+            else:
+                slot["stop_at"] = item.get("stop_at")
+                slot["paths"].update(known)
+
+            buffer = self.buffers.get(camera_id)
+            source_dir = Path(buffer["directory"]) if buffer is not None else None
+            before_count = len(slot["paths"])
+            if source_dir is not None:
+                capture_from = _timestamp(slot["capture_from"])
+                # Ignore the still-open segment. Its modification time moves
+                # until ffmpeg closes it at the next keyframe boundary.
+                for source in sorted(source_dir.glob("*.mkv")):
+                    try:
+                        modified = source.stat().st_mtime
+                    except OSError:
+                        continue
+                    if modified > now - segment_sec - 0.25:
+                        continue
+                    if capture_from is not None and modified < capture_from - segment_sec:
+                        continue
+                    target = output_dir / source.name
+                    if str(target) in slot["paths"]:
+                        continue
+                    try:
+                        shutil.copy2(source, target)
+                    except OSError:
+                        continue
+                    slot["paths"].add(str(target))
+
+            stop_at = _timestamp(slot.get("stop_at"))
+            due = stop_at is not None and now >= stop_at + segment_sec + 0.5
+            changed = len(slot["paths"]) != before_count
+            if item.get("state") == "queued" or changed:
+                paths = sorted(slot["paths"])
+                events.append(
+                    {
+                        "id": episode_id,
+                        "state": "recording",
+                        "path": paths[0] if paths else str(output_dir),
+                        "paths": paths,
+                        "message": "",
+                        "started_at": slot["started_at"],
+                        "ended_at": "",
+                    }
+                )
+            if due:
+                paths = sorted(slot["paths"])
+                if paths:
+                    event = {
+                        "id": episode_id,
+                        "state": "finished",
+                        "path": paths[0],
+                        "paths": paths,
+                        "message": "",
+                        "started_at": slot["started_at"],
+                        "ended_at": _now(),
+                    }
+                else:
+                    event = {
+                        "id": episode_id,
+                        "state": "error",
+                        "path": "",
+                        "paths": [],
+                        "message": "нет готовых видеосегментов",
+                        "started_at": slot["started_at"],
+                        "ended_at": _now(),
+                    }
+                self._close(episode_id, event)
+                self.incident_episodes.pop(episode_id, None)
+                events.append(event)
+
+        retention = max(10, config.incident_pre_sec + segment_sec * 2 + 5)
+        for buffer in self.buffers.values():
+            directory = Path(buffer["directory"])
+            for segment in directory.glob("*.mkv"):
+                try:
+                    if segment.stat().st_mtime < now - retention:
+                        segment.unlink(missing_ok=True)
+                except OSError:
+                    continue
+
+    def _collect_buffer_logs(self) -> None:
+        for slot in self.buffers.values():
+            self._drain_slot(slot)
 
     def _sync_previews(self, previews: list[CameraSettings], recording: set[str]) -> None:
         wanted = {camera.id: camera for camera in previews if camera.url and camera.id not in recording}
@@ -212,8 +425,8 @@ class Supervisor:
         rows: list[dict[str, str]] = []
         for camera in config.cameras:
             if camera.id in recording:
-                slot = next(item for item in self.episodes.values() if item["camera_id"] == camera.id and _running(item["proc"]))
-                rows.append({"id": camera.id, "state": "recording", "message": _tail(slot)})
+                slot = next((item for item in self.episodes.values() if item["camera_id"] == camera.id and _running(item["proc"])), None)
+                rows.append({"id": camera.id, "state": "recording", "message": _tail(slot) if slot is not None else "Идёт запись инцидента"})
                 continue
             preview = self.previews.get(camera.id)
             if preview is not None and _running(preview["proc"]):
@@ -308,6 +521,19 @@ def _recording_event(episode_id: str, slot: dict[str, Any]) -> dict[str, str]:
 
 def _slot(proc: Any, path: Path, camera_id: str, started_at: str) -> dict[str, Any]:
     return {"proc": proc, "path": path, "camera_id": camera_id, "started_at": started_at, "lines": _watch(proc), "sent": 0}
+
+
+def _due(value: Any) -> bool:
+    text = str(value or "").strip()
+    if not text:
+        return False
+    try:
+        moment = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    return moment <= datetime.now(timezone.utc)
 
 
 def _watch(proc: Any) -> list[str]:

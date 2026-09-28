@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 import asyncio
+import csv
 import hashlib
+import io
 import json
 import logging
 import os
 import re
 import secrets
+import tempfile
 import time
+import zipfile
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -16,9 +20,10 @@ from uuid import UUID
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 from fastapi.staticfiles import StaticFiles
+from starlette.background import BackgroundTask
 from pydantic import BaseModel, Field, ValidationError
 
 from bb_platform.contracts import AlarmEvent, MapDocument, Quality, RawBatch, ResourceKind, TagSample, VmCommand, VmLifecycle, VmProtocol, VmStatus, WorkerCommandAck, WorkerError, WorkerHeartbeat, WorkerRegister
@@ -155,6 +160,7 @@ class EpisodeEventItem(BaseModel):
     id: str = Field(min_length=1, max_length=64)
     state: Literal["recording", "finished", "error"]
     path: str = ""
+    paths: list[str] = Field(default_factory=list, max_length=5000)
     message: str = ""
     started_at: str | None = None
     ended_at: str | None = None
@@ -660,6 +666,8 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
         app.state.ingest_queue = asyncio.Queue(maxsize=max(1, cfg.queue_size))
         app.state.vm_alerts = {}
         stop_ingest = asyncio.Event()
+        incident_queue: asyncio.Queue[tuple[TagSample, dict[str, Any]]] = asyncio.Queue()
+        stop_incidents = asyncio.Event()
 
         def store_for_vm(vm: dict[str, Any], runtime_config: dict[str, Any]) -> ParquetStore:
             storage_cfg = runtime_config.get("storage", {}) if isinstance(runtime_config, dict) else {}
@@ -737,12 +745,12 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
                 vm_key = str(sample.vm_id)
                 alert_names = {str(item).strip() for item in sample.alerts if str(item).strip()}
                 for event in repo.sync_alarm_edges(vm_key, sample.captured_at, alert_names, kind="alert"):
-                    await _publish_alarm_edge(sample, event)
+                    await _process_alarm_event(sample, event)
                 protocol_value = getattr(sample.protocol, "value", sample.protocol)
                 if protocol_value == VmProtocol.GPIO.value:
                     pins = {str(name) for name, value in sample.discrete.items() if value}
                     for event in repo.sync_alarm_edges(vm_key, sample.captured_at, pins, kind="gpio"):
-                        await _publish_alarm_edge(sample, event)
+                        await _process_alarm_event(sample, event)
                 app.state.vm_alerts[vm_key] = sorted(alert_names)
             last_quality = parsed[-1].quality if parsed else None
             if parsed and last_quality == Quality.GOOD:
@@ -793,7 +801,61 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
                 text = f"Алерт прибора: {event['name']}" if started else f"Алерт снят: {event['name']}"
             await bus.publish_log(vm_key, text, level="error" if started else "info")
 
+        async def _process_alarm_event(sample: TagSample, event: dict[str, Any]) -> None:
+            await _publish_alarm_edge(sample, event)
+            incident_queue.put_nowait((sample, event))
+
+        async def incident_loop() -> None:
+            while not stop_incidents.is_set() or not incident_queue.empty():
+                try:
+                    sample, event = await asyncio.wait_for(incident_queue.get(), timeout=0.5)
+                except asyncio.TimeoutError:
+                    continue
+                vm_key = str(sample.vm_id)
+                try:
+                    video_config = VideoConfig.model_validate(await asyncio.to_thread(repo.camera_document))
+                    camera_ids = [camera.id for camera in video_config.cameras if camera.enabled and camera.url]
+                    if event["state"] == "active":
+                        incident = await asyncio.to_thread(
+                            repo.register_incident_start,
+                            vm_key,
+                            name=str(event["name"]),
+                            kind=str(event.get("kind") or "alert"),
+                            created_at=sample.captured_at,
+                            camera_ids=camera_ids,
+                            pre_seconds=video_config.incident_pre_sec,
+                            post_seconds=video_config.incident_post_sec,
+                        )
+                        event_payload = {"kind": event.get("kind", "alert"), "state": "active", "incident_id": incident.get("id")}
+                        await bus.publish(
+                            "alarms",
+                            AlarmEvent(
+                                vm_id=sample.vm_id,
+                                timestamp=sample.captured_at,
+                                severity="warning",
+                                code="incident_started",
+                                message=f"Инцидент {incident.get('id', '')} начат",
+                                active=True,
+                                payload=event_payload,
+                            ).model_dump(mode="json"),
+                        )
+                    else:
+                        await asyncio.to_thread(
+                            repo.register_incident_end,
+                            vm_key,
+                            name=str(event.get("name") or ""),
+                            kind=str(event.get("kind") or "alert"),
+                            created_at=sample.captured_at,
+                            post_seconds=video_config.incident_post_sec,
+                            has_active=bool(event.get("has_active", False)),
+                        )
+                except Exception:
+                    logger.exception("Failed to synchronize video incident for %s", vm_key)
+                finally:
+                    incident_queue.task_done()
+
         ingest_task = asyncio.create_task(ingest_loop())
+        incident_task = asyncio.create_task(incident_loop())
         stop_reconciler = asyncio.Event()
         stop_system = asyncio.Event()
 
@@ -949,6 +1011,9 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
                 pass
         stop_ingest.set()
         await ingest_task
+        await incident_queue.join()
+        stop_incidents.set()
+        await incident_task
         stop_reconciler.set()
         await reconciler_task
         try:
@@ -1728,6 +1793,41 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
             "previews": _live_previews(),
         }
 
+    @app.get("/api/v1/video/incidents")
+    async def video_incidents(request: Request, vm_id: list[str] | None = Query(default=None), limit: int = Query(default=100, ge=1, le=500)):
+        current_user(request, repo, cfg)
+        selected = _selected_vm_ids(vm_id)
+        names = {str(vm["id"]): str(vm["name"]) for vm in repo.list_vms()}
+        items = repo.list_incidents(vm_ids=selected, limit=limit)
+        for item in items:
+            item["vm_name"] = names.get(str(item["vm_id"]), str(item["vm_id"]))
+        return {"items": items}
+
+    @app.get("/api/v1/video/incidents/{incident_id}")
+    async def video_incident(incident_id: str, request: Request):
+        current_user(request, repo, cfg)
+        incident = repo.get_incident(incident_id)
+        if incident is None:
+            raise HTTPException(404, detail={"code": "not_found", "message": "Инцидент не найден"})
+        vm = repo.get_vm(str(incident["vm_id"]))
+        incident["vm_name"] = str(vm["name"]) if vm else str(incident["vm_id"])
+        return incident
+
+    @app.get("/api/v1/video/incidents/{incident_id}/videos/{episode_id}/{index}")
+    async def incident_video(incident_id: str, episode_id: str, index: int, request: Request):
+        current_user(request, repo, cfg)
+        incident = repo.get_incident(incident_id)
+        if incident is None:
+            raise HTTPException(404, detail={"code": "not_found", "message": "Инцидент не найден"})
+        episode = next((item for item in incident.get("episodes", []) if str(item["id"]) == episode_id), None)
+        paths = episode.get("paths", []) if episode else []
+        if episode is None or index < 0 or index >= len(paths):
+            raise HTTPException(404, detail={"code": "video_missing", "message": "Видеофрагмент не найден"})
+        path = _safe_video_path(paths[index], _video_roots())
+        if path is None:
+            raise HTTPException(404, detail={"code": "video_missing", "message": "Файл недоступен в хранилище"})
+        return FileResponse(path, filename=path.name, media_type="application/octet-stream")
+
     @app.post("/api/v1/internal/video/status")
     async def video_status(payload: VideoStatusBody, request: Request):
         _video_auth(request)
@@ -2208,6 +2308,227 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
         filename = {"alarms": "alarms.csv", "gpio": "gpio.csv"}.get(active, f"{active}.csv")
         return Response(content=text, media_type="text/csv; charset=utf-8", headers={"Content-Disposition": f'attachment; filename="{filename}"'})
 
+    def _export_path(suffix: str) -> Path:
+        directory = cfg.data_root / ".exports"
+        directory.mkdir(parents=True, exist_ok=True)
+        handle = tempfile.NamedTemporaryFile(prefix="blackbox_", suffix=suffix, dir=directory, delete=False)
+        handle.close()
+        return Path(handle.name)
+
+    def _video_roots() -> list[Path]:
+        roots = [cfg.data_root]
+        for resource in repo.list_resources():
+            if resource.get("kind") == "storage" and resource.get("approved") and resource.get("available") and resource.get("path"):
+                roots.append(Path(str(resource["path"])))
+        resolved: list[Path] = []
+        for root in roots:
+            try:
+                path = root.resolve()
+            except OSError:
+                continue
+            if path not in resolved:
+                resolved.append(path)
+        return resolved
+
+    def _safe_video_path(raw: Any, roots: list[Path]) -> Path | None:
+        if not raw:
+            return None
+        try:
+            path = Path(str(raw)).resolve(strict=True)
+            if not path.is_file() or not any(path == root or root in path.parents for root in roots):
+                return None
+            return path
+        except OSError:
+            return None
+
+    def _csv_bytes(headers: list[str], rows: list[list[Any]]) -> bytes:
+        buffer = io.StringIO(newline="")
+        writer = csv.writer(buffer, delimiter=";")
+        writer.writerow(headers)
+        writer.writerows(rows)
+        return ("\ufeff" + buffer.getvalue()).encode("utf-8")
+
+    def _incident_export(incident_id: str) -> Path:
+        incident = repo.get_incident(incident_id)
+        if incident is None:
+            raise HTTPException(404, detail={"code": "not_found", "message": "Инцидент не найден"})
+        vm_id = str(incident["vm_id"])
+        start = parse_bound(str(incident.get("telemetry_from") or incident["started_at"]))
+        end = parse_bound(str(incident.get("telemetry_to") or incident.get("last_alert_at")))
+        measurements, truncated = query_measurements(
+            _telemetry_roots(),
+            _telemetry_stores(),
+            vm_ids={vm_id},
+            date_from=start,
+            date_to=end,
+        )
+        measurements.sort(key=lambda row: (row.captured_at, row.seq))
+        analog_fields = sorted({key for row in measurements for key in row.analog})
+        discrete_fields = sorted({key for row in measurements for key in row.discrete})
+        analog_rows = [[row.captured_at.isoformat(), row.vm_id, *[row.analog.get(key, "") for key in analog_fields]] for row in measurements]
+        discrete_rows = [[row.captured_at.isoformat(), row.vm_id, *[int(bool(row.discrete.get(key))) if row.discrete.get(key) is not None else "" for key in discrete_fields]] for row in measurements]
+        alarm_rows = [[item["created_at"], item["kind"], item["name"], item["state"]] for item in incident.get("alerts", [])]
+        names = {str(vm["id"]): str(vm["name"]) for vm in repo.list_vms()}
+        chart = chart_payload(
+            measurements,
+            table="analog",
+            vm_ids=[vm_id],
+            vm_names=names,
+            labels={key: key for key in analog_fields},
+            fields=analog_fields,
+            realtime=False,
+        )
+        metadata = dict(incident)
+        metadata["vm_name"] = names.get(vm_id, vm_id)
+        metadata["telemetry_truncated"] = truncated
+        path = _export_path(".zip")
+        roots = _video_roots()
+        with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=5) as archive:
+            archive.writestr("incident.json", json.dumps(metadata, ensure_ascii=False, indent=2))
+            archive.writestr("alarms.csv", _csv_bytes(["Время", "Тип", "Название", "Состояние"], alarm_rows))
+            archive.writestr("telemetry/analog.csv", _csv_bytes(["Время UTC", "ВМ", *analog_fields], analog_rows))
+            archive.writestr("telemetry/discrete.csv", _csv_bytes(["Время UTC", "ВМ", *discrete_fields], discrete_rows))
+            archive.writestr("charts/analog.json", json.dumps(chart, ensure_ascii=False))
+            video_manifest: list[list[Any]] = []
+            for episode in incident.get("episodes", []):
+                paths = episode.get("paths") or ([episode.get("path")] if episode.get("path") else [])
+                for index, raw in enumerate(paths, start=1):
+                    video = _safe_video_path(raw, roots)
+                    status = "included"
+                    archive_name = ""
+                    if video is None:
+                        status = "missing_or_outside_approved_storage"
+                    else:
+                        archive_name = f"videos/{episode['camera_id']}/{index:04d}_{video.name}"
+                        archive.write(video, archive_name, compress_type=zipfile.ZIP_STORED)
+                    video_manifest.append([episode["camera_id"], episode["id"], str(raw), archive_name, status])
+            archive.writestr("videos/manifest.csv", _csv_bytes(["Камера", "Эпизод", "Путь", "В архиве", "Статус"], video_manifest))
+        return path
+
+    @app.get("/api/v1/video/incidents/{incident_id}/export")
+    async def video_incident_export(incident_id: str, request: Request):
+        current_user(request, repo, cfg)
+        path = await asyncio.to_thread(_incident_export, incident_id)
+        return FileResponse(
+            path,
+            media_type="application/zip",
+            filename=f"incident_{incident_id}.zip",
+            background=BackgroundTask(lambda: path.unlink(missing_ok=True)),
+        )
+
+    @app.get("/api/v1/telemetry/export-package")
+    async def telemetry_export_package(
+        request: Request,
+        vm_id: list[str] | None = Query(default=None),
+        date_from: str | None = None,
+        date_to: str | None = None,
+        sort: str = "desc",
+        format: Literal["zip", "xlsx"] = "zip",
+        include: list[str] | None = Query(default=None),
+        analog_column: list[str] | None = Query(default=None),
+        discrete_column: list[str] | None = Query(default=None),
+    ):
+        current_user(request, repo, cfg)
+        selected = _selected_vm_ids(vm_id)
+        start = parse_bound(date_from)
+        end = parse_bound(date_to, end_of_day=True)
+        if start is None or end is None:
+            raise HTTPException(422, detail={"code": "date_range_required", "message": "Для экспорта укажите начало и конец периода"})
+        if start > end:
+            start, end = end, start
+        allowed = {"analog", "discrete", "alarms", "gpio", "incidents", "video"}
+        chosen = set(include or allowed)
+        if not chosen or not chosen <= allowed:
+            raise HTTPException(422, detail={"code": "invalid_export_tables", "message": "Выберите допустимые разделы экспорта"})
+        available = _sources(set(selected))
+        valid_columns = {
+            "analog": {str(field.get("key")) for source in available for field in source.get("analog", []) if field.get("key")},
+            "discrete": {str(field.get("key")) for source in available for field in source.get("discrete", []) if field.get("key")},
+        }
+        requested_columns = {
+            "analog": set(analog_column or []),
+            "discrete": set(discrete_column or []),
+        }
+        for key in requested_columns:
+            requested_columns[key] &= valid_columns[key]
+            if key in chosen and (analog_column if key == "analog" else discrete_column) and not requested_columns[key]:
+                raise HTTPException(422, detail={"code": "invalid_export_columns", "message": "В выбранных разделах нет допустимых полей"})
+
+        def build_package() -> Path:
+            names = {str(vm["id"]): str(vm["name"]) for vm in repo.list_vms()}
+            measurements, truncated = query_measurements(
+                _telemetry_roots(), _telemetry_stores(), vm_ids=set(selected), date_from=start, date_to=end
+            )
+            measurements.sort(key=lambda row: (row.captured_at, row.seq), reverse=sort != "asc")
+            analog_fields = sorted({key for row in measurements for key in row.analog})
+            discrete_fields = sorted({key for row in measurements for key in row.discrete})
+            if "analog" in chosen and requested_columns["analog"]:
+                analog_fields = [key for key in analog_fields if key in requested_columns["analog"]]
+            if "discrete" in chosen and requested_columns["discrete"]:
+                discrete_fields = [key for key in discrete_fields if key in requested_columns["discrete"]]
+            alarms, _ = repo.list_alarm_events(selected, kind="alert", date_from=start.isoformat(), date_to=end.isoformat(), sort_desc=sort != "asc", limit=1_000_000)
+            gpio, _ = repo.list_alarm_events(selected, kind="gpio", date_from=start.isoformat(), date_to=end.isoformat(), sort_desc=sort != "asc", limit=1_000_000)
+            incidents = [
+                row for row in repo.list_incidents(vm_ids=selected)
+                if parse_bound(str(row.get("started_at"))) <= end and parse_bound(str(row.get("telemetry_to") or row.get("last_alert_at"))) >= start
+            ]
+            table_rows: dict[str, tuple[list[str], list[list[Any]]]] = {
+                "analog": (["Время UTC", "ВМ", *analog_fields], [[r.captured_at.isoformat(), names.get(r.vm_id, r.vm_id), *[r.analog.get(key, "") for key in analog_fields]] for r in measurements]),
+                "discrete": (["Время UTC", "ВМ", *discrete_fields], [[r.captured_at.isoformat(), names.get(r.vm_id, r.vm_id), *[int(bool(r.discrete.get(key))) if r.discrete.get(key) is not None else "" for key in discrete_fields]] for r in measurements]),
+                "alarms": (["Время UTC", "ВМ", "Название", "Состояние"], [[row["created_at"], names.get(str(row["vm_id"]), row["vm_id"]), row["name"], row["state"]] for row in alarms]),
+                "gpio": (["Время UTC", "ВМ", "Название", "Состояние"], [[row["created_at"], names.get(str(row["vm_id"]), row["vm_id"]), row["name"], row["state"]] for row in gpio]),
+                "incidents": (["ID", "ВМ", "Состояние", "Начало", "Последний алерт", "Окончание окна", "Алерты", "Видео"], [[row["id"], names.get(str(row["vm_id"]), row["vm_id"]), row["state"], row["started_at"], row["last_alert_at"], row.get("telemetry_to") or "", ", ".join(item["name"] for item in row.get("alerts", [])), ", ".join(path for episode in row.get("episodes", []) for path in (episode.get("paths") or ([episode.get("path")] if episode.get("path") else [])))] for row in incidents]),
+            }
+            path = _export_path(".zip" if format == "zip" else ".xlsx")
+            if format == "xlsx":
+                from openpyxl import Workbook
+                workbook = Workbook(write_only=True)
+                for key in ("analog", "discrete", "alarms", "gpio", "incidents"):
+                    if key not in chosen:
+                        continue
+                    headers, rows = table_rows[key]
+                    sheet = workbook.create_sheet(key[:31])
+                    sheet.append(headers)
+                    for row in rows:
+                        sheet.append(row)
+                manifest = workbook.create_sheet("Экспорт")
+                manifest.append(["Поле", "Значение"])
+                manifest.append(["Начало UTC", start.isoformat()])
+                manifest.append(["Конец UTC", end.isoformat()])
+                manifest.append(["Обрезана телеметрия", str(truncated)])
+                manifest.append(["Видео", "В Excel файлы видео не встраиваются; скачайте ZIP экспорт инцидента"])
+                workbook.save(path)
+                return path
+
+            roots = _video_roots()
+            with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=5) as archive:
+                for key, (headers, rows) in table_rows.items():
+                    if key in chosen:
+                        archive.writestr(f"{key}.csv", _csv_bytes(headers, rows))
+                manifest = {"from": start.isoformat(), "to": end.isoformat(), "vm_ids": selected, "included": sorted(chosen), "telemetry_truncated": truncated}
+                archive.writestr("manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2))
+                if "video" in chosen:
+                    media_rows: list[list[Any]] = []
+                    for incident in incidents:
+                        for episode in incident.get("episodes", []):
+                            paths = episode.get("paths") or ([episode.get("path")] if episode.get("path") else [])
+                            for index, raw in enumerate(paths, start=1):
+                                file_path = _safe_video_path(raw, roots)
+                                name = ""
+                                state = "missing_or_outside_approved_storage"
+                                if file_path is not None:
+                                    name = f"videos/{incident['id']}/{episode['camera_id']}/{index:04d}_{file_path.name}"
+                                    archive.write(file_path, name, compress_type=zipfile.ZIP_STORED)
+                                    state = "included"
+                                media_rows.append([incident["id"], episode["camera_id"], str(raw), name, state])
+                    archive.writestr("videos/manifest.csv", _csv_bytes(["Инцидент", "Камера", "Путь", "В архиве", "Статус"], media_rows))
+            return path
+
+        path = await asyncio.to_thread(build_package)
+        suffix = ".zip" if format == "zip" else ".xlsx"
+        media_type = "application/zip" if format == "zip" else "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        return FileResponse(path, media_type=media_type, filename=f"blackbox_export{suffix}", background=BackgroundTask(lambda: path.unlink(missing_ok=True)))
+
     @app.get("/dashboard", response_class=HTMLResponse)
     async def dashboard(request: Request):
         try:
@@ -2227,6 +2548,31 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
         except HTTPException:
             return RedirectResponse("/login", status_code=303)
         return templates.TemplateResponse(request=request, name="data.html", context={"user": account, "vms": repo.list_vms()})
+
+    @app.get("/incidents", response_class=HTMLResponse)
+    async def incidents_page(request: Request):
+        try:
+            account = current_user(request, repo, cfg)
+        except HTTPException:
+            return RedirectResponse("/login", status_code=303)
+        return templates.TemplateResponse(request=request, name="incidents.html", context={"user": account, "vms": repo.list_vms()})
+
+    @app.get("/incidents/{incident_id}", response_class=HTMLResponse)
+    async def incident_detail_page(incident_id: str, request: Request):
+        try:
+            account = current_user(request, repo, cfg)
+        except HTTPException:
+            return RedirectResponse("/login", status_code=303)
+        incident = repo.get_incident(incident_id)
+        if incident is None:
+            return RedirectResponse("/incidents", status_code=303)
+        vm = repo.get_vm(str(incident["vm_id"]))
+        incident["vm_name"] = str(vm["name"]) if vm else str(incident["vm_id"])
+        return templates.TemplateResponse(
+            request=request,
+            name="incident_detail.html",
+            context={"user": account, "incident": incident, "vm_name": incident["vm_name"]},
+        )
 
     @app.get("/charts", response_class=HTMLResponse)
     async def charts_page(request: Request):

@@ -6,7 +6,7 @@
   <div class="bb-camera-toolbar">
     <div>
       <h1 class="bb-page-title">Камеры</h1>
-      <p class="bb-page-lead">Настройка идёт по шагам, как у ВМ. Запись сама не стартует: команда начинает эпизод, а когда файл закрыт, приходит событие с путём.</p>
+      <p class="bb-page-lead">Настройка идёт по шагам, как у ВМ. При первом алерте начинается запись всех включённых камер, а связанные алерты объединяются в один инцидент.</p>
     </div>
     <button type="button" class="bb-btn" id="camera-add"><i class="bi bi-plus-lg"></i> Добавить камеру</button>
   </div>
@@ -41,6 +41,12 @@
             {% endcall %}
             {% call field('Каталог на носителе', 'Подкаталог, как telemetry у ВМ. По умолчанию video.', 'bi-folder') %}
             <input data-field="video_subdir" value="video" pattern="[A-Za-z0-9_./-]+">
+            {% endcall %}
+            {% call field('До алерта, с', 'Запас для графиков перед началом инцидента. Видеозапись начинается с первого алерта.', 'bi-arrow-counterclockwise') %}
+            <input data-field="incident_pre_sec" type="number" min="0" max="3600" value="10">
+            {% endcall %}
+            {% call field('После алерта, с', 'Запись продолжается после снятия последнего алерта, чтобы объединить близкие события.', 'bi-hourglass-split') %}
+            <input data-field="incident_post_sec" type="number" min="0" max="3600" value="15">
             {% endcall %}
           </div>
         </section>

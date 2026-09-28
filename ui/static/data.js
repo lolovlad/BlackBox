@@ -327,6 +327,34 @@
     query.delete('page');
     window.location.href = root.dataset.exportUrl + '?' + query.toString();
   });
+  document.getElementById('bb-package-export').addEventListener('click', function () {
+    const form = document.getElementById('bb-data-form');
+    const from = form.elements.date_from.value;
+    const to = form.elements.date_to.value;
+    const include = Array.from(form.querySelectorAll('[name="package_include"]:checked')).map(function (input) { return input.value; });
+    if (!from || !to) {
+      window.alert('Для пакетного экспорта укажите начало и конец периода.');
+      return;
+    }
+    if (!include.length) {
+      window.alert('Выберите разделы для экспорта.');
+      return;
+    }
+    const query = new URLSearchParams();
+    if (vmId()) query.set('vm_id', vmId());
+    query.set('date_from', from);
+    query.set('date_to', to);
+    query.set('sort', form.elements.sort.value);
+    query.set('format', document.getElementById('bb-package-format').value);
+    include.forEach(function (item) { query.append('include', item); });
+    ['analog', 'discrete'].forEach(function (table) {
+      const pick = columnPick[(vmId() || '') + ':' + table];
+      if (pick && pick.mode === 'set') {
+        pick.keys.forEach(function (key) { query.append(table + '_column', key); });
+      }
+    });
+    window.location.href = '/api/v1/telemetry/export-package?' + query.toString();
+  });
   tableHost.addEventListener('click', function (event) {
     const button = event.target.closest('[data-page]');
     if (!button || button.disabled) return;

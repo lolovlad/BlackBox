@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+import io
 from pathlib import Path
+import zipfile
 
 import pytest
 from pydantic import ValidationError
@@ -9,12 +12,14 @@ from services.video.devices import h264_encoder_present, publish_host_video_devi
 from services.video.settings import (
     CameraSettings,
     VideoConfig,
+    build_buffer_argv,
     build_episode_argv,
     build_preview_argv,
     camera_estimate,
     estimate_mib,
 )
 from services.video.supervisor import Supervisor
+from services.hub.db import HubRepository
 from tests.test_hub_vnext import _client
 
 
@@ -67,6 +72,11 @@ def test_ffmpeg_argv_copy_skips_scale_and_libx264_limits_bitrate(tmp_path: Path)
     assert "-maxrate" not in hardware
     assert "-preset" not in hardware
 
+    buffer = build_buffer_argv(_camera(), tmp_path / "%Y%m%d_%H%M%S.mkv", 2)
+    assert buffer[buffer.index("-f") + 1] == "segment"
+    assert buffer[buffer.index("-segment_time") + 1] == "2"
+    assert buffer[-1].endswith("%Y%m%d_%H%M%S.mkv")
+
     preview = build_preview_argv(_camera(), tmp_path / "live.jpg")
     assert "scale=1920:1080" in " ".join(preview)
     assert preview[1] == "-y"
@@ -114,17 +124,17 @@ def test_supervisor_records_one_episode_and_reports_when_it_ends(tmp_path: Path)
     camera = _camera(url="rtsp://user:secret@10.0.0.8/stream")
     config = VideoConfig(cameras=[camera])
     assert supervisor.tick(config, [], [])["statuses"] == [{"id": "cam1", "state": "stopped", "message": ""}]
-    assert started == []
+    assert len(started) == 1 and "segment" in " ".join(started[0].argv)
     assert supervisor.tick(VideoConfig(cameras=[_camera(enabled=False)]), [{"id": "ep0", "camera_id": "cam1", "state": "queued"}], [])["episodes"][0]["state"] == "error"
-    assert started == []
+    assert len(started) == 1
 
     archive = tmp_path / "archive"
     job = {"id": "ep1", "camera_id": "cam1", "state": "queued"}
     first = supervisor.tick(config, [job], [camera], output_root=archive)
-    assert len(started) == 1
-    assert "-t" in started[0].argv
-    assert "segment" not in started[0].argv
-    assert str(archive) in started[0].argv[-1] or str(archive).replace("\\", "/") in started[0].argv[-1].replace("\\", "/")
+    assert len(started) == 3
+    episode_proc = next(proc for proc in started if "-t" in proc.argv)
+    assert "segment" not in episode_proc.argv
+    assert str(archive) in episode_proc.argv[-1] or str(archive).replace("\\", "/") in episode_proc.argv[-1].replace("\\", "/")
     assert first["episodes"][0]["state"] == "recording"
     assert first["statuses"][0]["state"] == "recording"
     assert supervisor.previews == {}
@@ -137,10 +147,10 @@ def test_supervisor_records_one_episode_and_reports_when_it_ends(tmp_path: Path)
 
     again = supervisor.tick(config, [{"id": "ep1", "camera_id": "cam1", "state": "recording"}], [])
     assert again["episodes"] == []
-    assert len(started) == 1
+    assert len(started) == 3
 
-    started[0].alive = False
-    started[0].code = 0
+    episode_proc.alive = False
+    episode_proc.code = 0
     done = supervisor.tick(config, [{"id": "ep1", "camera_id": "cam1", "state": "recording"}], [])
     assert done["episodes"][0]["state"] == "finished"
     assert done["episodes"][0]["path"].endswith("ep1.mp4")
@@ -162,14 +172,16 @@ def test_missing_pi_encoder_records_with_libx264(tmp_path: Path):
     supervisor = Supervisor(tmp_path, spawn=spawn, hardware_h264=lambda: False)
     camera = _camera(codec="h264_v4l2m2m")
     result = supervisor.tick(VideoConfig(cameras=[camera]), [{"id": "ep1", "camera_id": "cam1", "state": "queued"}], [])
-    assert started[0].argv[started[0].argv.index("-c:v") + 1] == "libx264"
-    assert "h264_v4l2m2m" not in started[0].argv
+    episode = next(proc for proc in started if "-c:v" in proc.argv)
+    assert episode.argv[episode.argv.index("-c:v") + 1] == "libx264"
+    assert "h264_v4l2m2m" not in episode.argv
     assert any("Аппаратный кодер H.264 не найден" in item["line"] and item["source"] == "hub" for item in result["logs"])
 
     ready = Supervisor(tmp_path, spawn=spawn, hardware_h264=lambda: True)
     again = ready.tick(VideoConfig(cameras=[camera]), [{"id": "ep2", "camera_id": "cam1", "state": "queued"}], [])
-    assert started[-1].argv[started[-1].argv.index("-c:v") + 1] == "h264_v4l2m2m"
-    assert "format=yuv420p" in " ".join(started[-1].argv)
+    hardware_episode = [proc for proc in started if "-c:v" in proc.argv][-1]
+    assert hardware_episode.argv[hardware_episode.argv.index("-c:v") + 1] == "h264_v4l2m2m"
+    assert "format=yuv420p" in " ".join(hardware_episode.argv)
     assert not any("не найден" in item["line"] for item in again["logs"])
 
 
@@ -198,16 +210,136 @@ def test_preview_restarts_when_the_picture_settings_change(tmp_path: Path):
     config = VideoConfig(cameras=[camera])
     first = supervisor.tick(config, [], [camera])
     assert first["statuses"][0]["state"] == "preview"
-    assert len(started) == 1
-    assert started[0].argv[started[0].argv.index("-f") + 1] == "image2"
+    assert len(started) == 2
+    preview = next(proc for proc in started if "image2" in proc.argv)
+    assert preview.argv[preview.argv.index("-f") + 1] == "image2"
     supervisor.tick(config, [], [camera])
-    assert len(started) == 1
+    assert len(started) == 2
 
     changed = _camera(resolution="640x480")
     supervisor.tick(config, [], [changed])
-    assert len(started) == 2
-    assert started[0].alive is False
-    assert "scale=640:480" in " ".join(started[1].argv)
+    assert len(started) == 3
+    assert preview.alive is False
+    assert any("scale=640:480" in " ".join(proc.argv) and "image2" in proc.argv for proc in started[2:])
+
+
+def test_alarm_edges_merge_into_one_incident_and_schedule_video_stop(tmp_path: Path):
+    repo = HubRepository(tmp_path / "hub.db")
+    first = datetime(2026, 9, 28, 12, 0, tzinfo=timezone.utc)
+    incident = repo.register_incident_start(
+        "vm-1",
+        name="Oil pressure",
+        kind="alert",
+        created_at=first,
+        camera_ids=["cam1", "cam2"],
+        post_seconds=15,
+    )
+    incident_id = incident["id"]
+    extended = repo.register_incident_start(
+        "vm-1",
+        name="Temperature",
+        kind="alert",
+        created_at=first + timedelta(seconds=3),
+        camera_ids=["cam1", "cam2"],
+        post_seconds=15,
+    )
+    assert extended["id"] == incident_id
+    assert len(extended["episodes"]) == 2
+    repo.register_incident_end(
+        "vm-1",
+        name="Oil pressure",
+        kind="alert",
+        created_at=first + timedelta(seconds=5),
+        post_seconds=15,
+    )
+    still_open = repo.get_incident(incident_id)
+    assert still_open["state"] == "finishing"
+    assert still_open["stop_at"].endswith("+00:00")
+    assert all(item["duration_sec"] == 86400 for item in still_open["episodes"])
+    assert all(item["state"] == "queued" for item in still_open["episodes"])
+
+
+def test_incident_episode_updates_keep_all_segment_paths(tmp_path: Path):
+    repo = HubRepository(tmp_path / "hub.db")
+    moment = datetime(2026, 9, 28, 12, 0, tzinfo=timezone.utc)
+    incident = repo.register_incident_start("vm-1", name="Alarm", kind="alert", created_at=moment, camera_ids=["cam1"])
+    episode = incident["episodes"][0]
+    paths = [str(tmp_path / "segment-1.mkv"), str(tmp_path / "segment-2.mkv")]
+    repo.apply_episode_events([{"id": episode["id"], "state": "recording", "paths": paths, "started_at": moment.isoformat()}])
+    saved = repo.get_incident(incident["id"])["episodes"][0]
+    assert saved["paths"] == paths
+
+
+def test_incident_pages_and_export_routes(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("BB_VIDEO_TOKEN", "video-secret")
+    with _client(tmp_path) as client:
+        assert client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin-password"}).status_code == 200
+        assert client.get("/incidents").status_code == 200
+        missing = client.get("/incidents/not-found", follow_redirects=False)
+        assert missing.status_code == 303
+        assert client.get("/api/v1/telemetry/export-package").status_code == 422
+        workbook = client.get("/api/v1/telemetry/export-package", params={
+            "date_from": "2026-09-28T00:00", "date_to": "2026-09-28T23:59", "format": "xlsx", "include": "analog",
+        })
+        assert workbook.status_code == 200
+        with zipfile.ZipFile(io.BytesIO(workbook.content)) as package:
+            assert "xl/workbook.xml" in package.namelist()
+
+
+def test_incident_download_and_bundle_contain_video(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("BB_VIDEO_TOKEN", "video-secret")
+    with _client(tmp_path) as client:
+        assert client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin-password"}).status_code == 200
+        repo = client.app.state.repo
+        moment = datetime.now(timezone.utc).replace(microsecond=0)
+        incident = repo.register_incident_start(
+            "vm-test", name="Alarm", kind="alert", created_at=moment, camera_ids=["cam1"]
+        )
+        episode = incident["episodes"][0]
+        video_path = tmp_path / "data" / "video" / "incidents" / incident["id"] / "cam1" / "part.mkv"
+        video_path.parent.mkdir(parents=True)
+        video_path.write_bytes(b"video-data")
+        repo.apply_episode_events([{
+            "id": episode["id"], "state": "finished", "path": str(video_path), "paths": [str(video_path)],
+            "started_at": moment.isoformat(), "ended_at": moment.isoformat(),
+        }])
+        response = client.get(f"/api/v1/video/incidents/{incident['id']}/videos/{episode['id']}/0")
+        assert response.status_code == 200
+        assert response.content == b"video-data"
+        archive = client.get(f"/api/v1/video/incidents/{incident['id']}/export")
+        assert archive.status_code == 200
+        with zipfile.ZipFile(io.BytesIO(archive.content)) as bundle:
+            assert f"videos/cam1/0001_{video_path.name}" in bundle.namelist()
+            assert "telemetry/analog.csv" in bundle.namelist()
+            assert "charts/analog.json" in bundle.namelist()
+
+
+def test_supervisor_stops_incident_episode_at_stop_at(tmp_path: Path):
+    started: list[_Proc] = []
+
+    def spawn(argv):
+        proc = _Proc(list(argv))
+        started.append(proc)
+        return proc
+
+    supervisor = Supervisor(tmp_path, spawn=spawn, hardware_h264=lambda: False)
+    camera = _camera()
+    future = (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat()
+    first = supervisor.tick(
+        VideoConfig(cameras=[camera]),
+        [{"id": "ep1", "camera_id": "cam1", "state": "queued", "duration_sec": 86400, "stop_at": future}],
+        [],
+    )
+    assert first["episodes"][0]["state"] == "recording"
+    episode_proc = next(proc for proc in started if "-t" in proc.argv)
+    assert episode_proc.argv[episode_proc.argv.index("-t") + 1] == "86400"
+    due = (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat()
+    supervisor.tick(
+        VideoConfig(cameras=[camera]),
+        [{"id": "ep1", "camera_id": "cam1", "state": "recording", "duration_sec": 86400, "stop_at": due}],
+        [],
+    )
+    assert episode_proc.alive is False
 
 
 def test_camera_settings_roundtrip(tmp_path: Path, monkeypatch):

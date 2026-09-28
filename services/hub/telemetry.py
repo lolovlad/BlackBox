@@ -153,31 +153,47 @@ def query_window(
     size = max(1, page_size)
     scan_args = (roots, stores)
     scan_kwargs = dict(vm_ids=vm_ids, date_from=date_from, date_to=date_to, include_bad=include_bad)
-    # Count and the page use separate connections. On one connection the count
-    # warms DuckDB file metadata in a way that makes the following LIMIT slower
-    # on every repeat (about 2s, then 4s, then 6s on a day of small parts).
     con, sql, bind = _open_scan(*scan_args, **scan_kwargs)
     if sql is None:
         con.close()
         return [], 0, 1
     try:
-        total = int(con.execute(f"SELECT count(*) FROM ({_count_sql(sql)}) q", bind).fetchone()[0])
+        # COUNT(*) OVER() gives the page and its exact total in one Parquet
+        # scan. The old implementation opened two DuckDB connections and
+        # scanned every matching file twice, which dominated page latency.
+        order = "DESC" if sort_desc else "ASC"
+        offset = max(0, (max(1, int(page)) - 1) * size)
+        fetched = con.execute(
+            f"SELECT *, count(*) OVER() AS __total FROM ({sql}) q ORDER BY captured_at {order}, seq {order} LIMIT ? OFFSET ?",
+            [*bind, size, offset],
+        ).fetchall()
+        if fetched:
+            total = int(fetched[0][-1] or 0)
+            rows = [tuple(item[:-1]) for item in fetched]
+        else:
+            total = int(con.execute(f"SELECT count(*) FROM ({_count_sql(sql)}) q", bind).fetchone()[0])
+            rows = []
     finally:
         con.close()
     if total == 0:
         return [], 0, 1
     pages = max(1, (total + size - 1) // size)
-    current = min(max(1, page), pages)
-    order = "DESC" if sort_desc else "ASC"
-    con, sql, bind = _open_scan(*scan_args, **scan_kwargs)
-    try:
-        fetched = con.execute(
-            f"{sql} ORDER BY captured_at {order}, seq {order} LIMIT ? OFFSET ?",
-            [*bind, size, (current - 1) * size],
-        ).fetchall()
-    finally:
-        con.close()
-    return _measurements(fetched), total, current
+    current = min(max(1, int(page)), pages)
+    if not rows and current != max(1, int(page)):
+        # A request beyond the final page is rare; fetch the clamped page only
+        # in that case so normal navigation keeps the single-scan fast path.
+        return query_window(
+            roots,
+            stores,
+            vm_ids=vm_ids,
+            date_from=date_from,
+            date_to=date_to,
+            include_bad=include_bad,
+            page=current,
+            page_size=size,
+            sort_desc=sort_desc,
+        )
+    return _measurements(rows), total, current
 
 
 def page_table(

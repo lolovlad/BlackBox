@@ -38,6 +38,8 @@
       audio_bitrate_kbps: 128,
       container: "mp4",
       segment_sec: 60,
+      incident_pre_sec: 10,
+      incident_post_sec: 15,
     };
   }
 
@@ -302,6 +304,8 @@
     return {
       storage_resource_id: field("storage_resource_id").value || "storage:data",
       video_subdir: (field("video_subdir").value || "video").trim() || "video",
+      incident_pre_sec: numberOrNull(field("incident_pre_sec").value) ?? 10,
+      incident_post_sec: numberOrNull(field("incident_post_sec").value) ?? 15,
       cameras: cameras.map(function (camera) {
         return {
           id: camera.id,
@@ -395,6 +399,8 @@
       cameras = (body.config && body.config.cameras) || [];
       fillDisks(body.storage_resources, (body.config && body.config.storage_resource_id) || "storage:data");
       field("video_subdir").value = (body.config && body.config.video_subdir) || "video";
+      field("incident_pre_sec").value = (body.config && body.config.incident_pre_sec) ?? 10;
+      field("incident_post_sec").value = (body.config && body.config.incident_post_sec) ?? 15;
       if (!cameras.some(function (camera) { return camera.id === selected; })) {
         selected = cameras.length ? cameras[0].id : "";
       }

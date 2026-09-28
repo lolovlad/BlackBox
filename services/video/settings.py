@@ -83,6 +83,9 @@ class VideoConfig(BaseModel):
 
     storage_resource_id: str = "storage:data"
     video_subdir: str = "video"
+    incident_pre_sec: int = Field(default=10, ge=0, le=3600)
+    incident_post_sec: int = Field(default=15, ge=0, le=3600)
+    incident_segment_sec: int = Field(default=2, ge=1, le=30)
     cameras: list[CameraSettings] = Field(default_factory=list, max_length=16)
 
     @field_validator("storage_resource_id")
@@ -225,13 +228,41 @@ def episode_name(camera: CameraSettings, episode_id: str, stamp: str) -> str:
     return f"{stamp}_{safe}.{ext}"
 
 
-def build_episode_argv(camera: CameraSettings, output_file: Path) -> list[str]:
+def build_episode_argv(camera: CameraSettings, output_file: Path, duration_sec: int | None = None) -> list[str]:
     """One file for one episode. The process exit is the end of the episode."""
     argv = _input_argv(camera) + _encode_argv(camera)
-    argv.extend(["-t", str(int(camera.segment_sec))])
+    duration = camera.segment_sec if duration_sec is None else max(1, int(duration_sec))
+    argv.extend(["-t", str(duration)])
     if camera.container == "mp4":
         argv.extend(["-movflags", "+faststart"])
     argv.append(str(output_file))
+    return argv
+
+
+def build_buffer_argv(camera: CameraSettings, output_pattern: Path, segment_sec: int = 2) -> list[str]:
+    """Continuously save independently readable Matroska transport segments."""
+    argv = _input_argv(camera)
+    argv.extend(
+        [
+            "-map",
+            "0:v:0",
+            "-map",
+            "0:a?",
+            "-c",
+            "copy",
+            "-f",
+            "segment",
+            "-segment_time",
+            str(max(1, int(segment_sec))),
+            "-reset_timestamps",
+            "1",
+            "-strftime",
+            "1",
+            "-segment_format",
+            "matroska",
+            str(output_pattern),
+        ]
+    )
     return argv
 
 
