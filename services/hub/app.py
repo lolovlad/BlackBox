@@ -703,6 +703,9 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
     templates.env.globals["vm_connection"] = vm_connection
     templates.env.globals["connection_profiles"] = {key: profile.as_dict() for key, profile in PROFILES.items()}
 
+    def _rule_source_namespace(vm_id: str) -> str:
+        return "vm_" + "".join(char if char.isalnum() else "_" for char in str(vm_id))
+
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         app.state.repo = repo
@@ -886,19 +889,61 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
             await _publish_alarm_edge(sample, event)
 
         def _evaluate_rules_sync(sample: TagSample) -> list[dict[str, Any]]:
-            document = repo.map_by_version(sample.map_version, getattr(sample.protocol, "value", sample.protocol)) or {}
-            fields = {str(field.get("name")) for field in document.get("fields", []) if isinstance(field, dict) and field.get("name")}
-            values = dict(sample.tags)
-            values.update(sample.analog)
-            values.update(sample.discrete)
-            values["active_alarms"] = list(sample.alerts)
-            for field in document.get("fields", []):
-                if isinstance(field, dict) and field.get("type") == "gpio" and field.get("bcm_pin") is not None:
-                    name = str(field.get("name") or f"GPIO_{field['bcm_pin']}")
-                    fields.add(name)
-                    values.setdefault(name, bool(sample.discrete.get(name, False)))
-            transitions = repo.evaluate_emergency_rules(str(sample.vm_id), sample.captured_at, values)
-            return [{**event, "kind": "emergency", "fields": sorted(fields)} for event in transitions]
+            latest_by_vm: dict[str, TagSample] = {}
+            vms = repo.list_vms()
+            known_vm_ids = {str(vm["id"]) for vm in vms}
+            for vm in vms:
+                vm_id = str(vm["id"])
+                latest = bus.latest_good_tags(vm_id) or bus.latest_tags(vm_id)
+                if latest is not None:
+                    latest_by_vm[vm_id] = latest
+            latest_by_vm[str(sample.vm_id)] = sample
+
+            values: dict[str, Any] = {}
+            for vm_id, latest in latest_by_vm.items():
+                prefix = _rule_source_namespace(vm_id)
+                source_values = dict(latest.tags)
+                source_values.update(latest.analog)
+                source_values.update(latest.discrete)
+                source_values["active_alarms"] = list(latest.alerts)
+                values.update({f"{prefix}.{key}": value for key, value in source_values.items()})
+
+            transitions: list[dict[str, Any]] = []
+            scoped_vm_ids = {
+                str(rule["vm_id"])
+                for rule in repo.list_emergency_rules()
+                if rule.get("vm_id") and str(rule["vm_id"]) in known_vm_ids
+            }
+            for owner_vm_id in scoped_vm_ids:
+                owner_values = dict(values)
+                owner = latest_by_vm.get(owner_vm_id)
+                if owner is not None:
+                    owner_values.update(owner.tags)
+                    owner_values.update(owner.analog)
+                    owner_values.update(owner.discrete)
+                    owner_values["active_alarms"] = list(owner.alerts)
+                for event in repo.evaluate_emergency_rules(
+                    owner_vm_id,
+                    sample.captured_at,
+                    owner_values,
+                    rule_scope="scoped",
+                ):
+                    transitions.append({**event, "kind": "emergency", "vm_id": owner_vm_id})
+
+            current_vm_id = str(sample.vm_id)
+            legacy_values = dict(values)
+            legacy_values.update(sample.tags)
+            legacy_values.update(sample.analog)
+            legacy_values.update(sample.discrete)
+            legacy_values["active_alarms"] = list(sample.alerts)
+            for event in repo.evaluate_emergency_rules(
+                current_vm_id,
+                sample.captured_at,
+                legacy_values,
+                rule_scope="global",
+            ):
+                transitions.append({**event, "kind": "emergency", "vm_id": current_vm_id})
+            return transitions
 
         async def rule_loop() -> None:
             while not stop_rules.is_set() or not rule_queue.empty():
@@ -909,13 +954,15 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
                 try:
                     transitions = await asyncio.to_thread(_evaluate_rules_sync, sample)
                     for event in transitions:
-                        await _publish_alarm_edge(sample, event)
+                        target_vm_id = str(event.get("vm_id") or sample.vm_id)
+                        event_sample = sample if target_vm_id == str(sample.vm_id) else sample.model_copy(update={"vm_id": UUID(target_vm_id)})
+                        await _publish_alarm_edge(event_sample, event)
                         try:
                             video_config = VideoConfig.model_validate(await asyncio.to_thread(repo.camera_document))
                             if event["state"] == "active":
                                 incident = await asyncio.to_thread(
                                     repo.register_incident_start,
-                                    str(sample.vm_id),
+                                    target_vm_id,
                                     name=str(event["name"]),
                                     kind="emergency",
                                     created_at=sample.captured_at,
@@ -927,7 +974,7 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
                             else:
                                 await asyncio.to_thread(
                                     repo.register_incident_end,
-                                    str(sample.vm_id),
+                                    target_vm_id,
                                     name=str(event["name"]),
                                     kind="emergency",
                                     created_at=sample.captured_at,
@@ -1937,15 +1984,22 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
         list_fields = {"active_alarms", "active_status", "alarms"}
         error_labels: set[str] = set()
         for vm in repo.list_vms():
-            if vm_id is not None and str(vm.get("id")) != vm_id:
-                continue
+            source_vm_id = str(vm.get("id"))
+            namespace = _rule_source_namespace(source_vm_id)
+            fields.add(f"{namespace}.active_alarms")
+            list_fields.add(f"{namespace}.active_alarms")
             document = repo.map_by_version(str(vm.get("map_version") or ""), str(vm.get("protocol") or "")) or {}
             for field in document.get("fields", []):
                 if not isinstance(field, dict) or not field.get("name"):
                     continue
-                fields.add(str(field["name"]))
+                name = str(field["name"])
+                fields.add(f"{namespace}.{name}")
+                if vm_id is None or source_vm_id == vm_id:
+                    fields.add(name)
                 if field.get("type") in {"bitfield", "alert"}:
-                    list_fields.add(str(field["name"]))
+                    list_fields.add(f"{namespace}.{name}")
+                    if vm_id is None or source_vm_id == vm_id:
+                        list_fields.add(name)
                 bits = field.get("bits")
                 if isinstance(bits, dict):
                     error_labels.update(str(label) for label in bits.values() if label is not None)
@@ -1980,7 +2034,12 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
                     "labels": labels,
                 })
             options[0]["labels"] = sorted(active_alarm_labels)
-            sources.append({"id": vm_id, "name": str(vm.get("name") or vm_id), "fields": options})
+            sources.append({
+                "id": vm_id,
+                "namespace": _rule_source_namespace(vm_id),
+                "name": str(vm.get("name") or vm_id),
+                "fields": options,
+            })
         return {"items": repo.list_emergency_rules(), "fields": sorted(fields), "sources": sources}
 
     @app.post("/api/v1/emergency-rules", dependencies=[Depends(csrf_protect)])

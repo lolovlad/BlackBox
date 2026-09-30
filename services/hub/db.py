@@ -649,7 +649,14 @@ class HubRepository:
                 raise
         return transitions
 
-    def evaluate_emergency_rules(self, vm_id: str, created_at: datetime, values: dict[str, Any]) -> list[dict[str, Any]]:
+    def evaluate_emergency_rules(
+        self,
+        vm_id: str,
+        created_at: datetime,
+        values: dict[str, Any],
+        *,
+        rule_scope: str = "all",
+    ) -> list[dict[str, Any]]:
         from .emergency_rules import evaluate_rule_expression
 
         moment = created_at if created_at.tzinfo is not None else created_at.replace(tzinfo=timezone.utc)
@@ -657,10 +664,20 @@ class HubRepository:
         with self.connect() as c:
             c.execute("BEGIN IMMEDIATE")
             try:
-                rules = c.execute(
-                    "SELECT * FROM emergency_rules WHERE is_deleted=0 AND (vm_id IS NULL OR vm_id=?) ORDER BY id",
-                    (vm_id,),
-                ).fetchall()
+                if rule_scope == "scoped":
+                    rules = c.execute(
+                        "SELECT * FROM emergency_rules WHERE is_deleted=0 AND vm_id=? ORDER BY id",
+                        (vm_id,),
+                    ).fetchall()
+                elif rule_scope == "global":
+                    rules = c.execute(
+                        "SELECT * FROM emergency_rules WHERE is_deleted=0 AND vm_id IS NULL ORDER BY id"
+                    ).fetchall()
+                else:
+                    rules = c.execute(
+                        "SELECT * FROM emergency_rules WHERE is_deleted=0 AND (vm_id IS NULL OR vm_id=?) ORDER BY id",
+                        (vm_id,),
+                    ).fetchall()
                 active_rows = c.execute("SELECT rule_id,event_id FROM emergency_active WHERE vm_id=?", (vm_id,)).fetchall()
                 active = {int(row["rule_id"]): int(row["event_id"]) for row in active_rows}
                 desired: dict[int, tuple[sqlite3.Row, bool | None]] = {}

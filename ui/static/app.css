@@ -2397,7 +2397,7 @@ html.bb-header-closed .bb-header-inner {
 .bb-rule-group + .bb-rule-group { position: relative; margin-top: .45rem; }
 .bb-rule-group + .bb-rule-group::before { content: "ИЛИ"; position: absolute; top: -1rem; left: 1rem; padding: .1rem .45rem; border-radius: 999px; background: var(--bb-orange); color: var(--bb-primary-ink); font-size: .65rem; font-weight: 800; }
 .bb-rule-group-head { display: flex; justify-content: space-between; align-items: center; min-height: 1.8rem; color: var(--bb-accent); font-size: .78rem; }
-.bb-rule-condition { display: grid; grid-template-columns: 3.2rem minmax(150px, 1.2fr) minmax(140px, .8fr) minmax(130px, 1fr) 2rem; gap: .5rem; align-items: center; }
+.bb-rule-condition { display: grid; grid-template-columns: 3.2rem minmax(140px, .9fr) minmax(150px, 1.2fr) minmax(130px, .8fr) minmax(120px, 1fr) 2rem; gap: .5rem; align-items: center; }
 .bb-rule-join { color: var(--bb-slate); font-size: .7rem; font-weight: 800; text-align: center; }
 .bb-rule-add-condition { justify-self: start; padding: .25rem .4rem; border: 0; background: transparent; color: var(--bb-accent); font: inherit; font-size: .78rem; font-weight: 700; cursor: pointer; }
 .bb-rule-advanced { padding: .7rem .8rem; border: 1px solid var(--bb-border); border-radius: 10px; background: var(--bb-surface); }

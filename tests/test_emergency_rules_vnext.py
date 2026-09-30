@@ -25,6 +25,15 @@ def test_rule_validator_and_evaluator_support_fields_and_active_alarm_lists():
         list_fields={"Status"},
         error_labels={"BUS Low Volt"},
     )[0]
+    mixed = "(vm_generator.RPM < 300) and (vm_gpio.GPIO_17 == True)"
+    assert validate_rule_expression(
+        mixed,
+        {"vm_generator.RPM", "vm_gpio.GPIO_17"},
+    )[0]
+    assert evaluate_rule_expression(
+        mixed,
+        {"vm_generator.RPM": 120, "vm_gpio.GPIO_17": True},
+    ) == (True, None)
 
 
 def test_emergency_rule_transitions_persist_duration_and_keep_snapshot(tmp_path):
@@ -60,6 +69,9 @@ def test_emergency_rules_can_be_scoped_to_one_vm(tmp_path):
     assert {item["name"] for item in vm_two} == {"Общее правило"}
     vm_one = repo.evaluate_emergency_rules("vm-1", moment, {"Pressure": 3})
     assert {item["name"] for item in vm_one} == {"Общее правило", scoped["name"]}
+    assert repo.evaluate_emergency_rules("vm-3", moment, {"Pressure": 3}, rule_scope="scoped") == []
+    global_only = repo.evaluate_emergency_rules("vm-3", moment, {"Pressure": 3}, rule_scope="global")
+    assert {item["name"] for item in global_only} == {"Общее правило"}
 
 
 def test_emergency_rule_api_requires_admin_and_csrf(tmp_path):

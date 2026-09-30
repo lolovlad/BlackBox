@@ -12,7 +12,7 @@
   const csrfToken = csrf ? decodeURIComponent(csrf.split('=').slice(1).join('=')) : '';
   let rules = [];
   let sources = [];
-  let groups = [[{ field: '', operator: 'lt', value: '' }]];
+  let groups = [[{ source: '', field: '', operator: 'lt', value: '' }]];
   let advancedMode = false;
 
   function esc(value) {
@@ -32,9 +32,9 @@
     return sources.find(function (item) { return item.id === id; }) || null;
   }
 
-  function fieldByKey(key) {
-    const source = sourceById(form.elements.vm_id.value);
-    return source ? source.fields.find(function (item) { return item.key === key; }) || null : null;
+  function fieldByKey(condition) {
+    const source = sourceById(condition.source);
+    return source ? source.fields.find(function (item) { return item.key === condition.field; }) || null : null;
   }
 
   function operators(field) {
@@ -45,9 +45,9 @@
   }
 
   function defaultCondition() {
-    const source = sourceById(form.elements.vm_id.value);
+    const source = sources.length ? sources[0] : null;
     const field = source && source.fields.length ? source.fields[0] : null;
-    return { field: field ? field.key : '', operator: field && field.type === 'list' ? 'contains' : 'lt', value: '' };
+    return { source: source ? source.id : '', field: field ? field.key : '', operator: field && field.type === 'list' ? 'contains' : 'lt', value: '' };
   }
 
   function valueControl(condition, field, groupIndex, conditionIndex) {
@@ -62,10 +62,13 @@
   }
 
   function renderGroups() {
-    const source = sourceById(form.elements.vm_id.value);
     groupsBox.innerHTML = groups.map(function (group, groupIndex) {
       const conditions = group.map(function (condition, conditionIndex) {
-        const field = fieldByKey(condition.field);
+        const source = sourceById(condition.source);
+        const field = fieldByKey(condition);
+        const sourceOptions = sources.map(function (item) {
+          return '<option value="' + esc(item.id) + '"' + selected(condition.source, item.id) + '>' + esc(item.name) + '</option>';
+        }).join('');
         const fieldOptions = (source ? source.fields : []).map(function (item) {
           return '<option value="' + esc(item.key) + '"' + selected(condition.field, item.key) + '>' + esc(item.label) + '</option>';
         }).join('');
@@ -74,6 +77,7 @@
         }).join('');
         return '<div class="bb-rule-condition">' +
           '<span class="bb-rule-join">' + (conditionIndex ? 'И' : 'ЕСЛИ') + '</span>' +
+          '<select data-rule-source data-group="' + groupIndex + '" data-condition="' + conditionIndex + '"><option value="">Источник</option>' + sourceOptions + '</select>' +
           '<select data-rule-field data-group="' + groupIndex + '" data-condition="' + conditionIndex + '"><option value="">Показатель</option>' + fieldOptions + '</select>' +
           '<select data-rule-operator data-group="' + groupIndex + '" data-condition="' + conditionIndex + '">' + operatorOptions + '</select>' +
           valueControl(condition, field, groupIndex, conditionIndex) +
@@ -87,15 +91,17 @@
   }
 
   function conditionExpression(condition) {
-    const field = fieldByKey(condition.field);
-    if (!field || !condition.value) return '';
+    const source = sourceById(condition.source);
+    const field = fieldByKey(condition);
+    if (!source || !field || !condition.value) return '';
+    const reference = source.namespace + '.' + field.key;
     if (field.type === 'list') {
-      return '(' + JSON.stringify(condition.value) + (condition.operator === 'not_contains' ? ' not in ' : ' in ') + field.key + ')';
+      return '(' + JSON.stringify(condition.value) + (condition.operator === 'not_contains' ? ' not in ' : ' in ') + reference + ')';
     }
     const operatorMap = { lt: '<', lte: '<=', gt: '>', gte: '>=', eq: '==', ne: '!=' };
     const value = field.type === 'boolean' ? (condition.value === 'true' ? 'True' : 'False') : Number(condition.value);
     if (field.type === 'number' && !Number.isFinite(value)) return '';
-    return '(' + field.key + ' ' + (operatorMap[condition.operator] || '==') + ' ' + String(value) + ')';
+    return '(' + reference + ' ' + (operatorMap[condition.operator] || '==') + ' ' + String(value) + ')';
   }
 
   function compileExpression() {
@@ -116,6 +122,7 @@
   function resetForm() {
     form.reset();
     form.elements.rule_id.value = '';
+    if (sources.length) form.elements.vm_id.value = sources[0].id;
     groups = [[defaultCondition()]];
     advancedMode = false;
     form.querySelector('.bb-rule-advanced').open = false;
@@ -182,11 +189,6 @@
     } catch (reason) { error.textContent = reason.message; }
   });
 
-  form?.elements.vm_id.addEventListener('change', function () {
-    groups = [[defaultCondition()]];
-    advancedMode = false;
-    renderGroups();
-  });
   form?.elements.expression.addEventListener('input', function () { advancedMode = true; syncExpression(); });
   groupsBox?.addEventListener('change', function (event) {
     const target = event.target;
@@ -194,9 +196,17 @@
     const conditionIndex = Number(target.dataset.condition);
     const condition = groups[groupIndex] && groups[groupIndex][conditionIndex];
     if (!condition) return;
-    if (target.hasAttribute('data-rule-field')) {
+    if (target.hasAttribute('data-rule-source')) {
+      condition.source = target.value;
+      const source = sourceById(condition.source);
+      const field = source && source.fields.length ? source.fields[0] : null;
+      condition.field = field ? field.key : '';
+      condition.operator = field && field.type === 'list' ? 'contains' : 'lt';
+      condition.value = field && field.type === 'boolean' ? 'true' : '';
+      renderGroups();
+    } else if (target.hasAttribute('data-rule-field')) {
       condition.field = target.value;
-      const field = fieldByKey(condition.field);
+      const field = fieldByKey(condition);
       condition.operator = field && field.type === 'list' ? 'contains' : 'lt';
       condition.value = field && field.type === 'boolean' ? 'true' : '';
       renderGroups();

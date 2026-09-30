@@ -10,14 +10,14 @@
     <div class="bb-rule-intro">
       <div>
         <h2 class="bb-section-title">Правила инцидентов</h2>
-        <p class="bb-page-lead">Сырые алерты и GPIO сохраняются в журнале. Запись инцидента начинается только при срабатывании одного из этих правил.</p>
+        <p class="bb-page-lead">В одном правиле можно объединять показатели разных ВМ и GPIO. Запись начинается только при срабатывании итогового условия.</p>
       </div>
     </div>
     <form id="bb-rule-form" class="bb-rule-builder">
       <input type="hidden" name="rule_id">
       <div class="bb-rule-meta">
-        <label class="bb-filter-field">Источник
-          <select name="vm_id" required><option value="">Выберите ВМ</option></select>
+        <label class="bb-filter-field">Инцидент относится к
+          <select name="vm_id" required><option value="">Выберите основную ВМ</option></select>
         </label>
         <label class="bb-filter-field">Название
           <input name="name" maxlength="255" required placeholder="Критически низкое давление">
@@ -40,12 +40,12 @@
       <div class="bb-actions"><button class="bb-btn" type="submit"><i class="bi bi-check-lg"></i> Сохранить правило</button><button class="bb-btn bb-btn-ghost" type="button" id="bb-rule-cancel" hidden>Отмена</button></div>
       <p class="bb-muted" id="bb-rule-error" role="status"></p>
     </form>
-    <div class="bb-table-wrap"><table class="bb-table"><thead><tr><th>Название</th><th>Источник</th><th>Условие</th><th></th></tr></thead><tbody id="bb-rule-rows"></tbody></table></div>
+    <div class="bb-table-wrap"><table class="bb-table"><thead><tr><th>Название</th><th>Основная ВМ</th><th>Условие</th><th></th></tr></thead><tbody id="bb-rule-rows"></tbody></table></div>
   </section>
   <section class="bb-incident-section">
     <div class="bb-page-toolbar"><h2 class="bb-section-title">История срабатываний</h2><button class="bb-btn bb-btn-secondary" id="bb-emergency-refresh" type="button"><i class="bi bi-arrow-clockwise"></i> Обновить</button></div>
     <div class="bb-table-wrap"><table class="bb-table"><thead><tr><th>Начало</th><th>Окончание</th><th>ВМ</th><th>Правило</th><th>Условие</th><th></th></tr></thead><tbody id="bb-emergency-rows"><tr><td colspan="6" class="bb-muted">Загрузка…</td></tr></tbody></table></div>
   </section>
 </section>
-<script defer src="/static/alarms.js?v={{ app_version }}-ui3"></script>
+<script defer src="/static/alarms.js?v={{ app_version }}-ui5"></script>
 {% endblock %}
