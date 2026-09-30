@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>{% block title %}BlackBox Hub{% endblock %}</title>
   <link rel="stylesheet" href="/static/app.css?v={{ app_version }}">
+  <style>#bb-boot{position:fixed;inset:0;z-index:10000;display:flex;align-items:center;justify-content:center;background:#e6eaf6;color:#2d3540}#bb-boot[hidden]{display:none!important}</style>
   <link rel="stylesheet" href="/static/vendor/bootstrap-icons/bootstrap-icons.min.css">
   <script>
     (function () {
@@ -16,6 +17,7 @@
         var el = boot();
         if (!el) return;
         el.classList.remove('is-done');
+        el.hidden = false;
         if (locked) el.dataset.locked = '1';
         else delete el.dataset.locked;
         var titleNode = el.querySelector('[data-boot-title]');
@@ -27,6 +29,7 @@
         var el = boot();
         if (!el || el.dataset.locked === '1') return;
         el.classList.add('is-done');
+        el.hidden = true;
       };
       document.addEventListener('DOMContentLoaded', function () {
         window.bbBootDone();
@@ -71,6 +74,7 @@
         if (!el) return;
         delete el.dataset.locked;
         el.classList.add('is-done');
+        el.hidden = true;
       });
     })();
   </script>
