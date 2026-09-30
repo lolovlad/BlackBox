@@ -2,8 +2,8 @@
 {% block title %}Записи · BlackBox{% endblock %}
 {% block body_class %}bb-wide{% endblock %}
 {% block content %}
-<section class="bb-explorer" id="bb-explorer">
-  <div class="bb-explorer-head">
+<section class="bb-card bb-explorer" id="bb-explorer">
+  <div class="bb-page-toolbar">
     <div>
       <h1 class="bb-page-title">Записи</h1>
       <p class="bb-page-lead">Файлы с носителя. «Инциденты» — запись по аварии, «Движение» — запись по детектору, папка камеры — ручной эпизод.</p>
@@ -12,20 +12,20 @@
   <div class="bb-explorer-panel">
     <div class="bb-explorer-toolbar">
       <div class="bb-explorer-nav" aria-label="Навигация">
-        <button type="button" class="bb-explorer-tool" id="bb-explorer-back" title="Назад" aria-label="Назад"><i class="bi bi-arrow-left"></i></button>
-        <button type="button" class="bb-explorer-tool" id="bb-explorer-up" title="Вверх" aria-label="Вверх"><i class="bi bi-arrow-up"></i></button>
-        <button type="button" class="bb-explorer-tool" id="bb-explorer-refresh" title="Обновить" aria-label="Обновить"><i class="bi bi-arrow-clockwise"></i></button>
+        <button type="button" class="bb-btn bb-btn-secondary bb-btn-sm bb-icon-btn" id="bb-explorer-back" title="Назад" aria-label="Назад"><i class="bi bi-arrow-left"></i></button>
+        <button type="button" class="bb-btn bb-btn-secondary bb-btn-sm bb-icon-btn" id="bb-explorer-up" title="Вверх" aria-label="Вверх"><i class="bi bi-arrow-up"></i></button>
+        <button type="button" class="bb-btn bb-btn-secondary bb-btn-sm bb-icon-btn" id="bb-explorer-refresh" title="Обновить" aria-label="Обновить"><i class="bi bi-arrow-clockwise"></i></button>
       </div>
       <nav id="bb-explorer-crumbs" class="bb-explorer-crumbs" aria-label="Адрес"></nav>
-      <button type="button" class="bb-btn" id="bb-explorer-download" disabled><i class="bi bi-download"></i> Скачать</button>
+      <button type="button" class="bb-btn bb-btn-sm" id="bb-explorer-download" disabled><i class="bi bi-download"></i> Скачать</button>
     </div>
     <div class="bb-explorer-body">
       <aside class="bb-explorer-side" aria-label="Папки">
         <p class="bb-explorer-side-title">Папки</p>
         <div id="bb-explorer-tree" class="bb-explorer-tree"></div>
       </aside>
-      <div class="bb-explorer-list-wrap">
-        <table class="bb-explorer-table">
+      <div class="bb-table-wrap bb-explorer-list-wrap">
+        <table class="bb-table bb-explorer-table">
           <thead>
             <tr>
               <th><button type="button" data-sort="name">Имя</button></th>

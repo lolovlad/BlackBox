@@ -1,6 +1,8 @@
 # UI
 
-The Hub serves this Jinja2 + Tailwind + Alpine + HTMX + vanilla JavaScript UI.
+The Hub serves a Jinja2 UI styled by the shared `ui/static/app.css` design
+system (`bb-*` components), with Alpine, HTMX and vanilla JavaScript for
+interactivity. It does not use Vue or Element Plus.
 HTML forms and mutations use the versioned API with CSRF headers; persistent VM
 status, tags, logs and alarm updates use `/ws/v1/events`.
 

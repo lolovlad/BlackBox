@@ -4,46 +4,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>{% block title %}BlackBox Hub{% endblock %}</title>
-  <style>
-    html { background: #e6eaf6; }
-    #bb-boot {
-      position: fixed;
-      inset: 0;
-      z-index: 10000;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      padding: 1.5rem;
-      background: #e6eaf6;
-      color: #2d3540;
-      font-family: "Segoe UI", system-ui, sans-serif;
-    }
-    #bb-boot.is-done { display: none; }
-    .bb-boot-card {
-      display: grid;
-      justify-items: center;
-      gap: 0.35rem;
-      min-width: min(100%, 18rem);
-      padding: 1.3rem 1.5rem 1.15rem;
-      border: 1px solid #c3cce0;
-      border-radius: 16px;
-      background: #fff;
-      box-shadow: 0 8px 28px rgba(15, 26, 46, 0.08);
-      text-align: center;
-    }
-    .bb-boot-spin {
-      width: 1.8rem;
-      height: 1.8rem;
-      margin-bottom: 0.35rem;
-      border: 3px solid #d5deee;
-      border-top-color: #36467a;
-      border-radius: 50%;
-      animation: bb-boot-spin 0.7s linear infinite;
-    }
-    .bb-boot-card strong { font-size: 1.05rem; }
-    .bb-boot-card p { margin: 0; color: #36467a; }
-    @keyframes bb-boot-spin { to { transform: rotate(360deg); } }
-  </style>
+  <link rel="stylesheet" href="/static/app.css?v={{ app_version }}">
+  <link rel="stylesheet" href="/static/vendor/bootstrap-icons/bootstrap-icons.min.css">
   <script>
     (function () {
       try {
@@ -66,12 +28,8 @@
         if (!el || el.dataset.locked === '1') return;
         el.classList.add('is-done');
       };
-      window.bbStyleMark = function () {
-        window.__bbStyled = true;
-        if (document.readyState !== 'loading') window.bbBootDone();
-      };
       document.addEventListener('DOMContentLoaded', function () {
-        if (window.__bbStyled) window.bbBootDone();
+        window.bbBootDone();
         setTimeout(function () { window.bbBootDone(); }, 4000);
         var form = document.querySelector('.bb-login-form');
         if (form) {
@@ -107,25 +65,6 @@
           setTimeout(function () { entered.hidden = true; }, 6000);
         }
       });
-      document.addEventListener('click', function (event) {
-        if (event.defaultPrevented || event.button !== 0) return;
-        if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
-        var source = event.target;
-        if (source && !source.closest) source = source.parentElement;
-        var link = source && source.closest ? source.closest('a[href]') : null;
-        if (!link || link.target === '_blank' || link.hasAttribute('download')) return;
-        var url;
-        try { url = new URL(link.href, location.href); } catch (e) { return; }
-        if (url.origin !== location.origin) return;
-        if (url.pathname === location.pathname && url.search === location.search) return;
-        window.bbBoot('Загрузка', 'Открываем страницу…', true);
-      });
-      document.addEventListener('submit', function (event) {
-        if (event.defaultPrevented) return;
-        var form = event.target;
-        if (!form || !form.classList || form.classList.contains('bb-login-form') || form.target === '_blank') return;
-        window.bbBoot('Загрузка', 'Открываем страницу…', true);
-      });
       window.addEventListener('pageshow', function (event) {
         if (!event.persisted) return;
         var el = boot();
@@ -135,12 +74,6 @@
       });
     })();
   </script>
-  <link rel="stylesheet" href="/static/app.css?v={{ app_version }}" media="print" onload="this.media='all';window.bbStyleMark&&window.bbStyleMark()">
-  <link rel="stylesheet" href="/static/vendor/bootstrap-icons/bootstrap-icons.min.css" media="print" onload="this.media='all'">
-  <noscript>
-    <link rel="stylesheet" href="/static/app.css?v={{ app_version }}">
-    <link rel="stylesheet" href="/static/vendor/bootstrap-icons/bootstrap-icons.min.css">
-  </noscript>
   <script src="/static/vendor/htmx.min.js"></script>
   <script type="application/json" id="bb-connection-profiles">{{ connection_profiles | default({}) | tojson }}</script>
   <script defer src="/static/app.js?v={{ app_version }}"></script>
@@ -165,7 +98,7 @@
           <span class="bb-brand-meta">{{ app_vendor }} · v{{ app_version }}</span>
         </span>
       </a>
-      <button type="button" class="bb-header-toggle" data-header-toggle aria-expanded="true" aria-controls="bb-nav">
+      <button type="button" class="bb-btn bb-btn-secondary bb-btn-sm bb-header-toggle" data-header-toggle aria-expanded="true" aria-controls="bb-nav">
         <i class="bi bi-chevron-up" aria-hidden="true"></i>
         <span data-header-toggle-label>Свернуть</span>
       </button>
