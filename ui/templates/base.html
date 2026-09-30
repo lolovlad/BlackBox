@@ -4,15 +4,137 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>{% block title %}BlackBox Hub{% endblock %}</title>
-  <link rel="stylesheet" href="/static/vendor/tailwind.min.css">
-  <link rel="stylesheet" href="/static/vendor/bootstrap-icons/bootstrap-icons.min.css">
-  <link rel="stylesheet" href="/static/app.css?v={{ app_version }}">
+  <style>
+    html { background: #e6eaf6; }
+    #bb-boot {
+      position: fixed;
+      inset: 0;
+      z-index: 10000;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 1.5rem;
+      background: #e6eaf6;
+      color: #2d3540;
+      font-family: "Segoe UI", system-ui, sans-serif;
+    }
+    #bb-boot.is-done { display: none; }
+    .bb-boot-card {
+      display: grid;
+      justify-items: center;
+      gap: 0.35rem;
+      min-width: min(100%, 18rem);
+      padding: 1.3rem 1.5rem 1.15rem;
+      border: 1px solid #c3cce0;
+      border-radius: 16px;
+      background: #fff;
+      box-shadow: 0 8px 28px rgba(15, 26, 46, 0.08);
+      text-align: center;
+    }
+    .bb-boot-spin {
+      width: 1.8rem;
+      height: 1.8rem;
+      margin-bottom: 0.35rem;
+      border: 3px solid #d5deee;
+      border-top-color: #36467a;
+      border-radius: 50%;
+      animation: bb-boot-spin 0.7s linear infinite;
+    }
+    .bb-boot-card strong { font-size: 1.05rem; }
+    .bb-boot-card p { margin: 0; color: #36467a; }
+    @keyframes bb-boot-spin { to { transform: rotate(360deg); } }
+  </style>
+  <script>
+    (function () {
+      function boot() { return document.getElementById('bb-boot'); }
+      window.bbBoot = function (title, text, locked) {
+        var el = boot();
+        if (!el) return;
+        el.classList.remove('is-done');
+        if (locked) el.dataset.locked = '1';
+        else delete el.dataset.locked;
+        var titleNode = el.querySelector('[data-boot-title]');
+        var textNode = el.querySelector('[data-boot-text]');
+        if (titleNode && title) titleNode.textContent = title;
+        if (textNode && text) textNode.textContent = text;
+      };
+      window.bbBootDone = function () {
+        var el = boot();
+        if (!el || el.dataset.locked === '1') return;
+        el.classList.add('is-done');
+      };
+      window.bbStyleMark = function () {
+        window.__bbStyled = true;
+        if (document.readyState !== 'loading') window.bbBootDone();
+      };
+      document.addEventListener('DOMContentLoaded', function () {
+        if (window.__bbStyled) window.bbBootDone();
+        setTimeout(function () { window.bbBootDone(); }, 4000);
+        var form = document.querySelector('.bb-login-form');
+        if (form) {
+          form.addEventListener('submit', function () {
+            var button = form.querySelector('[type="submit"]');
+            if (button) {
+              button.disabled = true;
+              button.textContent = 'Входим…';
+            }
+            window.bbBoot('Вход в систему', 'Проверяем логин и пароль…', true);
+          });
+        }
+        var entered = document.querySelector('[data-entered]');
+        if (entered) {
+          document.cookie = 'bb_flash=; Max-Age=0; Path=/; SameSite=Lax' + (location.protocol === 'https:' ? '; Secure' : '');
+          setTimeout(function () { entered.hidden = true; }, 6000);
+        }
+      });
+      document.addEventListener('click', function (event) {
+        if (event.defaultPrevented || event.button !== 0) return;
+        if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+        var source = event.target;
+        if (source && !source.closest) source = source.parentElement;
+        var link = source && source.closest ? source.closest('a[href]') : null;
+        if (!link || link.target === '_blank' || link.hasAttribute('download')) return;
+        var url;
+        try { url = new URL(link.href, location.href); } catch (e) { return; }
+        if (url.origin !== location.origin) return;
+        if (url.pathname === location.pathname && url.search === location.search) return;
+        window.bbBoot('Загрузка', 'Открываем страницу…', true);
+      });
+      document.addEventListener('submit', function (event) {
+        if (event.defaultPrevented) return;
+        var form = event.target;
+        if (!form || !form.classList || form.classList.contains('bb-login-form') || form.target === '_blank') return;
+        window.bbBoot('Загрузка', 'Открываем страницу…', true);
+      });
+      window.addEventListener('pageshow', function (event) {
+        if (!event.persisted) return;
+        var el = boot();
+        if (!el) return;
+        delete el.dataset.locked;
+        el.classList.add('is-done');
+      });
+    })();
+  </script>
+  <link rel="stylesheet" href="/static/app.css?v={{ app_version }}" media="print" onload="this.media='all';window.bbStyleMark&&window.bbStyleMark()">
+  <link rel="stylesheet" href="/static/vendor/bootstrap-icons/bootstrap-icons.min.css" media="print" onload="this.media='all'">
+  <noscript>
+    <link rel="stylesheet" href="/static/app.css?v={{ app_version }}">
+    <link rel="stylesheet" href="/static/vendor/bootstrap-icons/bootstrap-icons.min.css">
+  </noscript>
   <script src="/static/vendor/htmx.min.js"></script>
   <script type="application/json" id="bb-connection-profiles">{{ connection_profiles | default({}) | tojson }}</script>
   <script defer src="/static/app.js?v={{ app_version }}"></script>
   <script defer src="/static/vendor/alpine.min.js"></script>
 </head>
 <body class="bb-body {% block body_class %}{% endblock %}" x-data="bbShell()" @bb-toast.window="pushToast($event.detail)">
+  {% set just_entered = user and request.cookies.get('bb_flash') == 'entered' %}
+  <div id="bb-boot" role="status" aria-live="polite">
+    <div class="bb-boot-card">
+      <span class="bb-boot-spin" aria-hidden="true"></span>
+      <strong data-boot-title>{% if just_entered %}Вы вошли{% else %}Загрузка{% endif %}</strong>
+      <p data-boot-text>{% if just_entered %}{{ user.username }}, открываем систему…{% elif user %}Открываем страницу…{% else %}Открываем страницу входа…{% endif %}</p>
+    </div>
+  </div>
   {% if user %}
   <header class="bb-header">
     <div class="bb-header-inner">
@@ -29,6 +151,7 @@
         <a href="/data" class="bb-nav-link{% if path.startswith('/data') %} is-active{% endif %}"><i class="bi bi-table"></i> Данные</a>
         <a href="/charts" class="bb-nav-link{% if path.startswith('/charts') %} is-active{% endif %}"><i class="bi bi-graph-up"></i> Графики</a>
         <a href="/incidents" class="bb-nav-link{% if path.startswith('/incidents') %} is-active{% endif %}"><i class="bi bi-exclamation-diamond"></i> Инциденты</a>
+        <a href="/recordings" class="bb-nav-link{% if path.startswith('/recordings') %} is-active{% endif %}"><i class="bi bi-folder2-open"></i> Записи</a>
         <a href="/alarms" class="bb-nav-link{% if path.startswith('/alarms') %} is-active{% endif %}"><i class="bi bi-bell"></i> Аварии</a>
         <a href="/vms" class="bb-nav-link{% if path.startswith('/vms') or path.startswith('/admin/vms') %} is-active{% endif %}"><i class="bi bi-hdd-stack"></i> ВМ</a>
         {% if user.role == 'admin' %}
@@ -52,6 +175,9 @@
   </div>
 
   <main class="bb-main">
+    {% if just_entered %}
+    <p class="bb-entered" role="status" data-entered>Вы вошли в систему как {{ user.username }}</p>
+    {% endif %}
     {% block content %}{% endblock %}
   </main>
 </body>

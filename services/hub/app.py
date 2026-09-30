@@ -33,6 +33,7 @@ from bb_platform.parser import adapt_legacy_map, diagnose_read, field_channel, f
 
 from services.video.retention import measure_video_storage, purge_motion_over_quota
 from services.video.settings import CameraSettings, VideoConfig, config_estimates
+from .recordings import RecordingError, annotate_entries, crumbs, incident_folder_label, list_recordings, media_type_for, recording_file
 from .emergency_rules import validate_rule_expression
 
 from workers.gpio.pins import pins_from_fields
@@ -2126,6 +2127,50 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
 
         return StreamingResponse(stream_mp4(), media_type="video/mp4", headers={"Content-Disposition": "inline", "Cache-Control": "private, no-store"})
 
+    def _recording_root() -> tuple[Path, dict[str, str]]:
+        config = VideoConfig.model_validate(repo.camera_document())
+        try:
+            root = Path(_video_output_dir(repo, cfg, config))
+        except HTTPException:
+            root = cfg.data_root / config.video_subdir
+        return root, {camera.id: camera.name for camera in config.cameras}
+
+    def _incident_labels(relative: str) -> dict[str, str]:
+        if relative != "incidents" and not relative.startswith("incidents/"):
+            return {}
+        labels: dict[str, str] = {}
+        names = {str(vm["id"]): str(vm["name"]) for vm in repo.list_vms()}
+        for item in repo.list_incidents(limit=500):
+            alerts = item.get("alerts") or []
+            alert_name = str(alerts[0].get("name") or "") if alerts else ""
+            if not alert_name:
+                alert_name = names.get(str(item.get("vm_id") or ""), "")
+            labels[str(item["id"])] = incident_folder_label(str(item.get("started_at") or ""), alert_name)
+        return labels
+
+    @app.get("/api/v1/video/files")
+    async def video_files(request: Request, path: str = ""):
+        current_user(request, repo, cfg)
+        root, cameras = _recording_root()
+        try:
+            payload = list_recordings(root, path)
+        except RecordingError as exc:
+            raise HTTPException(404, detail={"code": "recording_missing", "message": "Папка не найдена"}) from exc
+        incidents = _incident_labels(str(payload["path"]))
+        annotate_entries(payload["entries"], str(payload["path"]), cameras, incidents)
+        payload["crumbs"] = crumbs(str(payload["path"]), cameras, incidents)
+        return payload
+
+    @app.get("/api/v1/video/files/download")
+    async def video_file_download(request: Request, path: str = ""):
+        current_user(request, repo, cfg)
+        root, _cameras = _recording_root()
+        try:
+            file = recording_file(root, path)
+        except RecordingError as exc:
+            raise HTTPException(404, detail={"code": "recording_missing", "message": "Файл не найден"}) from exc
+        return FileResponse(file, filename=file.name, media_type=media_type_for(file))
+
     @app.post("/api/v1/internal/video/status")
     async def video_status(payload: VideoStatusBody, request: Request):
         _video_auth(request)
@@ -2410,6 +2455,7 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
         access, refresh, _ = issue_tokens(repo, cfg, account)
         out = RedirectResponse(destination or "/dashboard", status_code=303)
         set_auth_cookies(out, access, refresh, secrets.token_urlsafe(24), secure=cfg.cookie_secure, access_ttl=cfg.access_ttl_seconds, refresh_ttl=cfg.refresh_ttl_seconds)
+        out.set_cookie("bb_flash", "entered", max_age=120, httponly=False, samesite="lax", secure=cfg.cookie_secure, path="/")
         return out
 
     def _require_admin_html(request: Request):
@@ -2969,6 +3015,14 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
         except HTTPException:
             return _login_redirect(request)
         return templates.TemplateResponse(request=request, name="incidents.html", context={"user": account, "vms": repo.list_vms()})
+
+    @app.get("/recordings", response_class=HTMLResponse)
+    async def recordings_page(request: Request):
+        try:
+            account = current_user(request, repo, cfg)
+        except HTTPException:
+            return _login_redirect(request)
+        return templates.TemplateResponse(request=request, name="recordings.html", context={"user": account})
 
     @app.get("/alarms", response_class=HTMLResponse)
     async def alarms_page(request: Request):

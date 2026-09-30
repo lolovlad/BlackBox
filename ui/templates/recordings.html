@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block title %}Записи · BlackBox{% endblock %}
+{% block body_class %}bb-wide{% endblock %}
+{% block content %}
+<section class="bb-explorer" id="bb-explorer">
+  <div class="bb-explorer-head">
+    <h1 class="bb-page-title">Записи</h1>
+    <p class="bb-page-lead">Файлы с носителя. «Инциденты» — запись по аварии, «Движение» — запись по детектору, папка камеры — ручной эпизод.</p>
+  </div>
+  <div class="bb-explorer-toolbar">
+    <button type="button" class="bb-explorer-tool" id="bb-explorer-back" title="Назад" aria-label="Назад"><i class="bi bi-arrow-left"></i></button>
+    <button type="button" class="bb-explorer-tool" id="bb-explorer-up" title="Вверх" aria-label="Вверх"><i class="bi bi-arrow-up"></i></button>
+    <button type="button" class="bb-explorer-tool" id="bb-explorer-refresh" title="Обновить" aria-label="Обновить"><i class="bi bi-arrow-clockwise"></i></button>
+    <nav id="bb-explorer-crumbs" class="bb-explorer-crumbs" aria-label="Адрес"></nav>
+    <button type="button" class="bb-btn bb-btn-sm" id="bb-explorer-download" disabled><i class="bi bi-download"></i> Скачать</button>
+  </div>
+  <div class="bb-explorer-body">
+    <aside id="bb-explorer-tree" class="bb-explorer-tree" aria-label="Папки"></aside>
+    <div class="bb-explorer-list-wrap">
+      <table class="bb-explorer-table">
+        <thead>
+          <tr>
+            <th><button type="button" data-sort="name">Имя</button></th>
+            <th><button type="button" data-sort="modified">Дата изменения</button></th>
+            <th><button type="button" data-sort="type">Тип</button></th>
+            <th><button type="button" data-sort="size">Размер</button></th>
+          </tr>
+        </thead>
+        <tbody id="bb-explorer-rows"></tbody>
+      </table>
+    </div>
+  </div>
+  <div id="bb-explorer-status" class="bb-explorer-status"></div>
+</section>
+<script defer src="/static/recordings.js?v={{ app_version }}"></script>
+{% endblock %}

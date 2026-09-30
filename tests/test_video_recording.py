@@ -25,6 +25,7 @@ from services.video.settings import (
 )
 from services.video.supervisor import Supervisor
 from services.hub.db import HubRepository
+from services.hub.recordings import RecordingError, list_recordings, recording_file
 from tests.test_hub_vnext import _client
 
 
@@ -734,3 +735,87 @@ def test_motion_quota_deletes_old_clips_and_keeps_incidents(tmp_path: Path):
     kept = repo.get_episode(incident_episode)
     assert kept["paths"] == [str(incident)]
     assert kept["message"] == ""
+
+
+def test_recording_library_lists_saved_clips_and_rejects_escape(tmp_path: Path):
+    root = tmp_path / "video"
+    clip = root / "motion" / "cam1" / "clip.mkv"
+    clip.parent.mkdir(parents=True)
+    clip.write_bytes(b"abc")
+    secret = root / ".buffer" / "cam1" / "secret.mkv"
+    secret.parent.mkdir(parents=True)
+    secret.write_bytes(b"no")
+    listed = list_recordings(root, "")
+    assert [item["name"] for item in listed["entries"]] == ["motion"]
+    nested = list_recordings(root, "motion/cam1")
+    assert nested["place"] == "motion"
+    assert nested["entries"][0]["name"] == "clip.mkv"
+    assert nested["entries"][0]["size"] == 3
+    assert recording_file(root, "motion/cam1/clip.mkv").read_bytes() == b"abc"
+    with pytest.raises(RecordingError):
+        list_recordings(root, "../hub.db")
+    with pytest.raises(RecordingError):
+        list_recordings(root, ".buffer/cam1")
+    with pytest.raises(RecordingError):
+        recording_file(root, "motion/cam1/notes.txt")
+
+
+def test_recordings_page_lists_and_downloads_incident_and_motion_files(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("BB_VIDEO_TOKEN", "video-secret")
+    with _client(tmp_path) as client:
+        assert client.get("/api/v1/video/files").status_code == 401
+        assert client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin-password"}).status_code == 200
+        page = client.get("/recordings")
+        assert page.status_code == 200
+        assert "bb-explorer" in page.text
+        assert "запись по детектору" in page.text
+        assert "/static/recordings.js" in page.text
+        cameras = client.get("/cameras")
+        assert "Файлы записей" in cameras.text
+
+        csrf = client.cookies.get("bb_csrf")
+        saved = client.put(
+            "/api/v1/cameras",
+            json={"cameras": [_camera().model_dump(mode="json")]},
+            headers={"X-CSRF-Token": csrf},
+        )
+        assert saved.status_code == 200
+        moment = datetime(2026, 9, 30, 10, 0, tzinfo=timezone.utc)
+        incident = client.app.state.repo.register_incident_start(
+            "vm-1", name="Давление", kind="alert", created_at=moment, camera_ids=["cam1"]
+        )
+        video = tmp_path / "data" / "video"
+        motion = video / "motion" / "cam1" / "ep1" / "20260930_100000.mkv"
+        alarm = video / "incidents" / incident["id"] / "cam1" / "20260930_100002.mkv"
+        manual = video / "cam1" / "manual.mp4"
+        hidden = video / ".buffer" / "cam1" / "secret.mkv"
+        note = motion.parent / "notes.txt"
+        for path, payload in (
+            (motion, b"motion-clip"),
+            (alarm, b"alarm-clip"),
+            (manual, b"manual-clip"),
+            (hidden, b"secret"),
+            (note, b"nope"),
+        ):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(payload)
+
+        root = client.get("/api/v1/video/files").json()
+        labels = {item["name"]: item["label"] for item in root["entries"]}
+        assert labels["incidents"] == "Инциденты"
+        assert labels["motion"] == "Движение"
+        assert labels["cam1"] == "Вход"
+        assert ".buffer" not in labels
+        opened = client.get("/api/v1/video/files", params={"path": f"incidents/{incident['id']}"})
+        assert opened.status_code == 200
+        assert "Давление" in opened.json()["crumbs"][-1]["label"]
+        motion_dir = client.get("/api/v1/video/files", params={"path": "motion/cam1/ep1"}).json()
+        assert [item["name"] for item in motion_dir["entries"]] == ["20260930_100000.mkv"]
+        assert motion_dir["place"] == "motion"
+        downloaded = client.get("/api/v1/video/files/download", params={"path": "motion/cam1/ep1/20260930_100000.mkv"})
+        assert downloaded.status_code == 200
+        assert downloaded.content == b"motion-clip"
+        assert "attachment" in downloaded.headers["content-disposition"]
+        assert client.get("/api/v1/video/files", params={"path": "../hub.db"}).status_code == 404
+        assert client.get("/api/v1/video/files/download", params={"path": "motion/cam1/ep1/notes.txt"}).status_code == 404
+        assert client.get("/api/v1/video/files", params={"path": ".buffer/cam1"}).status_code == 404
