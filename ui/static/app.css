@@ -87,8 +87,7 @@ html { background: var(--bb-bg); }
 }
 
 .bb-header {
-  position: sticky;
-  top: 0;
+  position: relative;
   z-index: 40;
   background: var(--bb-navy);
   color: var(--bb-surface);
@@ -2257,6 +2256,7 @@ html.bb-header-closed .bb-header-inner {
   letter-spacing: 0.01em;
 }
 .bb-camera-live {
+  position: static;
   display: grid;
   grid-template-columns: minmax(220px, 420px) minmax(0, 1fr);
   gap: 1rem;
