@@ -126,6 +126,11 @@ services:
       BB_HUB_URL: http://hub:8080
       BB_VIDEO_TOKEN: ${BB_VIDEO_TOKEN:-blackbox-video-token}
       BB_DATA_ROOT: /data
+      BB_VIDEO_BUFFER_ROOT: /ram/video-buffer
+    tmpfs:
+      # Ceiling only: tmpfs uses RAM for the bytes actually written.
+      # The ring keeps incident_pre_sec, then closed segments are copied to the archive.
+      - /ram/video-buffer:rw,nosuid,nodev,noexec,size=2g
     depends_on:
       hub:
         condition: service_healthy

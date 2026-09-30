@@ -16,6 +16,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
+from urllib.parse import quote
 from uuid import UUID
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, UploadFile, WebSocket, WebSocketDisconnect
@@ -29,6 +30,7 @@ from pydantic import BaseModel, Field, ValidationError
 from bb_platform.contracts import AlarmEvent, MapDocument, Quality, RawBatch, ResourceKind, TagSample, VmCommand, VmLifecycle, VmProtocol, VmStatus, WorkerCommandAck, WorkerError, WorkerHeartbeat, WorkerRegister
 from bb_platform.parser import adapt_legacy_map, diagnose_read, field_channel, field_label, parse_batch
 
+from services.video.retention import measure_video_storage, purge_motion_over_quota
 from services.video.settings import CameraSettings, VideoConfig, config_estimates
 
 from workers.gpio.pins import pins_from_fields
@@ -43,7 +45,19 @@ from .link import vm_link_status
 from .monitor import collect_system_monitor, gpio_panel
 from .probe import run_probe
 from .registry import PROTOCOLS, protocol_spec
-from .security import ACCESS_COOKIE, CSRF_COOKIE, REFRESH_COOKIE, _decode, csrf_protect, current_user, issue_tokens, set_auth_cookies
+from .security import (
+    ACCESS_COOKIE,
+    REFRESH_COOKIE,
+    AccessCookieMiddleware,
+    _decode,
+    clear_auth_cookies,
+    csrf_protect,
+    current_user,
+    issue_tokens,
+    mint_access_from_refresh_token,
+    safe_next_path,
+    set_auth_cookies,
+)
 from .state import EventBus
 from .storage import ParquetStore, StorageUnavailable, purge_vm_directories
 from .telemetry import CHART_POINT_CAP, PAGE_SIZE, READ_ROW_CAP, chart_payload, collect_roots, column_defs, describe_sources, format_timestamp, page_table, parse_bound, query_measurements, query_window, rows_as_csv
@@ -168,6 +182,16 @@ class EpisodeEventItem(BaseModel):
 
 class EpisodeEventBody(BaseModel):
     items: list[EpisodeEventItem] = Field(default_factory=list)
+
+
+class MotionEdgeItem(BaseModel):
+    camera_id: str = Field(min_length=1, max_length=64)
+    state: Literal["start", "stop"]
+    at: str = ""
+
+
+class MotionEdgeBody(BaseModel):
+    items: list[MotionEdgeItem] = Field(default_factory=list)
 
 
 class VideoLogItem(BaseModel):
@@ -478,6 +502,29 @@ def _video_output_dir(repo: HubRepository, cfg: HubConfig, config: VideoConfig) 
     descriptor = repo.resource_by_id(resource_id) or {}
     base = Path(str(descriptor.get("path") or cfg.data_root))
     return str(base / config.video_subdir)
+
+
+def purge_video_motion(repo: HubRepository, cfg: HubConfig) -> list[str]:
+    """Delete oldest motion files once the video directory is over its quota."""
+    config = VideoConfig.model_validate(repo.camera_document())
+    if config.motion_quota_gb <= 0:
+        return []
+    try:
+        root = Path(_video_output_dir(repo, cfg, config))
+    except HTTPException:
+        return []
+    busy = {
+        (str(item.get("camera_id") or ""), str(item.get("id") or ""))
+        for item in repo.open_episodes()
+        if not item.get("incident_id")
+    }
+    removed = purge_motion_over_quota(root, int(config.motion_quota_gb) * 1024 * 1024 * 1024, busy)
+    if not removed:
+        return []
+    paths = [str(path) for path in removed]
+    repo.note_purged_motion_files(paths)
+    repo.record_audit(None, "video.motion.purge", None, {"count": len(paths)})
+    return paths
 
 
 def _vm_storage_roots(vm: dict[str, Any], repo: HubRepository, cfg: HubConfig) -> list[Path]:
@@ -887,6 +934,19 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
 
         system_task = asyncio.create_task(system_loop())
 
+        async def video_retention_loop() -> None:
+            while not stop_system.is_set():
+                try:
+                    await asyncio.to_thread(purge_video_motion, repo, cfg)
+                except Exception:
+                    logger.exception("video retention failed")
+                try:
+                    await asyncio.wait_for(stop_system.wait(), timeout=60)
+                except asyncio.TimeoutError:
+                    pass
+
+        retention_task = asyncio.create_task(video_retention_loop())
+
         async def reconcile() -> None:
             while not stop_reconciler.is_set():
                 if docker_manager.client is not None:
@@ -1003,6 +1063,7 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
         yield
         stop_system.set()
         await system_task
+        await retention_task
         await app.state.ingest_queue.join()
         for target_store in app.state.storage_stores.values():
             try:
@@ -1022,6 +1083,7 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
             pass
 
     app = FastAPI(title="BlackBox Hub", version=HUB_VERSION, lifespan=lifespan)
+    app.add_middleware(AccessCookieMiddleware, repo=repo, cfg=cfg)
     app.mount("/static", StaticFiles(directory=str(Path(__file__).resolve().parents[2] / "ui" / "static")), name="static")
 
     @app.exception_handler(RequestValidationError)
@@ -1093,7 +1155,7 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
             return _problem("invalid_credentials", "Invalid username or password", 401)
         access, refresh, _sid = issue_tokens(repo, cfg, account)
         out = JSONResponse({"ok": True, "user": {"id": account["id"], "username": account["username"], "role": account["role"]}})
-        set_auth_cookies(out, access, refresh, secrets.token_urlsafe(24), secure=cfg.cookie_secure)
+        set_auth_cookies(out, access, refresh, secrets.token_urlsafe(24), secure=cfg.cookie_secure, access_ttl=cfg.access_ttl_seconds, refresh_ttl=cfg.refresh_ttl_seconds)
         return out
 
     @app.post("/api/v1/auth/refresh")
@@ -1111,7 +1173,7 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
         repo.revoke_session(sid)
         access, new_refresh, _ = issue_tokens(repo, cfg, session)
         out = JSONResponse({"ok": True})
-        set_auth_cookies(out, access, new_refresh, secrets.token_urlsafe(24), secure=cfg.cookie_secure)
+        set_auth_cookies(out, access, new_refresh, secrets.token_urlsafe(24), secure=cfg.cookie_secure, access_ttl=cfg.access_ttl_seconds, refresh_ttl=cfg.refresh_ttl_seconds)
         return out
 
     @app.post("/api/v1/auth/logout", dependencies=[Depends(csrf_protect)])
@@ -1125,8 +1187,7 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
             except HTTPException:
                 pass
         out = JSONResponse({"ok": True})
-        for name in (ACCESS_COOKIE, REFRESH_COOKIE, CSRF_COOKIE):
-            out.delete_cookie(name)
+        clear_auth_cookies(out, secure=cfg.cookie_secure)
         return out
 
     @app.get("/api/v1/auth/me")
@@ -1694,12 +1755,35 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
             if item.get("kind") == ResourceKind.STORAGE.value and item.get("approved") and item.get("available") and item.get("path")
         ]
 
+    usage_cache: dict[str, Any] = {"at": 0.0, "dir": "", "value": {"used_bytes": 0, "motion_bytes": 0}}
+
+    def _storage_usage(root: Path) -> dict[str, int]:
+        now = time.monotonic()
+        key = str(root)
+        if usage_cache["dir"] == key and now - float(usage_cache["at"]) < 30:
+            return usage_cache["value"]
+        value = measure_video_storage(root) if root.is_dir() else {"used_bytes": 0, "motion_bytes": 0}
+        usage_cache["at"] = now
+        usage_cache["dir"] = key
+        usage_cache["value"] = value
+        return value
+
     def _camera_payload() -> dict[str, Any]:
         config = VideoConfig.model_validate(repo.camera_document())
+        try:
+            storage_dir = _video_output_dir(repo, cfg, config)
+        except HTTPException:
+            storage_dir = str(cfg.data_root / config.video_subdir)
+        usage = _storage_usage(Path(storage_dir))
         return {
             "config": config.model_dump(mode="json"),
-            "storage_dir": _video_output_dir(repo, cfg, config),
+            "storage_dir": storage_dir,
             "storage_resources": _storage_choices(),
+            "storage_usage": {
+                "used_bytes": usage["used_bytes"],
+                "motion_bytes": usage["motion_bytes"],
+                "quota_bytes": int(config.motion_quota_gb) * 1024 * 1024 * 1024,
+            },
             "estimates": config_estimates(config),
             "status": repo.camera_status(),
             "episodes": repo.list_episodes(),
@@ -1859,6 +1943,34 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
             repo.record_audit(None, "video.episode", row["camera_id"], {"event": event, "id": row["id"], "state": row["state"], "path": row["path"]})
         return {"ok": True, "items": changed}
 
+    @app.post("/api/v1/internal/video/motion")
+    async def video_motion(payload: MotionEdgeBody, request: Request):
+        _video_auth(request)
+        config = VideoConfig.model_validate(repo.camera_document())
+        pre_seconds = config.incident_pre_sec
+        enabled = {camera.id: camera for camera in config.cameras if camera.enabled and camera.motion and camera.url}
+        changed: list[dict[str, Any]] = []
+        for item in payload.items:
+            camera = enabled.get(item.camera_id)
+            if camera is None:
+                continue
+            episode = await asyncio.to_thread(
+                repo.apply_motion_edge,
+                item.camera_id,
+                item.state,
+                item.at,
+                pre_seconds=pre_seconds,
+            )
+            if episode is None:
+                continue
+            changed.append(episode)
+            if item.state == "start" and not episode.get("stop_at"):
+                line = "Движение есть, запись открыта" if episode.get("state") == "queued" and not episode.get("path") else "Движение продолжается"
+            else:
+                line = "Движения нет, запись закроется"
+            repo.append_camera_logs([{"camera_id": item.camera_id, "level": "info", "source": "motion", "line": line}])
+        return {"ok": True, "items": changed}
+
     def worker_auth(request: Request, vm_id: str) -> dict[str, Any]:
         token = request.headers.get("x-worker-token", "")
         vm = repo.get_vm(vm_id)
@@ -1976,16 +2088,21 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
 
     @app.websocket("/ws/v1/events")
     async def events(websocket: WebSocket):
+        account_id: int | None = None
         token = websocket.cookies.get(ACCESS_COOKIE)
-        try:
-            if not token:
-                await websocket.close(code=4401)
-                return
-            payload = _decode(token, cfg, "access")
-            if repo.user_by_id(int(payload["sub"])) is None:
-                await websocket.close(code=4401)
-                return
-        except HTTPException:
+        if token:
+            try:
+                account_id = int(_decode(token, cfg, "access")["sub"])
+            except HTTPException:
+                account_id = None
+        if account_id is None:
+            minted = mint_access_from_refresh_token(websocket.cookies.get(REFRESH_COOKIE, ""), repo, cfg)
+            if minted:
+                try:
+                    account_id = int(_decode(minted, cfg, "access")["sub"])
+                except HTTPException:
+                    account_id = None
+        if account_id is None or repo.user_by_id(account_id) is None:
             await websocket.close(code=4401)
             return
         await websocket.accept()
@@ -2030,23 +2147,55 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
         finally:
             await bus.unsubscribe(queue)
 
+    def _login_redirect(request: Request) -> RedirectResponse:
+        raw = request.url.path
+        if request.url.query:
+            raw = f"{raw}?{request.url.query}"
+        target = safe_next_path(raw)
+        if target is None:
+            return RedirectResponse("/login", status_code=303)
+        return RedirectResponse("/login?next=" + quote(target, safe=""), status_code=303)
+
+    @app.get("/")
+    async def root(request: Request):
+        try:
+            current_user(request, repo, cfg)
+        except HTTPException:
+            return _login_redirect(request)
+        return RedirectResponse("/dashboard", status_code=303)
+
     @app.get("/login", response_class=HTMLResponse)
-    async def login_page(request: Request):
-        return templates.TemplateResponse(request=request, name="login.html", context={"error": None, "user": None})
+    async def login_page(request: Request, next_path: str = Query("", alias="next")):
+        destination = safe_next_path(next_path)
+        try:
+            current_user(request, repo, cfg)
+        except HTTPException:
+            return templates.TemplateResponse(
+                request=request,
+                name="login.html",
+                context={"error": None, "user": None, "next": destination or ""},
+            )
+        return RedirectResponse(destination or "/dashboard", status_code=303)
 
     @app.post("/login", response_class=HTMLResponse)
-    async def login_form(request: Request, username: str = Form(...), password: str = Form(...)):
+    async def login_form(
+        request: Request,
+        username: str = Form(...),
+        password: str = Form(...),
+        next_path: str = Query("", alias="next"),
+    ):
+        destination = safe_next_path(next_path)
         account = repo.authenticate(username.strip(), password)
         if account is None:
             return templates.TemplateResponse(
                 request=request,
                 name="login.html",
-                context={"error": "Неверный логин или пароль", "user": None},
+                context={"error": "Неверный логин или пароль", "user": None, "next": destination or ""},
                 status_code=401,
             )
         access, refresh, _ = issue_tokens(repo, cfg, account)
-        out = RedirectResponse("/dashboard", status_code=303)
-        set_auth_cookies(out, access, refresh, secrets.token_urlsafe(24), secure=cfg.cookie_secure)
+        out = RedirectResponse(destination or "/dashboard", status_code=303)
+        set_auth_cookies(out, access, refresh, secrets.token_urlsafe(24), secure=cfg.cookie_secure, access_ttl=cfg.access_ttl_seconds, refresh_ttl=cfg.refresh_ttl_seconds)
         return out
 
     def _require_admin_html(request: Request):
@@ -2056,7 +2205,9 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
                 raise HTTPException(403)
             return account
         except HTTPException as exc:
-            return RedirectResponse("/login" if exc.status_code == 401 else "/dashboard", status_code=303)
+            if exc.status_code == 401:
+                return _login_redirect(request)
+            return RedirectResponse("/dashboard", status_code=303)
 
     def _vms_page_context(account: dict[str, Any], *, selected_vm_id: str = "") -> dict[str, Any]:
         groups = _approved_resource_groups(repo) if account.get("role") == "admin" else {
@@ -2534,7 +2685,7 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
         try:
             account = current_user(request, repo, cfg)
         except HTTPException:
-            return RedirectResponse("/login", status_code=303)
+            return _login_redirect(request)
         return templates.TemplateResponse(
             request=request,
             name="dashboard.html",
@@ -2546,7 +2697,7 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
         try:
             account = current_user(request, repo, cfg)
         except HTTPException:
-            return RedirectResponse("/login", status_code=303)
+            return _login_redirect(request)
         return templates.TemplateResponse(request=request, name="data.html", context={"user": account, "vms": repo.list_vms()})
 
     @app.get("/incidents", response_class=HTMLResponse)
@@ -2554,7 +2705,7 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
         try:
             account = current_user(request, repo, cfg)
         except HTTPException:
-            return RedirectResponse("/login", status_code=303)
+            return _login_redirect(request)
         return templates.TemplateResponse(request=request, name="incidents.html", context={"user": account, "vms": repo.list_vms()})
 
     @app.get("/incidents/{incident_id}", response_class=HTMLResponse)
@@ -2562,7 +2713,7 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
         try:
             account = current_user(request, repo, cfg)
         except HTTPException:
-            return RedirectResponse("/login", status_code=303)
+            return _login_redirect(request)
         incident = repo.get_incident(incident_id)
         if incident is None:
             return RedirectResponse("/incidents", status_code=303)
@@ -2579,7 +2730,7 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
         try:
             account = current_user(request, repo, cfg)
         except HTTPException:
-            return RedirectResponse("/login", status_code=303)
+            return _login_redirect(request)
         return templates.TemplateResponse(request=request, name="charts.html", context={"user": account, "vms": repo.list_vms()})
 
     @app.get("/vms", response_class=HTMLResponse)
@@ -2587,7 +2738,7 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
         try:
             account = current_user(request, repo, cfg)
         except HTTPException:
-            return RedirectResponse("/login", status_code=303)
+            return _login_redirect(request)
         return templates.TemplateResponse(request=request, name="vms.html", context=_vms_page_context(account))
 
     @app.get("/vms/{vm_id}", response_class=HTMLResponse)
@@ -2595,7 +2746,7 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
         try:
             account = current_user(request, repo, cfg)
         except HTTPException:
-            return RedirectResponse("/login", status_code=303)
+            return _login_redirect(request)
         vm = repo.get_vm(vm_id)
         if vm is None:
             return RedirectResponse("/vms", status_code=303)

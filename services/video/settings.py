@@ -1,7 +1,8 @@
-"""Camera settings and the ffmpeg commands for one episode or a live preview.
+"""Camera settings and the ffmpeg commands for one episode, a live preview, or motion analysis.
 
-The Hub stores this document. Recording starts only on an episode command.
-The video process does not decode frames itself.
+The Hub stores this document. Alarm and manual episodes start from Hub commands.
+Motion keeps a second, tiny decoded stream and compares frames; the recorded
+picture still comes from the ring buffer.
 """
 
 from __future__ import annotations
@@ -10,6 +11,8 @@ from pathlib import Path
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+from services.video.motion import ANALYSIS_FPS, ANALYSIS_HEIGHT, ANALYSIS_WIDTH
 
 RESOLUTIONS = {
     "source": None,
@@ -44,6 +47,11 @@ class CameraSettings(BaseModel):
     audio_bitrate_kbps: int = Field(default=128, ge=32, le=512)
     container: Literal["mp4", "mkv"] = "mp4"
     segment_sec: int = Field(default=60, ge=5, le=3600)
+    motion: bool = False
+    motion_noise: int = Field(default=32, ge=1, le=255)
+    motion_threshold: int = Field(default=2, ge=1, le=80)
+    motion_min_frames: int = Field(default=2, ge=1, le=30)
+    motion_gap_sec: int = Field(default=10, ge=0, le=3600)
 
     @field_validator("url")
     @classmethod
@@ -86,6 +94,7 @@ class VideoConfig(BaseModel):
     incident_pre_sec: int = Field(default=10, ge=0, le=3600)
     incident_post_sec: int = Field(default=15, ge=0, le=3600)
     incident_segment_sec: int = Field(default=2, ge=1, le=30)
+    motion_quota_gb: int = Field(default=20, ge=0, le=100000)
     cameras: list[CameraSettings] = Field(default_factory=list, max_length=16)
 
     @field_validator("storage_resource_id")
@@ -264,6 +273,20 @@ def build_buffer_argv(camera: CameraSettings, output_pattern: Path, segment_sec:
         ]
     )
     return argv
+
+
+def build_motion_argv(camera: CameraSettings) -> list[str]:
+    """Low-rate gray frames on stdout. The picture used for detection, not for the file."""
+    return _input_argv(camera) + [
+        "-an",
+        "-vf",
+        f"fps={ANALYSIS_FPS},scale={ANALYSIS_WIDTH}:{ANALYSIS_HEIGHT},format=gray",
+        "-f",
+        "rawvideo",
+        "-pix_fmt",
+        "gray",
+        "pipe:1",
+    ]
 
 
 def build_preview_argv(camera: CameraSettings, jpeg_path: Path) -> list[str]:

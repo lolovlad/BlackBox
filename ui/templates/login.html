@@ -11,7 +11,7 @@
     </div>
   </div>
   <div class="bb-login-panel">
-    <form method="post" class="bb-login-form" x-data="{ showPassword: false }">
+    <form method="post" class="bb-login-form" action="/login{% if next %}?next={{ next|urlencode }}{% endif %}" x-data="{ showPassword: false }">
       <h2>Вход в систему</h2>
       {% if error %}<p class="bb-error bb-login-error" role="alert">{{ error }}</p>{% endif %}
       <label>

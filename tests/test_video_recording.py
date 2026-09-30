@@ -2,18 +2,23 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 import io
+import os
 from pathlib import Path
+import time
 import zipfile
 
 import pytest
 from pydantic import ValidationError
 
 from services.video.devices import h264_encoder_present, publish_host_video_devices
+from services.video.motion import MotionTracker
+from services.video.retention import measure_video_storage, purge_motion_over_quota
 from services.video.settings import (
     CameraSettings,
     VideoConfig,
     build_buffer_argv,
     build_episode_argv,
+    build_motion_argv,
     build_preview_argv,
     camera_estimate,
     estimate_mib,
@@ -76,6 +81,11 @@ def test_ffmpeg_argv_copy_skips_scale_and_libx264_limits_bitrate(tmp_path: Path)
     assert buffer[buffer.index("-f") + 1] == "segment"
     assert buffer[buffer.index("-segment_time") + 1] == "2"
     assert buffer[-1].endswith("%Y%m%d_%H%M%S.mkv")
+
+    motion = build_motion_argv(_camera())
+    assert motion[motion.index("-f") + 1] == "rawvideo"
+    assert "fps=2,scale=320:180,format=gray" in motion
+    assert motion[-1] == "pipe:1"
 
     preview = build_preview_argv(_camera(), tmp_path / "live.jpg")
     assert "scale=1920:1080" in " ".join(preview)
@@ -159,6 +169,67 @@ def test_supervisor_records_one_episode_and_reports_when_it_ends(tmp_path: Path)
     lost = supervisor.tick(config, [{"id": "ep9", "camera_id": "cam1", "state": "recording"}], [])
     assert lost["episodes"][0]["state"] == "error"
     assert lost["episodes"][0]["message"] == "запись прервана"
+
+
+def test_ring_buffer_stays_in_ram_and_closed_segments_are_copied_to_the_archive(tmp_path: Path):
+    started: list[_Proc] = []
+
+    def spawn(argv):
+        proc = _Proc(list(argv))
+        started.append(proc)
+        return proc
+
+    ram = tmp_path / "ram"
+    archive = tmp_path / "archive"
+    supervisor = Supervisor(tmp_path, spawn=spawn, buffer_root=ram)
+    camera = _camera()
+    config = VideoConfig(cameras=[camera], incident_pre_sec=10, incident_segment_sec=2)
+    supervisor.tick(config, [], [], output_root=archive)
+    buffer = next(proc for proc in started if "segment" in proc.argv)
+    assert ram.as_posix() in Path(buffer.argv[-1]).as_posix() or str(ram) in buffer.argv[-1]
+    assert ".buffer" not in buffer.argv[-1]
+    assert not (archive / ".buffer").exists()
+    assert (ram / "cam1").is_dir()
+
+    segment = ram / "cam1" / "20260930_100000.mkv"
+    segment.write_bytes(b"closed-segment")
+    closed_at = time.time() - 4
+    os.utime(segment, (closed_at, closed_at))
+    moment = datetime.now(timezone.utc)
+    capture_from = (moment - timedelta(seconds=10)).isoformat()
+    result = supervisor.tick(
+        config,
+        [{
+            "id": "ep-inc",
+            "camera_id": "cam1",
+            "incident_id": "inc1",
+            "state": "queued",
+            "capture_from": capture_from,
+            "started_at": moment.isoformat(),
+        }],
+        [],
+        output_root=archive,
+    )
+    copied = archive / "incidents" / "inc1" / "cam1" / segment.name
+    assert copied.read_bytes() == b"closed-segment"
+    assert segment.read_bytes() == b"closed-segment"
+    assert result["episodes"][0]["state"] == "recording"
+    assert str(copied) in result["episodes"][0]["paths"]
+
+    stale = ram / "cam1" / "20260930_090000.mkv"
+    stale.write_bytes(b"old")
+    os.utime(stale, (time.time() - 120, time.time() - 120))
+    supervisor.tick(config, [{
+        "id": "ep-inc",
+        "camera_id": "cam1",
+        "incident_id": "inc1",
+        "state": "recording",
+        "capture_from": capture_from,
+        "started_at": moment.isoformat(),
+        "paths": [str(copied)],
+    }], [], output_root=archive)
+    assert not stale.exists()
+    assert segment.exists()
 
 
 def test_missing_pi_encoder_records_with_libx264(tmp_path: Path):
@@ -352,6 +423,9 @@ def test_camera_settings_roundtrip(tmp_path: Path, monkeypatch):
         assert 'data-field="storage_resource_id"' in page.text
         assert "Носитель" in page.text
         assert "Журнал" in page.text
+        assert "Пауза после движения" in page.text
+        assert "Лимит каталога" in page.text
+        assert 'data-camera-tab="motion"' in page.text
         assert "bb-vm-step" in page.text
         assert "/static/cameras.js" in page.text
 
@@ -472,3 +546,173 @@ def test_camera_settings_roundtrip(tmp_path: Path, monkeypatch):
         bad["url"] = "http://not-rtsp"
         rejected = client.put("/api/v1/cameras", json={"cameras": [bad]}, headers={"X-CSRF-Token": csrf})
         assert rejected.status_code == 422
+
+
+def test_motion_tracker_holds_through_a_quiet_gap_and_ignores_one_frame():
+    tracker = MotionTracker(noise=32, threshold_pct=2, min_frames=2, gap_sec=10)
+    still = bytes(100)
+    moved = bytes([255]) * 100
+    moved_more = bytes([128]) * 100
+    settled = bytes([200]) * 100
+    assert tracker.push(still, 0) is None
+    assert tracker.push(moved, 1) is None
+    assert tracker.push(moved_more, 2) == "start"
+    assert tracker.push(moved_more, 3) is None
+    assert tracker.push(settled, 8) is None
+    assert tracker.push(settled, 9) is None
+    assert tracker.push(settled, 18) is None
+    assert tracker.push(settled, 19) == "stop"
+
+    noisy = MotionTracker(noise=32, threshold_pct=50, min_frames=1, gap_sec=0)
+    base = bytes(100)
+    nudge = bytes([10]) * 100
+    assert noisy.push(base, 0) is None
+    assert noisy.push(nudge, 1) is None
+
+
+def test_motion_analysis_reports_an_edge_and_copies_buffer_segments(tmp_path: Path):
+    started: list[_Proc] = []
+
+    def spawn(argv):
+        proc = _Proc(list(argv))
+        started.append(proc)
+        return proc
+
+    ram = tmp_path / "ram"
+    archive = tmp_path / "archive"
+    supervisor = Supervisor(tmp_path, spawn=spawn, spawn_raw=spawn, buffer_root=ram)
+    camera = _camera(motion=True, motion_gap_sec=10, motion_min_frames=2)
+    config = VideoConfig(cameras=[camera])
+    first = supervisor.tick(config, [], [], output_root=archive)
+    analyze = next(proc for proc in started if "rawvideo" in proc.argv)
+    assert "scale=320:180" in " ".join(analyze.argv)
+    assert any("Детектор движения запущен" in item["line"] for item in first["logs"])
+
+    still = bytes(80)
+    moved = bytes([255]) * 80
+    moved_more = bytes([128]) * 80
+    supervisor._push_frame("cam1", still, now=1_000)
+    supervisor._push_frame("cam1", moved, now=1_001)
+    assert supervisor.tick(config, [], [], output_root=archive)["motion"] == []
+    supervisor._push_frame("cam1", moved_more, now=1_002)
+    edge = supervisor.tick(config, [], [], output_root=archive)
+    assert edge["motion"] == [{"camera_id": "cam1", "state": "start", "at": datetime.fromtimestamp(1_002, timezone.utc).isoformat()}]
+
+    segment = ram / "cam1" / "20260930_100000.mkv"
+    segment.write_bytes(b"motion-segment")
+    closed_at = time.time() - 4
+    os.utime(segment, (closed_at, closed_at))
+    moment = datetime.now(timezone.utc)
+    result = supervisor.tick(
+        config,
+        [{
+            "id": "mot1",
+            "camera_id": "cam1",
+            "state": "queued",
+            "capture_from": (moment - timedelta(seconds=10)).isoformat(),
+            "started_at": moment.isoformat(),
+        }],
+        [],
+        output_root=archive,
+    )
+    copied = archive / "motion" / "cam1" / "mot1" / segment.name
+    assert copied.read_bytes() == b"motion-segment"
+    assert result["statuses"][0]["state"] == "recording"
+    assert result["statuses"][0]["message"] == "Запись по движению"
+    assert not any("-t" in proc.argv for proc in started)
+
+
+def test_motion_edge_continues_one_clip_until_the_gap_closes(tmp_path: Path):
+    repo = HubRepository(tmp_path / "hub.db")
+    moment = datetime(2026, 9, 30, 10, 0, tzinfo=timezone.utc)
+    opened = repo.apply_motion_edge("cam1", "start", moment.isoformat(), pre_seconds=10)
+    assert opened is not None
+    assert opened["capture_from"] == (moment - timedelta(seconds=10)).isoformat()
+    assert opened["incident_id"] == ""
+    assert opened["duration_sec"] == 86400
+    again = repo.apply_motion_edge("cam1", "start", (moment + timedelta(seconds=3)).isoformat(), pre_seconds=10)
+    assert again is not None and again["id"] == opened["id"]
+    repo.enqueue_episode("cam2")
+    assert repo.apply_motion_edge("cam2", "start", moment.isoformat(), pre_seconds=10) is None
+    stopped = repo.apply_motion_edge("cam1", "stop", (moment + timedelta(seconds=20)).isoformat(), pre_seconds=10)
+    assert stopped is not None and stopped["stop_at"] == (moment + timedelta(seconds=20)).isoformat()
+    resumed = repo.apply_motion_edge("cam1", "start", (moment + timedelta(seconds=21)).isoformat(), pre_seconds=10)
+    assert resumed is not None and resumed["id"] == opened["id"] and not resumed["stop_at"]
+    repo.apply_episode_events([{"id": opened["id"], "state": "finished", "path": "clip.mkv", "ended_at": moment.isoformat()}])
+    fresh = repo.apply_motion_edge("cam1", "start", (moment + timedelta(seconds=40)).isoformat(), pre_seconds=10)
+    assert fresh is not None and fresh["id"] != opened["id"]
+
+
+def test_motion_endpoint_ignores_cameras_without_the_flag(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("BB_VIDEO_TOKEN", "video-secret")
+    with _client(tmp_path) as client:
+        assert client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin-password"}).status_code == 200
+        csrf = client.cookies.get("bb_csrf")
+        camera = _camera(motion=True).model_dump(mode="json")
+        quiet = _camera(id="cam2", name="Двор").model_dump(mode="json")
+        assert client.put("/api/v1/cameras", json={"cameras": [camera, quiet]}, headers={"X-CSRF-Token": csrf}).status_code == 200
+        assert client.post("/api/v1/internal/video/motion", json={"items": []}).status_code == 401
+        response = client.post(
+            "/api/v1/internal/video/motion",
+            headers={"X-Video-Token": "video-secret"},
+            json={"items": [
+                {"camera_id": "cam1", "state": "start", "at": "2026-09-30T10:00:00+00:00"},
+                {"camera_id": "cam2", "state": "start", "at": "2026-09-30T10:00:00+00:00"},
+            ]},
+        )
+        assert response.status_code == 200
+        items = response.json()["items"]
+        assert [item["camera_id"] for item in items] == ["cam1"]
+        assert items[0]["capture_from"] == "2026-09-30T09:59:50+00:00"
+        logs = client.get("/api/v1/cameras/cam1/logs").json()["entries"]
+        assert any("запись открыта" in entry["line"] for entry in logs)
+
+
+def test_motion_quota_deletes_old_clips_and_keeps_incidents(tmp_path: Path):
+    root = tmp_path / "video"
+    incident = root / "incidents" / "inc1" / "cam1" / "keep.mkv"
+    old = root / "motion" / "cam1" / "old-ep" / "old.mkv"
+    newer = root / "motion" / "cam1" / "new-ep" / "new.mkv"
+    live = root / "motion" / "cam1" / "live-ep" / "live.mkv"
+    manual = root / "cam1" / "manual.mp4"
+    for path, payload in (
+        (incident, b"i" * 1000),
+        (old, b"o" * 800),
+        (newer, b"n" * 800),
+        (live, b"l" * 800),
+        (manual, b"m" * 500),
+    ):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(payload)
+    now = time.time()
+    os.utime(old, (now - 30, now - 30))
+    os.utime(newer, (now - 10, now - 10))
+    removed = purge_motion_over_quota(root, 2300, {("cam1", "live-ep")})
+    assert {path.name for path in removed} == {"old.mkv", "new.mkv"}
+    assert not old.exists() and not newer.exists()
+    assert incident.read_bytes() == b"i" * 1000
+    assert live.read_bytes() == b"l" * 800
+    assert manual.read_bytes() == b"m" * 500
+    assert measure_video_storage(root) == {"used_bytes": 2300, "motion_bytes": 800}
+    assert purge_motion_over_quota(root, 2300, {("cam1", "live-ep")}) == []
+    assert purge_motion_over_quota(root, 0, set()) == []
+
+    repo = HubRepository(tmp_path / "hub.db")
+    moment = datetime(2026, 9, 30, 10, 0, tzinfo=timezone.utc)
+    motion = repo.apply_motion_edge("cam1", "start", moment.isoformat(), pre_seconds=0)
+    motion_id = motion["id"]
+    repo.apply_episode_events([
+        {"id": motion_id, "state": "finished", "path": str(old), "paths": [str(old), str(newer)], "ended_at": moment.isoformat()},
+    ])
+    incident_row = repo.register_incident_start("vm-1", name="Alarm", kind="alert", created_at=moment, camera_ids=["cam1"])
+    incident_episode = incident_row["episodes"][0]["id"]
+    repo.apply_episode_events([
+        {"id": incident_episode, "state": "finished", "path": str(incident), "paths": [str(incident)], "ended_at": moment.isoformat()},
+    ])
+    assert repo.note_purged_motion_files([str(old), str(newer)]) == 1
+    stored = repo.get_episode(motion_id)
+    assert stored["paths"] == []
+    assert stored["message"] == "Удалено: каталог видео превысил лимит"
+    kept = repo.get_episode(incident_episode)
+    assert kept["paths"] == [str(incident)]
+    assert kept["message"] == ""

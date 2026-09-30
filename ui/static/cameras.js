@@ -4,6 +4,8 @@
   var episodes = [];
   var status = {};
   var selected = "";
+  var cameraTab = "camera";
+  var usage = { used_bytes: 0, motion_bytes: 0, quota_bytes: 0 };
   var watching = false;
   var lastLease = 0;
   var logEntries = [];
@@ -38,8 +40,11 @@
       audio_bitrate_kbps: 128,
       container: "mp4",
       segment_sec: 60,
-      incident_pre_sec: 10,
-      incident_post_sec: 15,
+      motion: false,
+      motion_noise: 32,
+      motion_threshold: 2,
+      motion_min_frames: 2,
+      motion_gap_sec: 10,
     };
   }
 
@@ -82,6 +87,11 @@
     camera.audio_bitrate_kbps = Number(field("audio_bitrate_kbps").value);
     camera.container = field("container").value;
     camera.segment_sec = Number(field("segment_sec").value);
+    camera.motion = field("motion").checked;
+    camera.motion_noise = Number(field("motion_noise").value);
+    camera.motion_threshold = Number(field("motion_threshold").value);
+    camera.motion_min_frames = Number(field("motion_min_frames").value);
+    camera.motion_gap_sec = Number(field("motion_gap_sec").value);
   }
 
   function writeForm() {
@@ -114,10 +124,34 @@
     field("audio_bitrate_kbps").value = camera.audio_bitrate_kbps;
     field("container").value = camera.container || "mp4";
     field("segment_sec").value = camera.segment_sec;
+    field("motion").checked = !!camera.motion;
+    field("motion_noise").value = camera.motion_noise || 32;
+    field("motion_threshold").value = camera.motion_threshold || 2;
+    field("motion_min_frames").value = camera.motion_min_frames || 2;
+    field("motion_gap_sec").value = camera.motion_gap_sec ?? 10;
     syncPicture();
+    syncMotion();
+    showCameraTab(cameraTab);
     renderEstimate();
     renderEpisodes();
     renderLive();
+  }
+
+  function showCameraTab(name) {
+    cameraTab = name || "camera";
+    document.querySelectorAll("[data-camera-panel]").forEach(function (panel) {
+      panel.hidden = panel.getAttribute("data-camera-panel") !== cameraTab;
+    });
+    document.querySelectorAll("[data-camera-tab]").forEach(function (button) {
+      var on = button.getAttribute("data-camera-tab") === cameraTab;
+      button.classList.toggle("is-on", on);
+      button.setAttribute("aria-selected", on ? "true" : "false");
+    });
+  }
+
+  function syncMotion() {
+    var box = document.querySelector("[data-motion-fields]");
+    if (box) box.hidden = !field("motion").checked;
   }
 
   function fillDisks(items, preferred) {
@@ -173,8 +207,46 @@
       if (!field("height").value) field("height").value = "1080";
     }
     var camera = current();
-    var copy = camera && (field("codec").value === "copy" || field("audio").value === "copy");
+    var codec = field("codec").value;
+    var copy = camera && (codec === "copy" || field("audio").value === "copy");
     document.getElementById("camera-copy-note").hidden = !copy;
+    var profile = document.querySelector("[data-h264-profile]");
+    var preset = document.querySelector("[data-encoder-preset]");
+    var audioRate = document.querySelector("[data-audio-bitrate]");
+    if (profile) profile.hidden = codec !== "libx264";
+    if (preset) preset.hidden = codec !== "libx264" && codec !== "libx265";
+    if (audioRate) audioRate.hidden = field("audio").value !== "aac";
+  }
+
+  function formatBytes(bytes) {
+    var value = Number(bytes) || 0;
+    var gb = value / (1024 * 1024 * 1024);
+    if (gb >= 10) return gb.toFixed(1) + " ГБ";
+    if (gb >= 0.1) return gb.toFixed(2) + " ГБ";
+    return Math.max(0, Math.round(value / (1024 * 1024))) + " МБ";
+  }
+
+  function renderUsage() {
+    var node = document.getElementById("camera-usage");
+    var bar = document.getElementById("camera-quota-bar");
+    var fill = document.getElementById("camera-quota-fill");
+    if (!node || !bar || !fill) return;
+    var quotaGb = numberOrNull(field("motion_quota_gb").value);
+    var quota = quotaGb === null ? Number(usage.quota_bytes) || 0 : quotaGb * 1024 * 1024 * 1024;
+    var used = Number(usage.used_bytes) || 0;
+    var motionBytes = Number(usage.motion_bytes) || 0;
+    if (!quota) {
+      bar.hidden = true;
+      node.textContent = "Автоочистка выключена. Записи движения и инцидентов остаются на диске.";
+      return;
+    }
+    bar.hidden = false;
+    fill.style.width = Math.max(0, Math.min(100, (used / quota) * 100)) + "%";
+    bar.classList.toggle("is-over", used > quota);
+    var text = "Занято " + formatBytes(used) + " из " + formatBytes(quota) + ". Записи движения: " + formatBytes(motionBytes) + ".";
+    if (used > quota && motionBytes === 0) text += " Лимит превышен записями, которые очистка не трогает.";
+    else if (used > quota) text += " Старые записи движения будут удалены.";
+    node.textContent = text;
   }
 
   function renderEstimate() {
@@ -216,11 +288,11 @@
     cameras.forEach(function (camera) {
       var button = document.createElement("button");
       button.type = "button";
-      button.className = "bb-camera-pick" + (camera.id === selected ? " is-selected" : "");
+      button.className = "bb-camera-pick" + (camera.id === selected ? " is-selected" : "") + (camera.enabled ? "" : " is-off");
       var name = document.createElement("strong");
       name.textContent = camera.name || camera.id;
       var meta = document.createElement("span");
-      meta.textContent = camera.id + " · " + statusText(camera.id);
+      meta.textContent = [camera.id, statusText(camera.id), camera.motion ? "движение" : ""].filter(Boolean).join(" · ");
       button.appendChild(name);
       button.appendChild(meta);
       button.addEventListener("click", function () { select(camera.id); });
@@ -237,9 +309,10 @@
   }
 
   function episodeTitle(row) {
-    if (row.state === "finished") return "Эпизод закончен";
+    var motionClip = row.capture_from && !row.incident_id;
+    if (row.state === "finished") return motionClip ? "Движение записано" : "Эпизод закончен";
     if (row.state === "error") return "Ошибка эпизода";
-    if (row.state === "recording") return "Идёт запись";
+    if (row.state === "recording" || row.state === "queued") return motionClip ? "Запись по движению" : (row.state === "recording" ? "Идёт запись" : "В очереди");
     return "В очереди";
   }
 
@@ -257,14 +330,27 @@
     }
     rows.forEach(function (row) {
       var item = document.createElement("li");
+      var kind = document.createElement("span");
+      kind.className = "bb-episode-kind";
+      kind.textContent = (row.capture_from && !row.incident_id) ? "движение" : (row.incident_id ? "инцидент" : "эпизод");
       var title = document.createElement("strong");
       title.textContent = episodeTitle(row);
+      item.appendChild(kind);
       item.appendChild(title);
       var meta = document.createElement("span");
-      meta.textContent = [when(row.ended_at || row.started_at), row.path, row.message].filter(Boolean).join(" · ");
+      meta.textContent = [when(row.ended_at || row.started_at), fileLabel(row), row.message].filter(Boolean).join(" · ");
       item.appendChild(meta);
       list.appendChild(item);
     });
+  }
+
+  function fileLabel(row) {
+    var path = (row.paths && row.paths[0]) || row.path || "";
+    if (!path) return "";
+    var parts = String(path).split(/[\\/]/);
+    var name = parts[parts.length - 1];
+    if (row.paths && row.paths.length > 1) name += " · фрагментов " + row.paths.length;
+    return name;
   }
 
   function renderLive() {
@@ -306,6 +392,7 @@
       video_subdir: (field("video_subdir").value || "video").trim() || "video",
       incident_pre_sec: numberOrNull(field("incident_pre_sec").value) ?? 10,
       incident_post_sec: numberOrNull(field("incident_post_sec").value) ?? 15,
+      motion_quota_gb: numberOrNull(field("motion_quota_gb").value) ?? 20,
       cameras: cameras.map(function (camera) {
         return {
           id: camera.id,
@@ -327,6 +414,11 @@
           audio_bitrate_kbps: camera.audio_bitrate_kbps,
           container: camera.container,
           segment_sec: camera.segment_sec,
+          motion: !!camera.motion,
+          motion_noise: Number(camera.motion_noise) || 32,
+          motion_threshold: Number(camera.motion_threshold) || 2,
+          motion_min_frames: Number(camera.motion_min_frames) || 2,
+          motion_gap_sec: camera.motion_gap_sec ?? 10,
         };
       }),
     };
@@ -395,12 +487,14 @@
   function apply(body, replace) {
     status = body.status || {};
     episodes = body.episodes || [];
+    usage = body.storage_usage || usage;
     if (replace) {
       cameras = (body.config && body.config.cameras) || [];
       fillDisks(body.storage_resources, (body.config && body.config.storage_resource_id) || "storage:data");
       field("video_subdir").value = (body.config && body.config.video_subdir) || "video";
       field("incident_pre_sec").value = (body.config && body.config.incident_pre_sec) ?? 10;
       field("incident_post_sec").value = (body.config && body.config.incident_post_sec) ?? 15;
+      field("motion_quota_gb").value = (body.config && body.config.motion_quota_gb) ?? 20;
       if (!cameras.some(function (camera) { return camera.id === selected; })) {
         selected = cameras.length ? cameras[0].id : "";
       }
@@ -412,6 +506,7 @@
       renderLive();
     }
     renderNav();
+    renderUsage();
   }
 
   function save() {
@@ -544,10 +639,21 @@
 
   document.getElementById("cameras-form").addEventListener("input", function () {
     syncPicture();
+    syncMotion();
     renderEstimate();
+    renderUsage();
   });
   document.getElementById("cameras-form").addEventListener("change", function () {
+    syncPicture();
+    syncMotion();
     renderEstimate();
+    renderUsage();
+    renderNav();
+  });
+  document.getElementById("camera-tabs").addEventListener("click", function (event) {
+    var button = event.target.closest("[data-camera-tab]");
+    if (!button) return;
+    showCameraTab(button.getAttribute("data-camera-tab"));
   });
 
   document.getElementById("camera-watch").addEventListener("click", function () {

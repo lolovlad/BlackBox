@@ -56,6 +56,15 @@ def post_episodes(hub_url: str, token: str, items: list[dict[str, str]]) -> None
     )
 
 
+def post_motion(hub_url: str, token: str, items: list[dict[str, str]]) -> None:
+    _request(
+        f"{hub_url.rstrip('/')}/api/v1/internal/video/motion",
+        token,
+        method="POST",
+        payload={"items": items},
+    )
+
+
 def run() -> int:
     hub_url = os.getenv("BB_HUB_URL", "http://hub:8080").rstrip("/")
     token = os.getenv("BB_VIDEO_TOKEN", "")
@@ -81,6 +90,8 @@ def run() -> int:
                 post_logs(hub_url, token, result["logs"])
             if result["episodes"]:
                 post_episodes(hub_url, token, result["episodes"])
+            if result.get("motion"):
+                post_motion(hub_url, token, result["motion"])
         except (HTTPError, URLError, TimeoutError, OSError, ValueError):
             time.sleep(interval)
             continue

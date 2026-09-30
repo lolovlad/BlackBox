@@ -1162,6 +1162,80 @@ def test_refresh_rotation_and_logout(tmp_path: Path):
         assert client.get("/api/v1/auth/me").status_code == 401
 
 
+def test_root_redirect_and_silent_access_renewal(tmp_path: Path):
+    import jwt
+    from datetime import datetime, timedelta, timezone
+
+    with _client(tmp_path) as client:
+        anon = client.get("/", follow_redirects=False)
+        assert anon.status_code == 303
+        assert anon.headers["location"] == "/login"
+
+        locked = client.get("/dashboard", follow_redirects=False)
+        assert locked.status_code == 303
+        assert locked.headers["location"].startswith("/login?next=")
+
+        assert client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin-password"}).status_code == 200
+        home = client.get("/", follow_redirects=False)
+        assert home.status_code == 303
+        assert home.headers["location"] == "/dashboard"
+        already = client.get("/login", follow_redirects=False)
+        assert already.status_code == 303
+        assert already.headers["location"] == "/dashboard"
+
+        refresh = client.cookies.get("bb_refresh")
+        stored = next(cookie for cookie in client.cookies.jar if cookie.name == "bb_access")
+        domain, path = stored.domain, stored.path
+        expired = jwt.encode(
+            {
+                "sub": "1",
+                "username": "admin",
+                "role": "admin",
+                "kind": "access",
+                "iat": datetime.now(timezone.utc) - timedelta(hours=1),
+                "exp": datetime.now(timezone.utc) - timedelta(minutes=5),
+            },
+            "test-secret",
+            algorithm="HS256",
+        )
+        client.cookies.delete("bb_access", domain=domain, path=path)
+        client.cookies.set("bb_access", expired, domain=domain, path=path)
+        me = client.get("/api/v1/auth/me")
+        assert me.status_code == 200, me.text
+        assert client.cookies.get("bb_refresh", domain=domain, path=path) == refresh
+        assert client.cookies.get("bb_access", domain=domain, path=path) != expired
+        assert any(item.startswith("bb_access=") for item in me.headers.get_list("set-cookie"))
+        assert client.get("/dashboard").status_code == 200
+        assert client.get("/", follow_redirects=False).headers["location"] == "/dashboard"
+
+        with client.websocket_connect("/ws/v1/events") as socket:
+            message = socket.receive_json()
+        assert message["type"] == "snapshot"
+
+        client.cookies.delete("bb_access", domain=domain, path=path)
+        client.cookies.set("bb_access", expired, domain=domain, path=path)
+        with client.websocket_connect("/ws/v1/events") as socket:
+            message = socket.receive_json()
+        assert message["type"] == "snapshot"
+
+        client.cookies.clear()
+        returned = client.post(
+            "/login?next=/vms",
+            data={"username": "admin", "password": "admin-password"},
+            follow_redirects=False,
+        )
+        assert returned.status_code == 303
+        assert returned.headers["location"] == "/vms"
+        client.cookies.clear()
+        external = client.post(
+            "/login?next=https://evil.example/phish",
+            data={"username": "admin", "password": "admin-password"},
+            follow_redirects=False,
+        )
+        assert external.status_code == 303
+        assert external.headers["location"] == "/dashboard"
+
+
 def test_gpio_chip_seeds_running_vm_once(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("BB_DISCOVERY_GPIO_PATHS", "/dev/gpiochip0")
     with _client(tmp_path) as client:

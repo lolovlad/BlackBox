@@ -7,6 +7,52 @@
     return Object.assign({ 'X-CSRF-Token': decodeURIComponent(csrf()) }, extra || {});
   }
 
+  const rawFetch = window.fetch.bind(window);
+  let sessionRefresh = null;
+
+  function refreshSession() {
+    if (!sessionRefresh) {
+      sessionRefresh = rawFetch('/api/v1/auth/refresh', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: headers(),
+      }).finally(function () {
+        sessionRefresh = null;
+      });
+    }
+    return sessionRefresh;
+  }
+
+  function sendToLogin() {
+    if (location.pathname === '/login') return;
+    const back = location.pathname + location.search;
+    location.assign('/login?next=' + encodeURIComponent(back));
+  }
+
+  window.bbFetch = async function (url, options, retried) {
+    const opts = Object.assign({ credentials: 'same-origin' }, options || {});
+    const response = await rawFetch(url, opts);
+    const target = String(url || '');
+    if (response.status !== 401 || retried || target.indexOf('/api/v1/auth/') !== -1) return response;
+    if (opts.signal && opts.signal.aborted) return response;
+    let refreshed = null;
+    try {
+      refreshed = await refreshSession();
+    } catch (_e) {
+      refreshed = null;
+    }
+    if (!refreshed || !refreshed.ok) {
+      const again = await rawFetch(url, opts);
+      if (again.status !== 401) return again;
+      sendToLogin();
+      return again;
+    }
+    return window.bbFetch(url, options, true);
+  };
+  window.fetch = function (url, options) {
+    return window.bbFetch(url, options);
+  };
+
   function problemMessage(body, fallback) {
     if (!body || typeof body !== 'object') return fallback;
     if (typeof body.message === 'string' && body.message) return body.message;
@@ -1413,14 +1459,28 @@
     socket.onmessage = function (event) {
       try { handleMessage(JSON.parse(event.data)); } catch (_e) { /* ignore malformed event */ }
     };
-    socket.onclose = function () {
+    socket.onclose = function (event) {
       socket = null;
-      if (!closing && reconnectTimer === null) {
+      if (closing || reconnectTimer !== null) return;
+      const retry = function () {
         reconnectTimer = setTimeout(function () {
           reconnectTimer = null;
           connectEvents();
         }, 1500);
+      };
+      if (event && event.code === 4401) {
+        refreshSession().then(function (response) {
+          if (!response || !response.ok) {
+            sendToLogin();
+            return;
+          }
+          retry();
+        }).catch(function () {
+          sendToLogin();
+        });
+        return;
       }
+      retry();
     };
     socket.onerror = function () {
       // onclose schedules the reconnect; closing here avoids a noisy browser

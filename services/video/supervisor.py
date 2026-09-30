@@ -1,24 +1,43 @@
-"""Run preview and episode ffmpeg processes. An episode ends when its process exits."""
+"""Run preview, buffer, episode and motion-analysis ffmpeg processes."""
 
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
+import tempfile
 import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
 from services.video.devices import h264_encoder_present
+from services.video.motion import ANALYSIS_HEIGHT, ANALYSIS_WIDTH, MotionTracker
 from services.video.settings import (
     CameraSettings,
     VideoConfig,
-    build_episode_argv,
     build_buffer_argv,
+    build_episode_argv,
+    build_motion_argv,
     build_preview_argv,
     episode_name,
 )
+
+
+def ram_buffer_root() -> Path:
+    """Directory for the rolling pre-roll. It must be a RAM filesystem, not the archive disk."""
+    configured = os.environ.get("BB_VIDEO_BUFFER_ROOT", "").strip()
+    if configured:
+        return Path(configured)
+    mounted = Path("/ram/video-buffer")
+    if mounted.is_dir():
+        return mounted
+    shm = Path("/dev/shm")
+    if shm.is_dir():
+        return shm / "blackbox-video"
+    return Path(tempfile.gettempdir()) / "blackbox-video"
 
 
 def _preview_signature(camera: CameraSettings) -> str:
@@ -38,9 +57,13 @@ class Supervisor:
         data_root: Path,
         spawn: Callable[[list[str]], Any] | None = None,
         hardware_h264: Callable[[], bool] | None = None,
+        buffer_root: Path | None = None,
+        spawn_raw: Callable[[list[str]], Any] | None = None,
     ) -> None:
         self.data_root = data_root
+        self.buffer_root = Path(buffer_root) if buffer_root is not None else ram_buffer_root()
         self.spawn = spawn or _popen
+        self.spawn_raw = spawn_raw or _popen_raw
         self._hardware_h264 = hardware_h264 or h264_encoder_present
         self._hw_h264: bool | None = None
         self.output_root = data_root / "video"
@@ -48,6 +71,10 @@ class Supervisor:
         self.incident_episodes: dict[str, dict[str, Any]] = {}
         self.buffers: dict[str, dict[str, Any]] = {}
         self.previews: dict[str, dict[str, Any]] = {}
+        self.motion: dict[str, dict[str, Any]] = {}
+        self.trackers: dict[str, MotionTracker] = {}
+        self.pending_motion: list[dict[str, str]] = []
+        self._motion_lock = threading.Lock()
         self.preview_errors: dict[str, str] = {}
         self.closed: dict[str, dict[str, str]] = {}
         self.pending_logs: list[dict[str, str]] = []
@@ -63,12 +90,18 @@ class Supervisor:
             self.output_root = Path(output_root)
         events: list[dict[str, str]] = []
         self._reap_episodes(events)
-        manual_jobs = [item for item in episodes if not item.get("incident_id")]
+        manual_jobs = [item for item in episodes if not _buffer_job(item)]
         self._sync_episodes(config, manual_jobs, events)
         manual_recording = {str(slot["camera_id"]) for slot in self.episodes.values() if _running(slot["proc"])}
-        self._sync_previews(previews, manual_recording | {str(item.get("camera_id")) for item in episodes if item.get("incident_id")})
+        held = {
+            str(item.get("camera_id"))
+            for item in episodes
+            if _buffer_job(item) and item.get("state") in {"queued", "recording", "stopping"}
+        }
+        self._sync_previews(previews, manual_recording | held)
         self._sync_buffers(config, set())
         self._sync_incident_episodes(config, episodes, events)
+        self._sync_motion(config)
         recording = manual_recording | {
             str(slot["camera_id"])
             for slot in self.incident_episodes.values()
@@ -76,15 +109,27 @@ class Supervisor:
         }
         self._drain_slots()
         self._collect_buffer_logs()
-        return {"statuses": self._statuses(config, previews, recording), "episodes": events, "logs": self._take_logs()}
+        with self._motion_lock:
+            motion = list(self.pending_motion)
+            self.pending_motion.clear()
+        return {
+            "statuses": self._statuses(config, previews, recording),
+            "episodes": events,
+            "logs": self._take_logs(),
+            "motion": motion,
+        }
 
     def stop_all(self) -> None:
-        for slot in list(self.episodes.values()) + list(self.previews.values()) + list(self.buffers.values()):
+        for slot in list(self.episodes.values()) + list(self.previews.values()) + list(self.buffers.values()) + list(self.motion.values()):
             _stop(slot["proc"])
         self.episodes.clear()
         self.incident_episodes.clear()
         self.buffers.clear()
         self.previews.clear()
+        self.motion.clear()
+        with self._motion_lock:
+            self.trackers.clear()
+            self.pending_motion.clear()
 
     def _reap_episodes(self, events: list[dict[str, str]]) -> None:
         for episode_id in list(self.episodes):
@@ -122,7 +167,7 @@ class Supervisor:
             state = str(item.get("state") or "")
             if not episode_id or state not in {"queued", "recording", "stopping"}:
                 continue
-            if item.get("incident_id"):
+            if _buffer_job(item):
                 continue
             if episode_id in self.closed:
                 if episode_id not in emitted:
@@ -224,7 +269,7 @@ class Supervisor:
         for camera_id, camera in wanted.items():
             if camera_id in self.buffers:
                 continue
-            directory = self.output_root / ".buffer" / camera_id
+            directory = self.buffer_root / camera_id
             pattern = directory / "%Y%m%d_%H%M%S.mkv"
             argv = build_buffer_argv(camera, pattern, segment_sec)
             signature = f"{_preview_signature(camera)}|segment:{segment_sec}"
@@ -245,7 +290,7 @@ class Supervisor:
                 "segment_sec": segment_sec,
                 "log_source": "ffmpeg-buffer",
             }
-            self._note(camera_id, f"Кольцевой буфер запущен, сегмент {segment_sec} с", level="info", source="hub")
+            self._note(camera_id, f"Кольцевой буфер в памяти, сегмент {segment_sec} с", level="info", source="hub")
 
     def _sync_incident_episodes(
         self,
@@ -259,7 +304,7 @@ class Supervisor:
         active_ids: set[str] = set()
         for item in episodes:
             episode_id = str(item.get("id") or "")
-            if not episode_id or not item.get("incident_id") or item.get("state") not in {"queued", "recording"}:
+            if not episode_id or item.get("state") not in {"queued", "recording"} or not _buffer_job(item):
                 continue
             if episode_id in self.closed:
                 events.append(dict(self.closed[episode_id]))
@@ -283,7 +328,10 @@ class Supervisor:
             active_ids.add(episode_id)
             slot = self.incident_episodes.get(episode_id)
             incident_id = str(item.get("incident_id") or "")
-            output_dir = self.output_root / "incidents" / incident_id / camera_id
+            if incident_id:
+                output_dir = self.output_root / "incidents" / incident_id / camera_id
+            else:
+                output_dir = self.output_root / "motion" / camera_id / episode_id
             output_dir.mkdir(parents=True, exist_ok=True)
             known = set(str(path) for path in item.get("paths") or [])
             if slot is None:
@@ -426,7 +474,24 @@ class Supervisor:
         for camera in config.cameras:
             if camera.id in recording:
                 slot = next((item for item in self.episodes.values() if item["camera_id"] == camera.id and _running(item["proc"])), None)
-                rows.append({"id": camera.id, "state": "recording", "message": _tail(slot) if slot is not None else "Идёт запись инцидента"})
+                if slot is not None:
+                    rows.append({"id": camera.id, "state": "recording", "message": _tail(slot)})
+                    continue
+                motion_slot = next(
+                    (
+                        item
+                        for item in self.incident_episodes.values()
+                        if item["camera_id"] == camera.id and not item.get("incident_id") and not item.get("finished")
+                    ),
+                    None,
+                )
+                rows.append(
+                    {
+                        "id": camera.id,
+                        "state": "recording",
+                        "message": "Запись по движению" if motion_slot is not None else "Идёт запись инцидента",
+                    }
+                )
                 continue
             preview = self.previews.get(camera.id)
             if preview is not None and _running(preview["proc"]):
@@ -465,8 +530,83 @@ class Supervisor:
         self._note(camera_id, "Просмотр остановлен на время записи", level="info", source="hub")
         _stop(slot["proc"])
 
+    def _sync_motion(self, config: VideoConfig) -> None:
+        wanted = {
+            camera.id: camera
+            for camera in config.cameras
+            if camera.enabled and camera.url and camera.motion
+        }
+        for camera_id in list(self.motion):
+            slot = self.motion[camera_id]
+            camera = wanted.get(camera_id)
+            signature = _motion_signature(camera) if camera is not None else ""
+            if camera is None or signature != slot["signature"] or not _running(slot["proc"]):
+                self._drain_slot(slot)
+                _stop(slot["proc"])
+                self.motion.pop(camera_id, None)
+                if camera is None:
+                    self._drop_tracker(camera_id)
+                    self._note(camera_id, "Детектор движения остановлен", level="info", source="motion")
+        for camera_id, camera in wanted.items():
+            self._ensure_tracker(camera)
+            if camera_id in self.motion:
+                continue
+            argv = build_motion_argv(camera)
+            try:
+                proc = self.spawn_raw(argv)
+            except OSError as exc:
+                message = "ffmpeg не найден" if isinstance(exc, FileNotFoundError) else str(exc)
+                self._note(camera_id, f"Не удалось запустить детектор движения: {message}", level="error", source="motion")
+                continue
+            self.motion[camera_id] = {
+                "proc": proc,
+                "signature": _motion_signature(camera),
+                "camera_id": camera_id,
+                "lines": _watch(proc),
+                "sent": 0,
+                "log_source": "motion",
+            }
+            threading.Thread(target=_read_frames, args=(proc, camera_id, self._push_frame), daemon=True).start()
+            self._note(
+                camera_id,
+                f"Детектор движения запущен, {ANALYSIS_WIDTH}×{ANALYSIS_HEIGHT}, {camera.motion_gap_sec} с после последнего изменения",
+                level="info",
+                source="motion",
+            )
+
+    def _ensure_tracker(self, camera: CameraSettings) -> None:
+        with self._motion_lock:
+            tracker = self.trackers.get(camera.id)
+            if tracker is None:
+                tracker = MotionTracker()
+                self.trackers[camera.id] = tracker
+            tracker.configure(
+                noise=camera.motion_noise,
+                threshold_pct=camera.motion_threshold,
+                min_frames=camera.motion_min_frames,
+                gap_sec=camera.motion_gap_sec,
+            )
+
+    def _drop_tracker(self, camera_id: str) -> None:
+        with self._motion_lock:
+            tracker = self.trackers.pop(camera_id, None)
+            if tracker is not None and tracker.active:
+                self.pending_motion.append({"camera_id": camera_id, "state": "stop", "at": _now()})
+
+    def _push_frame(self, camera_id: str, frame: bytes, now: float | None = None) -> None:
+        moment = time.time() if now is None else now
+        with self._motion_lock:
+            tracker = self.trackers.get(camera_id)
+            if tracker is None:
+                return
+            edge = tracker.push(frame, moment)
+            if edge is None:
+                return
+            at = datetime.fromtimestamp(moment, timezone.utc).isoformat()
+            self.pending_motion.append({"camera_id": camera_id, "state": edge, "at": at})
+
     def _drain_slots(self) -> None:
-        for slot in list(self.episodes.values()) + list(self.previews.values()):
+        for slot in list(self.episodes.values()) + list(self.previews.values()) + list(self.motion.values()):
             self._drain_slot(slot)
 
     def _drain_slot(self, slot: dict[str, Any]) -> None:
@@ -523,6 +663,19 @@ def _slot(proc: Any, path: Path, camera_id: str, started_at: str) -> dict[str, A
     return {"proc": proc, "path": path, "camera_id": camera_id, "started_at": started_at, "lines": _watch(proc), "sent": 0}
 
 
+def _timestamp(value: Any) -> float | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        moment = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    return moment.timestamp()
+
+
 def _due(value: Any) -> bool:
     text = str(value or "").strip()
     if not text:
@@ -548,8 +701,47 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _buffer_job(item: dict[str, Any]) -> bool:
+    return bool(item.get("incident_id")) or bool(item.get("capture_from"))
+
+
+def _motion_signature(camera: CameraSettings) -> str:
+    return json.dumps({"url": camera.url, "rtsp_transport": camera.rtsp_transport}, sort_keys=True)
+
+
 def _popen(argv: list[str]) -> subprocess.Popen:
     return subprocess.Popen(argv, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+
+
+def _popen_raw(argv: list[str]) -> subprocess.Popen:
+    return subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+
+def _read_frames(proc: Any, camera_id: str, push: Callable[[str, bytes], None]) -> None:
+    stream = getattr(proc, "stdout", None)
+    if stream is None or not hasattr(stream, "read"):
+        return
+    size = ANALYSIS_WIDTH * ANALYSIS_HEIGHT
+    try:
+        while True:
+            frame = _read_exact(stream, size)
+            if frame is None:
+                return
+            push(camera_id, frame)
+    except Exception:
+        return
+
+
+def _read_exact(stream: Any, size: int) -> bytes | None:
+    chunks: list[bytes] = []
+    got = 0
+    while got < size:
+        block = stream.read(size - got)
+        if isinstance(block, str) or not block:
+            return None
+        chunks.append(block)
+        got += len(block)
+    return b"".join(chunks)
 
 
 def _running(proc: Any) -> bool:

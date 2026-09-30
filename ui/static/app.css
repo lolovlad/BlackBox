@@ -2138,6 +2138,25 @@
 }
 .bb-camera-pick span { color: var(--bb-slate); font-size: 0.78rem; }
 .bb-camera-pick.is-selected { border-color: var(--bb-accent); background: #e8edf5; box-shadow: inset 0 0 0 1px var(--bb-accent); }
+.bb-camera-pick.is-off { opacity: 0.62; }
+.bb-camera-tabs { margin: 0 0 0.9rem; }
+.bb-tab.is-on { background: #e7eefc; border-color: #2458c5; font-weight: 600; }
+#cameras-form [hidden] { display: none !important; }
+.bb-quota { display: grid; gap: 0.4rem; margin-top: 0.85rem; max-width: 28rem; }
+.bb-quota-bar { height: 8px; border-radius: 99px; background: #e6ebf3; overflow: hidden; }
+.bb-quota-bar span { display: block; height: 100%; width: 0; background: #2458c5; }
+.bb-quota-bar.is-over span { background: #b42318; }
+.bb-episode-kind {
+  display: inline-block;
+  margin-right: 0.4rem;
+  padding: 0.05rem 0.4rem;
+  border-radius: 999px;
+  background: #e7eefc;
+  color: #2458c5;
+  font-size: 0.72rem;
+  font-weight: 650;
+  letter-spacing: 0.01em;
+}
 .bb-camera-live {
   display: grid;
   grid-template-columns: minmax(220px, 420px) minmax(0, 1fr);

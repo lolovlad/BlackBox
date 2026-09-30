@@ -54,6 +54,13 @@ def _incident_dict(row: sqlite3.Row) -> dict[str, Any]:
     }
 
 
+def _path_key(value: str) -> str:
+    try:
+        return str(Path(value).resolve(strict=False))
+    except OSError:
+        return str(value)
+
+
 def _parse_iso(value: Any) -> datetime | None:
     text = str(value or "").strip()
     if not text:
@@ -825,6 +832,83 @@ class HubRepository:
         if episode is None:
             raise RuntimeError("episode was not stored")
         return episode
+
+    def apply_motion_edge(self, camera_id: str, state: str, at: str, *, pre_seconds: int) -> dict[str, Any] | None:
+        """Open, extend, or schedule the end of one motion clip for a camera.
+
+        A start while the previous clip is still open continues that clip.
+        A stop sets stop_at; the video service closes the file after the gap
+        has already elapsed in the detector.
+        """
+        moment = _parse_iso(at) or datetime.now(timezone.utc)
+        stamp = moment.astimezone(timezone.utc).isoformat()
+        pre_seconds = max(0, min(int(pre_seconds), 3600))
+        with self.connect() as c:
+            c.execute("BEGIN IMMEDIATE")
+            rows = c.execute(
+                "SELECT * FROM video_episodes WHERE camera_id=? AND state IN ('queued','recording','stopping') ORDER BY created_at DESC",
+                (camera_id,),
+            ).fetchall()
+            motion = next((row for row in rows if row["capture_from"] and not row["incident_id"]), None)
+            other = next((row for row in rows if motion is None or row["id"] != motion["id"]), None)
+            if state == "start":
+                if motion is not None:
+                    if motion["stop_at"]:
+                        c.execute("UPDATE video_episodes SET stop_at=NULL WHERE id=?", (motion["id"],))
+                    episode_id = str(motion["id"])
+                elif other is not None:
+                    c.execute("COMMIT")
+                    return None
+                else:
+                    episode_id = secrets.token_hex(8)
+                    capture_from = (moment - timedelta(seconds=pre_seconds)).isoformat()
+                    c.execute(
+                        "INSERT INTO video_episodes(id,camera_id,vm_id,incident_id,state,path,message,started_at,ended_at,stop_at,duration_sec,paths_json,capture_from,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                        (episode_id, camera_id, None, None, "queued", "", "", stamp, None, None, 86400, "[]", capture_from, stamp),
+                    )
+            elif state == "stop":
+                if motion is None:
+                    c.execute("COMMIT")
+                    return None
+                episode_id = str(motion["id"])
+                c.execute(
+                    "UPDATE video_episodes SET stop_at=? WHERE id=? AND state IN ('queued','recording')",
+                    (stamp, episode_id),
+                )
+            else:
+                c.execute("COMMIT")
+                return None
+            c.execute("COMMIT")
+        return self.get_episode(episode_id)
+
+    def note_purged_motion_files(self, removed: list[str]) -> int:
+        """Drop deleted motion paths from episodes. Incident rows are left unchanged."""
+        removed_keys = {_path_key(item) for item in removed if str(item).strip()}
+        if not removed_keys:
+            return 0
+        updated = 0
+        with self.connect() as c:
+            rows = c.execute("SELECT id, incident_id, path, paths_json, state, message FROM video_episodes").fetchall()
+            for row in rows:
+                if row["incident_id"]:
+                    continue
+                paths = json.loads(row["paths_json"] or "[]")
+                if not isinstance(paths, list):
+                    paths = []
+                if not paths and row["path"]:
+                    paths = [str(row["path"])]
+                kept = [item for item in paths if _path_key(str(item)) not in removed_keys]
+                if len(kept) == len(paths):
+                    continue
+                message = str(row["message"] or "")
+                if not kept and str(row["state"] or "") in {"finished", "error"}:
+                    message = "Удалено: каталог видео превысил лимит"
+                c.execute(
+                    "UPDATE video_episodes SET path=?, paths_json=?, message=? WHERE id=?",
+                    (str(kept[0]) if kept else "", json.dumps(kept), message, row["id"]),
+                )
+                updated += 1
+        return updated
 
     def get_episode(self, episode_id: str) -> dict[str, Any] | None:
         with self.connect() as c:

@@ -6,7 +6,7 @@
   <div class="bb-camera-toolbar">
     <div>
       <h1 class="bb-page-title">Камеры</h1>
-      <p class="bb-page-lead">Настройка идёт по шагам, как у ВМ. При первом алерте начинается запись всех включённых камер, а связанные алерты объединяются в один инцидент.</p>
+      <p class="bb-page-lead">Настройка идёт по шагам, как у ВМ. При первом алерте начинается запись всех включённых камер. Камера с детектором движения пишет отдельный ролик, пока картинка меняется.</p>
     </div>
     <button type="button" class="bb-btn" id="camera-add"><i class="bi bi-plus-lg"></i> Добавить камеру</button>
   </div>
@@ -33,8 +33,8 @@
       </div>
       <form id="cameras-form" class="bb-form bb-vm-form">
         <section class="bb-vm-step">
-          <h3 class="bb-vm-step-title"><span class="bb-step-num">1</span> Носитель</h3>
-          <p class="bb-panel-lead">Тот же список дисков, что у ВМ. Эпизоды пишутся в каталог на выбранном носителе.</p>
+          <h3 class="bb-vm-step-title">Носитель и место</h3>
+          <p class="bb-panel-lead">Тот же список дисков, что у ВМ. Когда каталог видео переполняется, удаляются только старые записи движения. Ролики инцидентов остаются.</p>
           <div class="bb-settings-grid">
             {% call field('Носитель', 'Куда писать файлы. Список берётся из одобренных ресурсов хранения.', 'bi-hdd') %}
             <select data-field="storage_resource_id"></select>
@@ -42,17 +42,31 @@
             {% call field('Каталог на носителе', 'Подкаталог, как telemetry у ВМ. По умолчанию video.', 'bi-folder') %}
             <input data-field="video_subdir" value="video" pattern="[A-Za-z0-9_./-]+">
             {% endcall %}
-            {% call field('До алерта, с', 'Запас для графиков перед началом инцидента. Видеозапись начинается с первого алерта.', 'bi-arrow-counterclockwise') %}
+            {% call field('До алерта, с', 'Сколько секунд видео держать в памяти до алерта. Эти секунды попадают в запись инцидента.', 'bi-arrow-counterclockwise') %}
             <input data-field="incident_pre_sec" type="number" min="0" max="3600" value="10">
             {% endcall %}
             {% call field('После алерта, с', 'Запись продолжается после снятия последнего алерта, чтобы объединить близкие события.', 'bi-hourglass-split') %}
             <input data-field="incident_post_sec" type="number" min="0" max="3600" value="15">
             {% endcall %}
+            {% call field('Лимит каталога, ГБ', 'Сколько может занимать весь каталог видео. Ноль выключает очистку. Сначала удаляются самые старые записи движения.', 'bi-hdd') %}
+            <input data-field="motion_quota_gb" type="number" min="0" max="100000" value="20">
+            {% endcall %}
+          </div>
+          <div class="bb-quota" id="camera-quota">
+            <div class="bb-quota-bar" id="camera-quota-bar"><span id="camera-quota-fill"></span></div>
+            <p id="camera-usage" class="bb-field-hint"></p>
           </div>
         </section>
         <div id="camera-steps" hidden>
-          <section class="bb-vm-step">
-            <h3 class="bb-vm-step-title"><span class="bb-step-num">2</span> Камера</h3>
+          <div class="bb-tabs bb-camera-tabs" id="camera-tabs" role="tablist" aria-label="Разделы камеры">
+            <button type="button" class="bb-tab is-on" data-camera-tab="camera">Камера</button>
+            <button type="button" class="bb-tab" data-camera-tab="link">Подключение</button>
+            <button type="button" class="bb-tab" data-camera-tab="picture">Картинка</button>
+            <button type="button" class="bb-tab" data-camera-tab="episode">Эпизод</button>
+            <button type="button" class="bb-tab" data-camera-tab="motion">Движение</button>
+          </div>
+          <section class="bb-vm-step" data-camera-panel="camera">
+            <h3 class="bb-vm-step-title">Камера</h3>
             <div class="bb-settings-grid">
               {% call field('Имя', 'Как камера будет подписана в списке.', 'bi-tag') %}
               <input data-field="name" required maxlength="128" placeholder="Вход">
@@ -66,8 +80,8 @@
             {% endcall %}
             <button type="button" class="bb-btn bb-btn-danger bb-btn-sm" id="camera-delete"><i class="bi bi-trash"></i> Удалить из списка</button>
           </section>
-          <section class="bb-vm-step">
-            <h3 class="bb-vm-step-title"><span class="bb-step-num">3</span> Подключение</h3>
+          <section class="bb-vm-step" data-camera-panel="link" hidden>
+            <h3 class="bb-vm-step-title">Подключение</h3>
             <div class="bb-settings-grid">
               {% call field('RTSP URL', 'Адрес потока. rtsp:// или rtsps://.', 'bi-link-45deg') %}
               <input data-field="url" placeholder="rtsp://10.0.0.8/stream">
@@ -86,8 +100,8 @@
               {% endcall %}
             </div>
           </section>
-          <section class="bb-vm-step">
-            <h3 class="bb-vm-step-title"><span class="bb-step-num">4</span> Картинка</h3>
+          <section class="bb-vm-step" data-camera-panel="picture" hidden>
+            <h3 class="bb-vm-step-title">Картинка</h3>
             <div class="bb-settings-grid">
               {% call field('Разрешение', 'Исходное оставляет размер потока камеры.', 'bi-aspect-ratio') %}
               <select data-field="resolution">
@@ -121,14 +135,17 @@
                 <option value="h264_v4l2m2m">H.264 аппаратный Pi</option>
               </select>
               {% endcall %}
-              {% call field('Профиль H.264', 'Используется кодеком H.264.', 'bi-sliders') %}
+              <div data-h264-profile>
+              {% call field('Профиль H.264', 'Только для обычного H.264.', 'bi-sliders') %}
               <select data-field="profile">
                 <option value="baseline">baseline</option>
                 <option value="main">main</option>
                 <option value="high">high</option>
               </select>
               {% endcall %}
-              {% call field('Preset', 'Быстрее preset — меньше нагрузка на Pi.', 'bi-cpu') %}
+              </div>
+              <div data-encoder-preset>
+              {% call field('Preset', 'Быстрее preset — меньше нагрузка на Pi. Для H.264 и H.265.', 'bi-cpu') %}
               <select data-field="preset">
                 <option value="ultrafast">ultrafast</option>
                 <option value="superfast">superfast</option>
@@ -138,6 +155,7 @@
                 <option value="medium">medium</option>
               </select>
               {% endcall %}
+              </div>
               {% call field('Битрейт, кбит/с', 'Для copy это только оценка размера, поток не режется.', 'bi-bar-chart') %}
               <input data-field="bitrate_kbps" type="number" min="64" max="50000" required>
               {% endcall %}
@@ -151,14 +169,16 @@
                 <option value="copy">copy</option>
               </select>
               {% endcall %}
+              <div data-audio-bitrate>
               {% call field('Звук, кбит/с', 'Для AAC.', 'bi-music-note') %}
               <input data-field="audio_bitrate_kbps" type="number" min="32" max="512">
               {% endcall %}
+              </div>
             </div>
             <p id="camera-copy-note" class="bb-hint" hidden>Оценка по введённому битрейту: фактический поток камеры может отличаться.</p>
           </section>
-          <section class="bb-vm-step">
-            <h3 class="bb-vm-step-title"><span class="bb-step-num">5</span> Эпизод</h3>
+          <section class="bb-vm-step" data-camera-panel="episode" hidden>
+            <h3 class="bb-vm-step-title">Эпизод</h3>
             <div class="bb-settings-grid">
               {% call field('Контейнер', 'Один эпизод — один файл.', 'bi-file-earmark-play') %}
               <select data-field="container">
@@ -174,6 +194,29 @@
             <p id="camera-path" class="bb-mono bb-hint"></p>
             <h4 class="bb-section-title">События</h4>
             <ul id="camera-episodes" class="bb-episode-list"></ul>
+          </section>
+          <section class="bb-vm-step" data-camera-panel="motion" hidden>
+            <h3 class="bb-vm-step-title">Движение</h3>
+            <p class="bb-panel-lead">Отдельный поток сравнивает соседние кадры. Запись начинается, когда изменилась достаточная часть картинки, и ещё держится после последнего изменения. Это не поиск человека. Секунды до движения берутся из поля «До алерта».</p>
+            {% call check('Запись по движению', 'Держит постоянное подключение и начинает ролик само. На время записи просмотр этой камеры останавливается.') %}
+            <input type="checkbox" data-field="motion">
+            {% endcall %}
+            <div data-motion-fields hidden>
+            <div class="bb-settings-grid">
+              {% call field('Шум пикселя', 'Насколько пиксель должен отличаться от прошлого кадра, от 1 до 255. Как noise_level в Motion.', 'bi-moisture') %}
+              <input data-field="motion_noise" type="number" min="1" max="255" value="32">
+              {% endcall %}
+              {% call field('Порог, % кадра', 'Доля изменившихся пикселей, после которой кадр считается движением. Как threshold в Motion, но в процентах.', 'bi-bullseye') %}
+              <input data-field="motion_threshold" type="number" min="1" max="80" value="2">
+              {% endcall %}
+              {% call field('Кадров подряд', 'Столько кадров анализа должны превысить порог. Один кадр — вспышка света — запись не начинает.', 'bi-layers') %}
+              <input data-field="motion_min_frames" type="number" min="1" max="30" value="2">
+              {% endcall %}
+              {% call field('Пауза после движения, с', 'Сколько секунд спокойной картинки ждать, прежде чем закрыть ролик. Движение внутри паузы продолжает ту же запись. Как event_gap в Motion.', 'bi-hourglass-split') %}
+              <input data-field="motion_gap_sec" type="number" min="0" max="3600" value="10">
+              {% endcall %}
+            </div>
+            </div>
           </section>
         </div>
         <p id="camera-empty" class="bb-muted">Добавьте камеру, чтобы настроить подключение, картинку и эпизод.</p>
