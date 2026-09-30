@@ -273,20 +273,17 @@
     const list = root.querySelector('[data-gpio-list]');
     const detail = root.querySelector('[data-gpio-detail]');
     const empty = root.querySelector('[data-gpio-empty]');
-    const layout = root.querySelector('[data-gpio-layout]');
     const summary = root.querySelector('[data-gpio-summary]');
     const stamp = root.querySelector('[data-gpio-time]');
-    if (!list || !detail || !layout) return;
+    if (!list || !detail) return;
     stamp.textContent = 'Последнее обновление: ' + (gpioTime ? formatTime(gpioTime) : 'нет данных');
     if (!gpioItems.length) {
-      layout.hidden = true;
       empty.hidden = false;
       summary.textContent = 'Нет данных';
       list.innerHTML = '';
-      detail.innerHTML = '';
+      detail.innerHTML = '<div class="bb-board-placeholder"><i class="bi bi-cpu"></i><p>GPIO не подключён</p><span>Системная статистика продолжает обновляться.</span></div>';
       return;
     }
-    layout.hidden = false;
     empty.hidden = true;
     const byBcm = {};
     let active = 0;

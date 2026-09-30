@@ -50,6 +50,18 @@ def test_emergency_rule_transitions_persist_duration_and_keep_snapshot(tmp_path)
     assert repo.list_emergency_rules() == []
 
 
+def test_emergency_rules_can_be_scoped_to_one_vm(tmp_path):
+    repo = HubRepository(tmp_path / "hub.db")
+    repo.save_emergency_rule(name="Общее правило", expression="Pressure < 10")
+    scoped = repo.save_emergency_rule(name="Только генератор 1", expression="Pressure < 5", vm_id="vm-1")
+    moment = datetime(2026, 9, 28, 12, 0, tzinfo=timezone.utc)
+
+    vm_two = repo.evaluate_emergency_rules("vm-2", moment, {"Pressure": 3})
+    assert {item["name"] for item in vm_two} == {"Общее правило"}
+    vm_one = repo.evaluate_emergency_rules("vm-1", moment, {"Pressure": 3})
+    assert {item["name"] for item in vm_one} == {"Общее правило", scoped["name"]}
+
+
 def test_emergency_rule_api_requires_admin_and_csrf(tmp_path):
     with _client(tmp_path) as client:
         client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin-password"})

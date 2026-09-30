@@ -168,6 +168,7 @@ class HubRepository:
                 CREATE INDEX IF NOT EXISTS idx_alarm_events_vm ON alarm_events(vm_id, kind, created_at);
                 CREATE TABLE IF NOT EXISTS emergency_rules (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    vm_id TEXT,
                     name TEXT NOT NULL,
                     expression TEXT NOT NULL,
                     is_deleted INTEGER NOT NULL DEFAULT 0,
@@ -266,6 +267,9 @@ class HubRepository:
                 if name not in episode_columns:
                     c.execute(f"ALTER TABLE video_episodes ADD COLUMN {name} {definition}")
             c.execute("CREATE INDEX IF NOT EXISTS idx_video_episodes_incident ON video_episodes(incident_id, state)")
+            rule_columns = {row[1] for row in c.execute("PRAGMA table_info(emergency_rules)").fetchall()}
+            if "vm_id" not in rule_columns:
+                c.execute("ALTER TABLE emergency_rules ADD COLUMN vm_id TEXT")
             c.executemany("INSERT OR IGNORE INTO roles(name) VALUES (?)", [("admin",), ("user",)])
             columns = {row[1] for row in c.execute("PRAGMA table_info(virtual_machines)").fetchall()}
             if "heartbeat_at" not in columns:
@@ -582,22 +586,22 @@ class HubRepository:
             rows = c.execute("SELECT * FROM emergency_rules WHERE is_deleted=0 ORDER BY id").fetchall()
         return [dict(row) | {"is_deleted": bool(row["is_deleted"])} for row in rows]
 
-    def save_emergency_rule(self, *, name: str, expression: str) -> dict[str, Any]:
+    def save_emergency_rule(self, *, name: str, expression: str, vm_id: str | None = None) -> dict[str, Any]:
         stamp = datetime.now(timezone.utc).isoformat()
         with self.connect() as c:
             cur = c.execute(
-                "INSERT INTO emergency_rules(name,expression,is_deleted,created_at,updated_at) VALUES(?,?,0,?,?)",
-                (name.strip(), expression.strip(), stamp, stamp),
+                "INSERT INTO emergency_rules(vm_id,name,expression,is_deleted,created_at,updated_at) VALUES(?,?,?,0,?,?)",
+                (vm_id, name.strip(), expression.strip(), stamp, stamp),
             )
             row = c.execute("SELECT * FROM emergency_rules WHERE id=?", (cur.lastrowid,)).fetchone()
         return dict(row) | {"is_deleted": False}
 
-    def update_emergency_rule(self, rule_id: int, *, name: str, expression: str) -> dict[str, Any] | None:
+    def update_emergency_rule(self, rule_id: int, *, name: str, expression: str, vm_id: str | None = None) -> dict[str, Any] | None:
         stamp = datetime.now(timezone.utc).isoformat()
         with self.connect() as c:
             cur = c.execute(
-                "UPDATE emergency_rules SET name=?,expression=?,updated_at=? WHERE id=? AND is_deleted=0",
-                (name.strip(), expression.strip(), stamp, int(rule_id)),
+                "UPDATE emergency_rules SET vm_id=?,name=?,expression=?,updated_at=? WHERE id=? AND is_deleted=0",
+                (vm_id, name.strip(), expression.strip(), stamp, int(rule_id)),
             )
             row = c.execute("SELECT * FROM emergency_rules WHERE id=? AND is_deleted=0", (int(rule_id),)).fetchone() if cur.rowcount else None
         return (dict(row) | {"is_deleted": False}) if row is not None else None
@@ -653,7 +657,10 @@ class HubRepository:
         with self.connect() as c:
             c.execute("BEGIN IMMEDIATE")
             try:
-                rules = c.execute("SELECT * FROM emergency_rules WHERE is_deleted=0 ORDER BY id").fetchall()
+                rules = c.execute(
+                    "SELECT * FROM emergency_rules WHERE is_deleted=0 AND (vm_id IS NULL OR vm_id=?) ORDER BY id",
+                    (vm_id,),
+                ).fetchall()
                 active_rows = c.execute("SELECT rule_id,event_id FROM emergency_active WHERE vm_id=?", (vm_id,)).fetchall()
                 active = {int(row["rule_id"]): int(row["event_id"]) for row in active_rows}
                 desired: dict[int, tuple[sqlite3.Row, bool | None]] = {}
@@ -1278,10 +1285,16 @@ class HubRepository:
         post_seconds = max(0, min(int(post_seconds), 3600))
         with self.connect() as c:
             c.execute("BEGIN IMMEDIATE")
-            active = c.execute(
-                "SELECT 1 FROM alarm_active WHERE vm_id=? UNION ALL SELECT 1 FROM emergency_active WHERE vm_id=? LIMIT 1",
-                (vm_id, vm_id),
-            ).fetchone() is not None
+            if kind == "emergency":
+                active = c.execute(
+                    "SELECT 1 FROM emergency_active WHERE vm_id=? LIMIT 1",
+                    (vm_id,),
+                ).fetchone() is not None
+            else:
+                active = c.execute(
+                    "SELECT 1 FROM alarm_active WHERE vm_id=? UNION ALL SELECT 1 FROM emergency_active WHERE vm_id=? LIMIT 1",
+                    (vm_id, vm_id),
+                ).fetchone() is not None
             row = c.execute(
                 "SELECT * FROM video_incidents WHERE vm_id=? AND state IN ('active','finishing') ORDER BY started_at DESC LIMIT 1",
                 (vm_id,),

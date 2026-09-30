@@ -184,6 +184,7 @@ class EpisodeEventItem(BaseModel):
 
 
 class EmergencyRuleBody(BaseModel):
+    vm_id: str | None = None
     name: str = Field(min_length=1, max_length=255)
     expression: str = Field(min_length=1, max_length=2000)
 
@@ -721,8 +722,6 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
         app.state.ingest_queue = asyncio.Queue(maxsize=max(1, cfg.queue_size))
         app.state.vm_alerts = {}
         stop_ingest = asyncio.Event()
-        incident_queue: asyncio.Queue[tuple[TagSample, dict[str, Any]]] = asyncio.Queue()
-        stop_incidents = asyncio.Event()
         rule_queue: asyncio.Queue[TagSample] = asyncio.Queue()
         stop_rules = asyncio.Event()
 
@@ -885,56 +884,6 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
 
         async def _process_alarm_event(sample: TagSample, event: dict[str, Any]) -> None:
             await _publish_alarm_edge(sample, event)
-            incident_queue.put_nowait((sample, event))
-
-        async def incident_loop() -> None:
-            while not stop_incidents.is_set() or not incident_queue.empty():
-                try:
-                    sample, event = await asyncio.wait_for(incident_queue.get(), timeout=0.5)
-                except asyncio.TimeoutError:
-                    continue
-                vm_key = str(sample.vm_id)
-                try:
-                    video_config = VideoConfig.model_validate(await asyncio.to_thread(repo.camera_document))
-                    camera_ids = [camera.id for camera in video_config.cameras if camera.enabled and camera.url]
-                    if event["state"] == "active":
-                        incident = await asyncio.to_thread(
-                            repo.register_incident_start,
-                            vm_key,
-                            name=str(event["name"]),
-                            kind=str(event.get("kind") or "alert"),
-                            created_at=sample.captured_at,
-                            camera_ids=camera_ids,
-                            pre_seconds=video_config.incident_pre_sec,
-                            post_seconds=video_config.incident_post_sec,
-                        )
-                        event_payload = {"kind": event.get("kind", "alert"), "state": "active", "incident_id": incident.get("id")}
-                        await bus.publish(
-                            "alarms",
-                            AlarmEvent(
-                                vm_id=sample.vm_id,
-                                timestamp=sample.captured_at,
-                                severity="warning",
-                                code="incident_started",
-                                message=f"Инцидент {incident.get('id', '')} начат",
-                                active=True,
-                                payload=event_payload,
-                            ).model_dump(mode="json"),
-                        )
-                    else:
-                        await asyncio.to_thread(
-                            repo.register_incident_end,
-                            vm_key,
-                            name=str(event.get("name") or ""),
-                            kind=str(event.get("kind") or "alert"),
-                            created_at=sample.captured_at,
-                            post_seconds=video_config.incident_post_sec,
-                            has_active=bool(event.get("has_active", False)),
-                        )
-                except Exception:
-                    logger.exception("Failed to synchronize video incident for %s", vm_key)
-                finally:
-                    incident_queue.task_done()
 
         def _evaluate_rules_sync(sample: TagSample) -> list[dict[str, Any]]:
             document = repo.map_by_version(sample.map_version, getattr(sample.protocol, "value", sample.protocol)) or {}
@@ -993,7 +942,6 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
                     rule_queue.task_done()
 
         ingest_task = asyncio.create_task(ingest_loop())
-        incident_task = asyncio.create_task(incident_loop())
         rule_task = asyncio.create_task(rule_loop())
         stop_reconciler = asyncio.Event()
         stop_system = asyncio.Event()
@@ -1171,9 +1119,6 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
         await rule_queue.join()
         stop_rules.set()
         await rule_task
-        await incident_queue.join()
-        stop_incidents.set()
-        await incident_task
         stop_reconciler.set()
         await reconciler_task
         try:
@@ -1987,11 +1932,13 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
             item["vm_name"] = names.get(str(item["vm_id"]), str(item["vm_id"]))
         return {"items": items}
 
-    def _emergency_rule_schema() -> tuple[set[str], set[str], set[str]]:
+    def _emergency_rule_schema(vm_id: str | None = None) -> tuple[set[str], set[str], set[str]]:
         fields = {"active_alarms"}
         list_fields = {"active_alarms", "active_status", "alarms"}
         error_labels: set[str] = set()
         for vm in repo.list_vms():
+            if vm_id is not None and str(vm.get("id")) != vm_id:
+                continue
             document = repo.map_by_version(str(vm.get("map_version") or ""), str(vm.get("protocol") or "")) or {}
             for field in document.get("fields", []):
                 if not isinstance(field, dict) or not field.get("name"):
@@ -2008,16 +1955,44 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
     async def emergency_rules(request: Request):
         current_user(request, repo, cfg)
         fields, _, _ = _emergency_rule_schema()
-        return {"items": repo.list_emergency_rules(), "fields": sorted(fields)}
+        sources = []
+        for vm in repo.list_vms():
+            vm_id = str(vm["id"])
+            document = repo.map_by_version(str(vm.get("map_version") or ""), str(vm.get("protocol") or "")) or {}
+            options = [{"key": "active_alarms", "label": "Активные алерты прибора", "type": "list", "labels": []}]
+            active_alarm_labels: set[str] = set()
+            for field in document.get("fields", []):
+                if not isinstance(field, dict) or not field.get("name"):
+                    continue
+                key = str(field["name"])
+                bits = field.get("bits")
+                labels = [str(label) for label in bits.values()] if isinstance(bits, dict) else []
+                active_alarm_labels.update(labels)
+                if key == "active_alarms":
+                    continue
+                kind = str(field.get("kind") or "")
+                raw_type = str(field.get("type") or "")
+                field_type = "list" if raw_type in {"bitfield", "alert"} or kind == "alert" else "boolean" if raw_type in {"bool", "gpio"} or kind == "discrete" else "number"
+                options.append({
+                    "key": key,
+                    "label": str(field.get("display_name") or key),
+                    "type": field_type,
+                    "labels": labels,
+                })
+            options[0]["labels"] = sorted(active_alarm_labels)
+            sources.append({"id": vm_id, "name": str(vm.get("name") or vm_id), "fields": options})
+        return {"items": repo.list_emergency_rules(), "fields": sorted(fields), "sources": sources}
 
     @app.post("/api/v1/emergency-rules", dependencies=[Depends(csrf_protect)])
     async def emergency_rule_create(payload: EmergencyRuleBody, request: Request, account=Depends(admin)):
-        fields, list_fields, error_labels = _emergency_rule_schema()
+        if payload.vm_id is not None and repo.get_vm(payload.vm_id) is None:
+            raise HTTPException(422, detail={"code": "vm_not_found", "message": "Выбранная ВМ не найдена"})
+        fields, list_fields, error_labels = _emergency_rule_schema(payload.vm_id)
         valid, error = validate_rule_expression(payload.expression, fields, list_fields=list_fields, error_labels=error_labels)
         if not valid:
             raise HTTPException(422, detail={"code": "invalid_rule", "message": error or "Некорректное правило"})
         try:
-            item = repo.save_emergency_rule(name=payload.name.strip(), expression=payload.expression.strip())
+            item = repo.save_emergency_rule(vm_id=payload.vm_id, name=payload.name.strip(), expression=payload.expression.strip())
         except Exception as exc:
             if "UNIQUE constraint" in str(exc):
                 raise HTTPException(409, detail={"code": "duplicate_rule", "message": "Правило с таким названием уже есть"}) from exc
@@ -2027,12 +2002,14 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
 
     @app.put("/api/v1/emergency-rules/{rule_id}", dependencies=[Depends(csrf_protect)])
     async def emergency_rule_update(rule_id: int, payload: EmergencyRuleBody, request: Request, account=Depends(admin)):
-        fields, list_fields, error_labels = _emergency_rule_schema()
+        if payload.vm_id is not None and repo.get_vm(payload.vm_id) is None:
+            raise HTTPException(422, detail={"code": "vm_not_found", "message": "Выбранная ВМ не найдена"})
+        fields, list_fields, error_labels = _emergency_rule_schema(payload.vm_id)
         valid, error = validate_rule_expression(payload.expression, fields, list_fields=list_fields, error_labels=error_labels)
         if not valid:
             raise HTTPException(422, detail={"code": "invalid_rule", "message": error or "Некорректное правило"})
         try:
-            item = repo.update_emergency_rule(rule_id, name=payload.name.strip(), expression=payload.expression.strip())
+            item = repo.update_emergency_rule(rule_id, vm_id=payload.vm_id, name=payload.name.strip(), expression=payload.expression.strip())
         except Exception as exc:
             if "UNIQUE constraint" in str(exc):
                 raise HTTPException(409, detail={"code": "duplicate_rule", "message": "Правило с таким названием уже есть"}) from exc

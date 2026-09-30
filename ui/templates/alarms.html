@@ -7,20 +7,45 @@
     <a class="bb-btn bb-btn-secondary" href="/incidents"><i class="bi bi-camera-video"></i> Инциденты</a>
   </div>
   <section class="bb-incident-section" id="bb-rule-admin" {% if user.role != 'admin' %}hidden{% endif %}>
-    <h2 class="bb-section-title">Правила аварийности</h2>
-    <form id="bb-rule-form" class="bb-rule-form">
+    <div class="bb-rule-intro">
+      <div>
+        <h2 class="bb-section-title">Правила инцидентов</h2>
+        <p class="bb-page-lead">Сырые алерты и GPIO сохраняются в журнале. Запись инцидента начинается только при срабатывании одного из этих правил.</p>
+      </div>
+    </div>
+    <form id="bb-rule-form" class="bb-rule-builder">
       <input type="hidden" name="rule_id">
-      <label class="bb-filter-field">Название<input name="name" maxlength="255" required></label>
-      <label class="bb-filter-field bb-rule-expression">Условие<input name="expression" maxlength="2000" required placeholder="('Низкое давление' in active_alarms) and RPM < 300"></label>
+      <div class="bb-rule-meta">
+        <label class="bb-filter-field">Источник
+          <select name="vm_id" required><option value="">Выберите ВМ</option></select>
+        </label>
+        <label class="bb-filter-field">Название
+          <input name="name" maxlength="255" required placeholder="Критически низкое давление">
+        </label>
+      </div>
+      <div class="bb-rule-canvas">
+        <div class="bb-rule-canvas-head">
+          <div><strong>Условия</strong><span>Условия внутри блока соединяются через «И», блоки — через «ИЛИ».</span></div>
+          <button class="bb-btn bb-btn-secondary bb-btn-sm" type="button" id="bb-rule-add-group"><i class="bi bi-plus-lg"></i> Блок «ИЛИ»</button>
+        </div>
+        <div id="bb-rule-groups"></div>
+      </div>
+      <details class="bb-rule-advanced">
+        <summary>Расширенный режим</summary>
+        <label class="bb-filter-field bb-rule-expression">Выражение
+          <textarea name="expression" maxlength="2000" rows="3" placeholder="('Низкое давление' in active_alarms) and RPM < 300"></textarea>
+        </label>
+      </details>
+      <div class="bb-rule-preview"><span>Итоговое условие</span><code id="bb-rule-preview">—</code></div>
       <div class="bb-actions"><button class="bb-btn" type="submit"><i class="bi bi-check-lg"></i> Сохранить правило</button><button class="bb-btn bb-btn-ghost" type="button" id="bb-rule-cancel" hidden>Отмена</button></div>
       <p class="bb-muted" id="bb-rule-error" role="status"></p>
     </form>
-    <div class="bb-table-wrap"><table class="bb-table"><thead><tr><th>Название</th><th>Условие</th><th></th></tr></thead><tbody id="bb-rule-rows"></tbody></table></div>
+    <div class="bb-table-wrap"><table class="bb-table"><thead><tr><th>Название</th><th>Источник</th><th>Условие</th><th></th></tr></thead><tbody id="bb-rule-rows"></tbody></table></div>
   </section>
   <section class="bb-incident-section">
     <div class="bb-page-toolbar"><h2 class="bb-section-title">История срабатываний</h2><button class="bb-btn bb-btn-secondary" id="bb-emergency-refresh" type="button"><i class="bi bi-arrow-clockwise"></i> Обновить</button></div>
     <div class="bb-table-wrap"><table class="bb-table"><thead><tr><th>Начало</th><th>Окончание</th><th>ВМ</th><th>Правило</th><th>Условие</th><th></th></tr></thead><tbody id="bb-emergency-rows"><tr><td colspan="6" class="bb-muted">Загрузка…</td></tr></tbody></table></div>
   </section>
 </section>
-<script defer src="/static/alarms.js?v={{ app_version }}"></script>
+<script defer src="/static/alarms.js?v={{ app_version }}-ui3"></script>
 {% endblock %}

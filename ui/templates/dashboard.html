@@ -9,53 +9,49 @@
   </section>
   <div id="bb-dash-boards"></div>
 
-  <section class="bb-card" id="bb-gpio">
+  <section class="bb-card bb-board-card" id="bb-gpio">
     <div class="bb-gpio-head">
-      <h2>GPIO панель</h2>
+      <div>
+        <h2>Плата Hub</h2>
+        <p class="bb-hint">Состояние GPIO и системные показатели устройства</p>
+      </div>
       <p class="bb-hint" data-gpio-summary>Нет данных</p>
     </div>
-    <div class="bb-gpio-layout" data-gpio-layout hidden>
-      <div class="bb-gpio-board" data-gpio-list></div>
-      <div class="bb-gpio-detail" data-gpio-detail></div>
+    <div class="bb-board-layout">
+      <div class="bb-board-schematic">
+        <div class="bb-board-brand"><span>BLACKBOX</span><small>GPIO / SYSTEM</small></div>
+        <div class="bb-board-core">
+          <div class="bb-gpio-rail">
+            <span class="bb-gpio-rail-label">GPIO · BCM</span>
+            <div class="bb-gpio-board" data-gpio-list></div>
+          </div>
+          <div class="bb-board-soc" aria-label="Состояние процессора и памяти">
+            <span class="bb-board-soc-label">SYSTEM ON CHIP</span>
+            <strong data-monitor="cpu">—</strong>
+            <span data-monitor="cpu_cores">Ядра: —</span>
+            <span data-monitor="cpu_fan">Вентилятор CPU: n/a</span>
+            <div class="bb-board-vitals">
+              <div><small>RAM</small><b data-monitor="memory">—</b><span data-monitor="memory_hint">Нет данных</span></div>
+              <div><small>ДИСК</small><b data-monitor="disk">—</b><span data-monitor="disk_hint">Нет данных</span></div>
+            </div>
+          </div>
+        </div>
+        <div class="bb-board-footer">
+          <span data-monitor="server_time">—</span>
+          <span data-monitor="pid">PID —</span>
+          <span data-monitor="uptime">Uptime: n/a</span>
+        </div>
+      </div>
+      <aside class="bb-board-pin-panel">
+        <div class="bb-gpio-detail" data-gpio-detail></div>
+        <p class="bb-hint" data-gpio-empty>Панель ещё не читает пины.</p>
+        <p class="bb-hint" data-gpio-time>Последнее обновление: нет данных</p>
+      </aside>
     </div>
-    <p class="bb-hint" data-gpio-empty>Панель ещё не читает пины.</p>
-    <p class="bb-hint" data-gpio-time>Последнее обновление: нет данных</p>
-  </section>
-
-  <section class="bb-card" id="bb-monitor">
-    <h2>Мониторинг устройства</h2>
-    <div class="bb-monitor-grid">
-      <article class="bb-monitor-item">
-        <div class="bb-monitor-title">Время устройства</div>
-        <div class="bb-monitor-value" data-monitor="server_time">—</div>
-        <div class="bb-hint">Системное время машины, где запущен Hub</div>
-      </article>
-      <article class="bb-monitor-item">
-        <div class="bb-monitor-title">Диск</div>
-        <div class="bb-monitor-value" data-monitor="disk">—</div>
-        <div class="bb-hint" data-monitor="disk_hint">Данные недоступны</div>
-      </article>
-      <article class="bb-monitor-item">
-        <div class="bb-monitor-title">CPU</div>
-        <div class="bb-monitor-value" data-monitor="cpu">—</div>
-        <div class="bb-hint" data-monitor="cpu_cores">Ядра: —</div>
-        <div class="bb-hint" data-monitor="cpu_fan">Вентилятор CPU: n/a</div>
-      </article>
-      <article class="bb-monitor-item">
-        <div class="bb-monitor-title">RAM</div>
-        <div class="bb-monitor-value" data-monitor="memory">—</div>
-        <div class="bb-hint" data-monitor="memory_hint">Данные недоступны</div>
-      </article>
-      <article class="bb-monitor-item">
-        <div class="bb-monitor-title">Процесс</div>
-        <div class="bb-monitor-value" data-monitor="pid">PID —</div>
-        <div class="bb-hint" data-monitor="uptime">Uptime: n/a</div>
-      </article>
-    </div>
-    <div class="bb-monitor-disks">
-      <h3>Подключенные диски</h3>
+    <details class="bb-monitor-disks">
+      <summary>Подключённые диски</summary>
       <div class="bb-monitor-disk-grid" data-monitor="disks"></div>
-    </div>
+    </details>
   </section>
   <div class="bb-busy" data-busy>
     <div class="bb-busy-panel" role="status" aria-live="polite">
@@ -65,5 +61,5 @@
   </div>
 </div>
 <script type="application/json" id="bb-dashboard-sources">{{ sources | tojson }}</script>
-<script defer src="/static/live.js?v={{ app_version }}"></script>
+<script defer src="/static/live.js?v={{ app_version }}-ui3"></script>
 {% endblock %}

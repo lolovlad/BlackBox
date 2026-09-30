@@ -183,6 +183,7 @@ def test_values_charts_and_alarm_journal_for_many_sources(tmp_path: Path) -> Non
         assert ("gen-1", "BUS High Volt", "inactive") in states
         assert ("gen-2", "BUS High Volt", "active") in states
         assert ("gen-2", "BUS High Volt", "inactive") in states
+        assert client.get("/api/v1/video/incidents").json()["items"] == []
 
         analogs = client.get("/api/v1/telemetry/rows", params=[("tab", "analog"), ("vm_id", vm_ids[0]), ("column", "RPM")]).json()
         assert analogs["columns"][0]["label"] == "Обороты"
@@ -204,8 +205,8 @@ def test_values_charts_and_alarm_journal_for_many_sources(tmp_path: Path) -> Non
 
         dashboard = client.get("/dashboard").text
         assert "Главная панель" in dashboard
-        assert "GPIO панель" in dashboard
-        assert "Мониторинг устройства" in dashboard
+        assert "Плата Hub" in dashboard
+        assert "SYSTEM ON CHIP" in dashboard
         assert "gen-1" in dashboard and "gen-2" in dashboard
         data_page = client.get("/data").text
         assert "Аналоги" in data_page and "Аварии" in data_page and "gen-1" in data_page
