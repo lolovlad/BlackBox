@@ -10,6 +10,7 @@
   let boardSignature = '';
   let openPicker = '';
   let dashReady = false;
+  let renderPending = false;
   const GPIO_LEFT = [2, 3, 4, 17, 27, 22, 10, 9, 11, 5, 6, 13, 19, 26];
   const GPIO_RIGHT = [14, 15, 18, 23, 24, 25, 8, 7, 12, 16, 20, 21];
   let gpioItems = [];
@@ -133,9 +134,10 @@
       '</div>';
   }
 
-  function subsheet(source, part, title, body) {
+  function subsheet(source, part, title, bodyBuilder) {
     const key = sheetKey(source.id, part);
     const open = openSheets.has(key);
+    const body = open ? bodyBuilder() : '';
     return '<section class="bb-subsheet"><div class="bb-subsheet-head"><button type="button" class="bb-sheet-toggle bb-subsheet-toggle" data-sheet-toggle data-sheet="' + esc(source.id) + '" data-part="' + part + '" aria-expanded="' + (open ? 'true' : 'false') + '"><i class="bi ' + (open ? 'bi-chevron-down' : 'bi-chevron-right') + '"></i><span>' + title + '</span></button></div><div class="bb-subsheet-body"' + (open ? '' : ' hidden') + '>' + body + '</div></section>';
   }
 
@@ -182,17 +184,26 @@
       host.innerHTML = sources.map(function (source) {
         const open = openSheets.has(source.id);
         return '<section class="bb-card bb-sheet" data-vm-card="' + esc(source.id) + '"><div class="bb-sheet-head"><button type="button" class="bb-sheet-toggle" data-sheet-toggle data-sheet="' + esc(source.id) + '" data-part="" aria-expanded="' + (open ? 'true' : 'false') + '"><i class="bi ' + (open ? 'bi-chevron-down' : 'bi-chevron-right') + '"></i><span class="bb-sheet-name">' + esc(source.name) + '</span></button><span class="bb-sheet-time" data-vm-time>нет данных</span><div class="bb-picker"><button type="button" class="bb-picker-btn" data-picker-btn data-vm="' + esc(source.id) + '" aria-expanded="' + (openPicker === source.id ? 'true' : 'false') + '"><span>' + esc(pickerLabel(source)) + '</span><i class="bi bi-chevron-down"></i></button>' + pickerMenu(source) + '</div></div><div class="bb-sheet-body"' + (open ? '' : ' hidden') + '>' +
-          subsheet(source, 'analog', 'Аналоговые данные <span class="bb-subsheet-count">' + visibleFields(source, 'analog').length + '</span>', analogBody(source)) +
-          subsheet(source, 'discrete', 'Дискретные состояния <span class="bb-subsheet-count">' + visibleFields(source, 'discrete').length + '</span>', discreteBody(source)) +
-          subsheet(source, 'alarms', 'Сообщения аварий <span class="bb-subsheet-count" data-alarm-count>0</span>', '<ul class="bb-alarm-list" data-alarm-list></ul><p class="bb-hint" data-alarm-empty>Активных аварийных сообщений нет.</p>') +
+          subsheet(source, 'analog', 'Аналоговые данные <span class="bb-subsheet-count">' + visibleFields(source, 'analog').length + '</span>', function () { return analogBody(source); }) +
+          subsheet(source, 'discrete', 'Дискретные состояния <span class="bb-subsheet-count">' + visibleFields(source, 'discrete').length + '</span>', function () { return discreteBody(source); }) +
+          subsheet(source, 'alarms', 'Сообщения аварий <span class="bb-subsheet-count" data-alarm-count>0</span>', function () { return '<ul class="bb-alarm-list" data-alarm-list></ul><p class="bb-hint" data-alarm-empty>Активных аварийных сообщений нет.</p>'; }) +
           '</div></section>';
       }).join('') || '<section class="bb-card"><p class="bb-hint">Источников чтения пока нет.</p></section>';
     }
     sources.forEach(patchBoard);
   }
 
+  function scheduleBoards() {
+    if (renderPending) return;
+    renderPending = true;
+    requestAnimationFrame(function () {
+      renderPending = false;
+      renderBoards();
+    });
+  }
+
   function patchBoard(source) {
-    const card = document.querySelector('[data-vm-card="' + cssEscape(source.id) + '"]');
+    const card = root.querySelector('[data-vm-card="' + cssEscape(source.id) + '"]');
     if (!card) return;
     const sample = latest[source.id];
     const analog = sample && sample.analog ? sample.analog : {};
@@ -236,7 +247,12 @@
     if (open) openSheets.add(key);
     else openSheets.delete(key);
     saveOpen();
-    const card = document.querySelector('[data-vm-card="' + cssEscape(vmId) + '"]');
+    if (part) {
+      boardSignature = '';
+      renderBoards();
+      return;
+    }
+    const card = root.querySelector('[data-vm-card="' + cssEscape(vmId) + '"]');
     if (!card) return;
     const button = card.querySelector('[data-sheet-toggle][data-part="' + part + '"]');
     const body = part ? (button ? button.parentElement.parentElement.querySelector('.bb-subsheet-body') : null) : card.querySelector('.bb-sheet-body');
@@ -433,13 +449,15 @@
     if (message.type !== 'delta') return;
     if (message.topic === 'tags') {
       applyTag(message.payload || {});
-      renderBoards();
+      scheduleBoards();
     }
     if (message.topic === 'system') renderSystem(message.payload || {});
   });
 
   renderBoards();
+  dashReady = true;
+  requestAnimationFrame(function () { setBusy(false); });
   setTimeout(function () {
     if (!dashReady) setBusy(false);
-  }, 12000);
+  }, 3000);
 })();

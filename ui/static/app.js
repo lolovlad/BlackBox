@@ -1406,7 +1406,8 @@
   // The server sends a snapshot first, then deltas; a short reconnect loop
   // keeps the operator view useful during Hub restarts without polling.
   const protocol = location.protocol === 'https:' ? 'wss' : 'ws';
-  const socketUrl = protocol + '://' + location.host + '/ws/v1/events';
+  const dashboardEvents = document.getElementById('bb-dashboard');
+  const socketUrl = protocol + '://' + location.host + '/ws/v1/events' + (dashboardEvents ? '?topics=tags,system' : '');
   let socket = null;
   let reconnectTimer = null;
   let closing = false;

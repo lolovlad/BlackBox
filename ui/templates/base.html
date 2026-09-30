@@ -80,7 +80,7 @@
   </script>
   <script src="/static/vendor/htmx.min.js"></script>
   <script type="application/json" id="bb-connection-profiles">{{ connection_profiles | default({}) | tojson }}</script>
-  <script defer src="/static/app.js?v={{ app_version }}"></script>
+  <script defer src="/static/app.js?v={{ app_version }}-ui4"></script>
   <script defer src="/static/vendor/alpine.min.js"></script>
 </head>
 <body class="bb-body {% block body_class %}{% endblock %}" x-data="bbShell()" @bb-toast.window="pushToast($event.detail)">

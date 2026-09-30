@@ -305,7 +305,14 @@ def rows_as_csv(payload: dict[str, Any]) -> str:
     return buffer.getvalue()
 
 
-def describe_sources(vms: list[dict[str, Any]], documents: dict[tuple[str, str], dict[str, Any]], live: dict[str, Any], roots: Iterable[Path]) -> list[dict[str, Any]]:
+def describe_sources(
+    vms: list[dict[str, Any]],
+    documents: dict[tuple[str, str], dict[str, Any]],
+    live: dict[str, Any],
+    roots: Iterable[Path],
+    *,
+    include_disk_keys: bool = True,
+) -> list[dict[str, Any]]:
     described = []
     for vm in vms:
         vm_id = str(vm.get("id"))
@@ -315,9 +322,10 @@ def describe_sources(vms: list[dict[str, Any]], documents: dict[tuple[str, str],
         if sample is not None:
             _merge_keys(analog, getattr(sample, "analog", None) or {})
             _merge_keys(discrete, getattr(sample, "discrete", None) or {})
-        disk_analog, disk_discrete = _keys_from_newest_file(roots, vm_id)
-        _merge_keys(analog, {key: None for key in disk_analog})
-        _merge_keys(discrete, {key: None for key in disk_discrete})
+        if include_disk_keys:
+            disk_analog, disk_discrete = _keys_from_newest_file(roots, vm_id)
+            _merge_keys(analog, {key: None for key in disk_analog})
+            _merge_keys(discrete, {key: None for key in disk_discrete})
         described.append(
             {
                 "id": vm_id,

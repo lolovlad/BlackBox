@@ -66,15 +66,16 @@ class EventBus:
     def latest_good_tags(self, vm_id: str) -> TagSample | None:
         return self._latest_good_tags.get(str(vm_id))
 
-    def snapshot(self) -> dict[str, Any]:
+    def snapshot(self, topics: set[str] | None = None) -> dict[str, Any]:
+        wanted = topics or {"vm_status", "tags", "logs", "alarms", "system"}
         return {
             "seq": self._seq,
-            "vm_status": [x.model_dump(mode="json") for x in self._latest_status.values()],
-            "tags": [x.model_dump(mode="json") for x in self._latest_tags.values()],
-            "tags_good": [x.model_dump(mode="json") for x in self._latest_good_tags.values()],
-            "logs": {key: list(value)[-2000:] for key, value in self._logs.items()},
-            "alarms": list(self._alarms)[-500:],
-            "system": self._system,
+            "vm_status": [x.model_dump(mode="json") for x in self._latest_status.values()] if "vm_status" in wanted else [],
+            "tags": [x.model_dump(mode="json") for x in self._latest_tags.values()] if "tags" in wanted else [],
+            "tags_good": [x.model_dump(mode="json") for x in self._latest_good_tags.values()] if "tags" in wanted else [],
+            "logs": {key: list(value)[-2000:] for key, value in self._logs.items()} if "logs" in wanted else {},
+            "alarms": list(self._alarms)[-500:] if "alarms" in wanted else [],
+            "system": self._system if "system" in wanted else {},
         }
 
     async def subscribe(self, *, after_seq: int = 0) -> asyncio.Queue[EventEnvelope]:

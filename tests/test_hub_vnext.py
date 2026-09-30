@@ -974,6 +974,12 @@ def test_user_is_read_only_and_websocket_gets_snapshot(tmp_path: Path):
             snapshot = websocket.receive_json()
             assert snapshot["type"] == "snapshot"
             assert "payload" in snapshot
+        with admin.websocket_connect("/ws/v1/events?topics=tags,system") as websocket:
+            snapshot = websocket.receive_json()["payload"]
+            assert snapshot["logs"] == {}
+            assert snapshot["alarms"] == []
+            assert snapshot["vm_status"] == []
+            assert "tags_good" in snapshot and "system" in snapshot
 
 
 def test_parser_rejects_attribute_escape():

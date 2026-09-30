@@ -2344,21 +2344,9 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
             await websocket.close(code=4401)
             return
         await websocket.accept()
-        snapshot = bus.snapshot()
         requested_topics = {topic.strip() for topic in websocket.query_params.get("topics", "").split(",") if topic.strip()}
+        snapshot = bus.snapshot(requested_topics or None)
         vm_filter = websocket.query_params.get("vm_id")
-        if requested_topics:
-            if "vm_status" not in requested_topics:
-                snapshot["vm_status"] = []
-            if "tags" not in requested_topics:
-                snapshot["tags"] = []
-                snapshot["tags_good"] = []
-            if "logs" not in requested_topics:
-                snapshot["logs"] = {}
-            if "alarms" not in requested_topics:
-                snapshot["alarms"] = []
-            if "system" not in requested_topics:
-                snapshot["system"] = {}
         if vm_filter:
             snapshot["vm_status"] = [item for item in snapshot.get("vm_status", []) if item.get("vm_id") == vm_filter]
             snapshot["tags"] = [item for item in snapshot.get("tags", []) if item.get("vm_id") == vm_filter]
@@ -2479,9 +2467,9 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
     def _telemetry_roots() -> list[Path]:
         return collect_roots(cfg.data_root, repo.list_resources(), repo.list_vms(), [item.root for item in _telemetry_stores()])
 
-    def _source_documents() -> dict[tuple[str, str], dict[str, Any]]:
+    def _source_documents(vms: list[dict[str, Any]] | None = None) -> dict[tuple[str, str], dict[str, Any]]:
         documents: dict[tuple[str, str], dict[str, Any]] = {}
-        for vm in repo.list_vms():
+        for vm in vms if vms is not None else repo.list_vms():
             key = (str(vm.get("map_version") or ""), str(vm.get("protocol") or ""))
             if not key[0] or key in documents:
                 continue
@@ -2490,10 +2478,11 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
                 documents[key] = document
         return documents
 
-    def _sources(vm_ids: set[str] | None = None) -> list[dict[str, Any]]:
+    def _sources(vm_ids: set[str] | None = None, *, include_disk_keys: bool = True) -> list[dict[str, Any]]:
         vms = [vm for vm in repo.list_vms() if vm_ids is None or str(vm["id"]) in vm_ids]
         live = {str(vm["id"]): sample for vm in vms if (sample := bus.latest_tags(str(vm["id"]))) is not None}
-        return describe_sources(vms, _source_documents(), live, _telemetry_roots())
+        roots = _telemetry_roots() if include_disk_keys else ()
+        return describe_sources(vms, _source_documents(vms), live, roots, include_disk_keys=include_disk_keys)
 
     def _selected_vm_ids(requested: list[str] | None) -> list[str]:
         known = {str(vm["id"]) for vm in repo.list_vms()}
@@ -2973,10 +2962,11 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
             account = current_user(request, repo, cfg)
         except HTTPException:
             return _login_redirect(request)
+        sources = await asyncio.to_thread(_sources, include_disk_keys=False)
         return templates.TemplateResponse(
             request=request,
             name="dashboard.html",
-            context={"user": account, "vms": repo.list_vms(), "sources": [item for item in _sources() if item.get("protocol") != "gpio"]},
+            context={"user": account, "sources": [item for item in sources if item.get("protocol") != "gpio"]},
         )
 
     @app.get("/data", response_class=HTMLResponse)
