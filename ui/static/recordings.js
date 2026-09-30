@@ -111,8 +111,8 @@
     return (items || []).map(function (entry) {
       const open = expanded.has(entry.path);
       const children = open ? renderTreeLevel(folders.get(entry.path) || [], depth + 1) : '';
-      const twist = '<button type="button" class="bb-explorer-twist" data-twist="' + esc(entry.path) + '" aria-label="' + (open ? 'Свернуть' : 'Развернуть') + '">' + (open ? '▾' : '▸') + '</button>';
-      const label = '<button type="button" class="bb-explorer-node-label' + (entry.path === current ? ' is-current' : '') + '" data-open="' + esc(entry.path) + '"><i class="bi bi-folder-fill"></i><span>' + esc(entry.label || entry.name) + '</span></button>';
+      const twist = '<button type="button" class="bb-explorer-twist" data-twist="' + esc(entry.path) + '" aria-label="' + (open ? 'Свернуть' : 'Развернуть') + '"><i class="bi ' + (open ? 'bi-chevron-down' : 'bi-chevron-right') + '"></i></button>';
+      const label = '<button type="button" class="bb-explorer-node-label' + (entry.path === current ? ' is-current' : '') + '" data-open="' + esc(entry.path) + '"><i class="bi ' + (open && entry.path === current ? 'bi-folder2-open' : 'bi-folder-fill') + '"></i><span>' + esc(entry.label || entry.name) + '</span></button>';
       return '<div class="bb-explorer-node" style="--depth:' + depth + '">' + twist + label + '</div>' + children;
     }).join('');
   }
@@ -120,24 +120,24 @@
   function renderTree() {
     const top = folders.get('') || [];
     const rootCurrent = current === '' ? ' is-current' : '';
-    treeBox.innerHTML = '<div class="bb-explorer-node" style="--depth:0"><button type="button" class="bb-explorer-twist" data-twist="" aria-label="' + (expanded.has('') ? 'Свернуть' : 'Развернуть') + '">' + (expanded.has('') ? '▾' : '▸') + '</button><button type="button" class="bb-explorer-node-label' + rootCurrent + '" data-open=""><i class="bi bi-hdd"></i><span>Записи</span></button></div>' + (expanded.has('') ? renderTreeLevel(top, 1) : '');
+    treeBox.innerHTML = '<div class="bb-explorer-node" style="--depth:0"><button type="button" class="bb-explorer-twist" data-twist="" aria-label="' + (expanded.has('') ? 'Свернуть' : 'Развернуть') + '"><i class="bi ' + (expanded.has('') ? 'bi-chevron-down' : 'bi-chevron-right') + '"></i></button><button type="button" class="bb-explorer-node-label' + rootCurrent + '" data-open=""><i class="bi bi-cloud"></i><span>Все записи</span></button></div>' + (expanded.has('') ? renderTreeLevel(top, 1) : '');
   }
 
   function renderCrumbs() {
     crumbsBox.innerHTML = crumbItems.map(function (item, index) {
       const last = index === crumbItems.length - 1;
       const button = '<button type="button" data-open="' + esc(item.path) + '"' + (last ? ' aria-current="page"' : '') + '>' + esc(item.label) + '</button>';
-      return index === 0 ? button : '<span aria-hidden="true">›</span>' + button;
+      return index === 0 ? button : '<i class="bi bi-chevron-right" aria-hidden="true"></i>' + button;
     }).join('');
   }
 
   function renderRows() {
     const items = sorted(entries);
     rows.innerHTML = items.length ? items.map(function (entry) {
-      const icon = entry.kind === 'dir' ? 'bi-folder-fill' : 'bi-film';
+      const icon = entry.kind === 'dir' ? 'bi-folder-fill' : 'bi-play-btn-fill';
       const raw = entry.label && entry.label !== entry.name ? '<span class="bb-explorer-raw">' + esc(entry.name) + '</span>' : '';
-      return '<tr class="bb-explorer-row' + (entry.path === selected ? ' is-selected' : '') + '" data-path="' + esc(entry.path) + '" data-kind="' + esc(entry.kind) + '"><td><span class="bb-explorer-name"><i class="bi ' + icon + '"></i><span>' + esc(entry.label || entry.name) + raw + '</span></span></td><td>' + esc(when(entry.modified)) + '</td><td>' + esc(typeName(entry)) + '</td><td class="bb-explorer-size">' + esc(formatSize(entry.size)) + '</td></tr>';
-    }).join('') : '<tr><td colspan="4" class="bb-muted">Папка пуста.</td></tr>';
+      return '<tr class="bb-explorer-row' + (entry.path === selected ? ' is-selected' : '') + '" data-path="' + esc(entry.path) + '" data-kind="' + esc(entry.kind) + '"><td><span class="bb-explorer-name"><span class="bb-explorer-glyph is-' + esc(entry.kind) + '"><i class="bi ' + icon + '"></i></span><span class="bb-explorer-label"><span>' + esc(entry.label || entry.name) + '</span>' + raw + '</span></span></td><td>' + esc(when(entry.modified)) + '</td><td>' + esc(typeName(entry)) + '</td><td class="bb-explorer-size">' + esc(entry.kind === 'dir' ? '—' : formatSize(entry.size)) + '</td></tr>';
+    }).join('') : '<tr class="bb-explorer-empty"><td colspan="4"><div class="bb-explorer-blank"><i class="bi bi-folder2-open"></i><p>Папка пуста</p></div></td></tr>';
     root.querySelectorAll('[data-sort]').forEach(function (button) {
       const key = button.getAttribute('data-sort');
       button.classList.toggle('is-sorted', key === sortKey);
@@ -168,7 +168,7 @@
   }
 
   async function open(path, record) {
-    rows.innerHTML = '<tr><td colspan="4" class="bb-muted">Загрузка…</td></tr>';
+    rows.innerHTML = '<tr class="bb-explorer-empty"><td colspan="4"><div class="bb-explorer-blank"><i class="bi bi-arrow-repeat"></i><p>Загрузка…</p></div></td></tr>';
     try {
       const data = await fetchList(path);
       current = data.path || '';
@@ -185,7 +185,7 @@
       await ensureAncestors(current);
       render();
     } catch (_error) {
-      rows.innerHTML = '<tr><td colspan="4" class="bb-error-inline">Не удалось открыть папку.</td></tr>';
+      rows.innerHTML = '<tr class="bb-explorer-empty"><td colspan="4"><div class="bb-explorer-blank"><i class="bi bi-exclamation-circle"></i><p class="bb-error-inline">Не удалось открыть папку.</p></div></td></tr>';
       statusBox.textContent = 'Папка недоступна';
     }
   }

@@ -807,6 +807,8 @@ def test_html_pages_render_with_current_starlette(tmp_path: Path):
         assert entered.status_code == 200
         assert "Вы вошли в систему как admin" in entered.text
         assert "Вы вошли" in entered.text
+        assert 'data-header-toggle' in entered.text
+        assert 'id="bb-nav"' in entered.text
         csrf = client.cookies.get("bb_csrf")
         _publish_map(client, csrf)
         vm = client.post(

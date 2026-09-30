@@ -46,6 +46,9 @@
   </style>
   <script>
     (function () {
+      try {
+        if (localStorage.getItem('bb-header') === 'closed') document.documentElement.classList.add('bb-header-closed');
+      } catch (e) {}
       function boot() { return document.getElementById('bb-boot'); }
       window.bbBoot = function (title, text, locked) {
         var el = boot();
@@ -79,6 +82,23 @@
               button.textContent = 'Входим…';
             }
             window.bbBoot('Вход в систему', 'Проверяем логин и пароль…', true);
+          });
+        }
+        var headerToggle = document.querySelector('[data-header-toggle]');
+        if (headerToggle) {
+          var headerLabel = headerToggle.querySelector('[data-header-toggle-label]');
+          var headerIcon = headerToggle.querySelector('i');
+          var syncHeader = function (closed) {
+            document.documentElement.classList.toggle('bb-header-closed', closed);
+            headerToggle.setAttribute('aria-expanded', closed ? 'false' : 'true');
+            if (headerLabel) headerLabel.textContent = closed ? 'Меню' : 'Свернуть';
+            if (headerIcon) headerIcon.className = closed ? 'bi bi-list' : 'bi bi-chevron-up';
+          };
+          syncHeader(document.documentElement.classList.contains('bb-header-closed'));
+          headerToggle.addEventListener('click', function () {
+            var closed = !document.documentElement.classList.contains('bb-header-closed');
+            syncHeader(closed);
+            try { localStorage.setItem('bb-header', closed ? 'closed' : 'open'); } catch (e) {}
           });
         }
         var entered = document.querySelector('[data-entered]');
@@ -145,7 +165,11 @@
           <span class="bb-brand-meta">{{ app_vendor }} · v{{ app_version }}</span>
         </span>
       </a>
-      <nav class="bb-nav" aria-label="Основное меню">
+      <button type="button" class="bb-header-toggle" data-header-toggle aria-expanded="true" aria-controls="bb-nav">
+        <i class="bi bi-chevron-up" aria-hidden="true"></i>
+        <span data-header-toggle-label>Свернуть</span>
+      </button>
+      <nav id="bb-nav" class="bb-nav" aria-label="Основное меню">
         {% set path = request.url.path %}
         <a href="/dashboard" class="bb-nav-link{% if path == '/dashboard' %} is-active{% endif %}"><i class="bi bi-speedometer2"></i> Дашборд</a>
         <a href="/data" class="bb-nav-link{% if path.startswith('/data') %} is-active{% endif %}"><i class="bi bi-table"></i> Данные</a>
