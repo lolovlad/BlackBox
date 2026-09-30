@@ -54,6 +54,12 @@ def _incident_dict(row: sqlite3.Row) -> dict[str, Any]:
     }
 
 
+def _recording_reason(kind: str, name: str) -> str:
+    label = {"gpio": "сигнал GPIO", "emergency": "аварийное правило"}.get(kind, "авария")
+    title = str(name or "").strip()
+    return f"{label} «{title}»" if title else label
+
+
 def _path_key(value: str) -> str:
     try:
         return str(Path(value).resolve(strict=False))
@@ -1036,6 +1042,18 @@ class HubRepository:
                 "SELECT * FROM video_episodes WHERE camera_id=? AND state IN ('queued','recording','stopping') ORDER BY created_at DESC",
                 (camera_id,),
             ).fetchall()
+            incident = next((row for row in rows if row["incident_id"]), None)
+            if state == "start" and incident is not None:
+                c.execute("COMMIT")
+                self.append_camera_logs(
+                    [{
+                        "camera_id": camera_id,
+                        "level": "info",
+                        "source": "motion",
+                        "line": "Движение есть. Отдельная запись не начата: уже идёт инцидент.",
+                    }]
+                )
+                return None
             motion = next((row for row in rows if row["capture_from"] and not row["incident_id"]), None)
             other = next((row for row in rows if motion is None or row["id"] != motion["id"]), None)
             if state == "start":
@@ -1203,6 +1221,20 @@ class HubRepository:
                 "INSERT INTO video_incident_alerts(incident_id,vm_id,name,kind,state,created_at) VALUES(?,?,?,?,?,?)",
                 (incident_id, vm_id, str(name), kind if kind in {"gpio", "emergency"} else "alert", "active", stamp),
             )
+            wanted = {str(item).strip() for item in camera_ids if str(item).strip()}
+            yielded: list[str] = []
+            for motion in c.execute(
+                """SELECT id, camera_id FROM video_episodes
+                   WHERE state IN ('queued','recording','stopping') AND IFNULL(incident_id,'')='' AND IFNULL(capture_from,'')<>''"""
+            ).fetchall():
+                camera_id = str(motion["camera_id"])
+                if camera_id not in wanted:
+                    continue
+                c.execute(
+                    "UPDATE video_episodes SET state='finished', ended_at=?, stop_at=NULL, message=? WHERE id=?",
+                    (stamp, "Сохранено: начался инцидент", motion["id"]),
+                )
+                yielded.append(camera_id)
             existing = {
                 str(item["camera_id"])
                 for item in c.execute(
@@ -1216,12 +1248,19 @@ class HubRepository:
                     "SELECT camera_id FROM video_episodes WHERE state IN ('queued','recording','stopping')"
                 ).fetchall()
             }
-            for camera_id in sorted({str(item).strip() for item in camera_ids if str(item).strip()} - existing - busy):
+            started = sorted(wanted - existing - busy)
+            for camera_id in started:
                 c.execute(
                     "INSERT INTO video_episodes(id,camera_id,vm_id,incident_id,state,path,message,started_at,ended_at,stop_at,duration_sec,paths_json,capture_from,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (secrets.token_hex(8), camera_id, vm_id, incident_id, "queued", "", "", stamp, None, None, 86400, "[]", (moment - timedelta(seconds=pre_seconds)).isoformat(), stamp),
                 )
             c.execute("COMMIT")
+        reason = _recording_reason(kind, name)
+        self.append_camera_logs(
+            [{"camera_id": camera_id, "level": "info", "source": "hub", "line": f"Запись движения сохранена. Начата запись инцидента, {reason}."} for camera_id in yielded]
+            + [{"camera_id": camera_id, "level": "info", "source": "hub", "line": f"Запись начата. Причина: {reason}."} for camera_id in started]
+            + [{"camera_id": camera_id, "level": "info", "source": "hub", "line": f"Запись продолжается. Причина: {reason}."} for camera_id in sorted(existing)]
+        )
         return self.get_incident(incident_id) or {}
 
     def register_incident_end(
@@ -1264,9 +1303,20 @@ class HubRepository:
                 "UPDATE video_episodes SET stop_at=? WHERE incident_id=? AND state IN ('queued','recording')",
                 (stop_at, row["id"]),
             )
+            cameras = [
+                str(item["camera_id"])
+                for item in c.execute(
+                    "SELECT camera_id FROM video_episodes WHERE incident_id=? AND state IN ('queued','recording')",
+                    (row["id"],),
+                ).fetchall()
+            ]
             if c.execute("SELECT 1 FROM video_episodes WHERE incident_id=? LIMIT 1", (row["id"],)).fetchone() is None:
                 c.execute("UPDATE video_incidents SET state='closed', ended_at=?, stop_at=NULL WHERE id=?", (stamp, row["id"]))
             c.execute("COMMIT")
+        reason = _recording_reason(kind, name or "")
+        self.append_camera_logs(
+            [{"camera_id": camera_id, "level": "info", "source": "hub", "line": f"Причина снята: {reason}. Запись закроется после паузы."} for camera_id in cameras]
+        )
         return self.get_incident(str(row["id"]))
 
     def get_incident(self, incident_id: str) -> dict[str, Any] | None:

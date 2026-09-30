@@ -17,9 +17,13 @@
     <nav id="camera-nav" class="bb-camera-nav" aria-label="Список камер"></nav>
     <div class="bb-camera-work">
       <div id="camera-live" class="bb-camera-live" hidden>
-        <div class="bb-preview-frame">
+        <div class="bb-preview-frame" id="camera-preview-frame">
           <img id="camera-preview" alt="Кадр с камеры" hidden>
           <p id="camera-preview-empty">Нажмите «Смотреть», чтобы видеть картинку с текущими настройками.</p>
+          <div id="camera-signal" class="bb-signal" hidden>
+            <span class="bb-signal-dot" aria-hidden="true"></span>
+            <span id="camera-signal-text"></span>
+          </div>
         </div>
         <div class="bb-camera-live-copy">
           <p id="camera-live-status" class="bb-hint">Камера готова к настройке.</p>

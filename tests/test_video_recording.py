@@ -333,6 +333,9 @@ def test_alarm_edges_merge_into_one_incident_and_schedule_video_stop(tmp_path: P
     )
     assert extended["id"] == incident_id
     assert len(extended["episodes"]) == 2
+    reasons = [item["line"] for item in repo.list_camera_logs("cam1")]
+    assert "Запись начата. Причина: авария «Oil pressure»." in reasons
+    assert "Запись продолжается. Причина: авария «Temperature»." in reasons
     repo.sync_alarm_edges("vm-1", first + timedelta(seconds=4), {"Another alert"}, kind="alert")
     repo.register_incident_end(
         "vm-1",
@@ -662,6 +665,79 @@ def test_motion_edge_continues_one_clip_until_the_gap_closes(tmp_path: Path):
     assert fresh is not None and fresh["id"] != opened["id"]
 
 
+def test_incident_replaces_an_open_motion_clip_instead_of_stacking(tmp_path: Path):
+    repo = HubRepository(tmp_path / "hub.db")
+    moment = datetime(2026, 9, 30, 10, 0, tzinfo=timezone.utc)
+    motion = repo.apply_motion_edge("cam1", "start", moment.isoformat(), pre_seconds=10)
+    incident = repo.register_incident_start(
+        "vm-1",
+        name="Давление",
+        kind="alert",
+        created_at=moment + timedelta(seconds=5),
+        camera_ids=["cam1"],
+    )
+    stored = repo.get_episode(motion["id"])
+    assert stored["state"] == "finished"
+    assert stored["message"] == "Сохранено: начался инцидент"
+    episode = incident["episodes"][0]
+    assert episode["id"] != motion["id"]
+    assert episode["incident_id"] == incident["id"]
+    assert {item["id"] for item in repo.open_episodes()} == {episode["id"]}
+    blocked = repo.apply_motion_edge("cam1", "start", (moment + timedelta(seconds=6)).isoformat(), pre_seconds=10)
+    assert blocked is None
+    assert {item["id"] for item in repo.open_episodes()} == {episode["id"]}
+    repo.apply_episode_events([{"id": episode["id"], "state": "finished", "ended_at": (moment + timedelta(seconds=20)).isoformat()}])
+    fresh = repo.apply_motion_edge("cam1", "start", (moment + timedelta(seconds=21)).isoformat(), pre_seconds=10)
+    assert fresh is not None and fresh["id"] != motion["id"]
+    lines = [item["line"] for item in repo.list_camera_logs("cam1")]
+    assert any("Запись движения сохранена" in line and "Давление" in line for line in lines)
+    assert any("Отдельная запись не начата" in line for line in lines)
+
+
+def test_supervisor_keeps_one_copy_when_motion_and_incident_overlap(tmp_path: Path):
+    started: list[_Proc] = []
+
+    def spawn(argv):
+        proc = _Proc(list(argv))
+        started.append(proc)
+        return proc
+
+    ram = tmp_path / "ram"
+    archive = tmp_path / "archive"
+    supervisor = Supervisor(tmp_path, spawn=spawn, spawn_raw=spawn, buffer_root=ram)
+    camera = _camera(motion=True)
+    config = VideoConfig(cameras=[camera], incident_pre_sec=30, incident_segment_sec=2)
+    supervisor.tick(config, [], [], output_root=archive)
+    segment = ram / "cam1" / "clip.mkv"
+    segment.parent.mkdir(parents=True, exist_ok=True)
+    segment.write_bytes(b"same-seconds")
+    closed_at = time.time() - 4
+    os.utime(segment, (closed_at, closed_at))
+    moment = datetime.now(timezone.utc)
+    capture = (moment - timedelta(seconds=20)).isoformat()
+    supervisor.tick(
+        config,
+        [
+            {"id": "mot1", "camera_id": "cam1", "state": "recording", "capture_from": capture, "started_at": capture},
+            {"id": "inc-ep", "camera_id": "cam1", "incident_id": "inc1", "state": "recording", "capture_from": capture, "started_at": moment.isoformat()},
+        ],
+        [],
+        output_root=archive,
+    )
+    assert (archive / "incidents" / "inc1" / "cam1" / "clip.mkv").read_bytes() == b"same-seconds"
+    assert not (archive / "motion" / "cam1" / "mot1").exists()
+    assert "mot1" not in supervisor.incident_episodes
+    assert "inc-ep" in supervisor.incident_episodes
+    saved = next(item for item in supervisor.closed.values() if item["id"] == "mot1")
+    assert saved["state"] == "finished"
+    assert saved["message"] == "Сохранено: начался инцидент"
+    motion_procs = [proc for proc in started if "rawvideo" in proc.argv]
+    assert motion_procs and motion_procs[-1].alive is False
+    resumed = supervisor.tick(config, [], [], output_root=archive)
+    assert any("Детектор движения снова включён" in item["line"] for item in resumed["logs"])
+    assert any("rawvideo" in proc.argv and proc.alive for proc in started)
+
+
 def test_motion_endpoint_ignores_cameras_without_the_flag(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("BB_VIDEO_TOKEN", "video-secret")
     with _client(tmp_path) as client:
@@ -684,7 +760,7 @@ def test_motion_endpoint_ignores_cameras_without_the_flag(tmp_path: Path, monkey
         assert [item["camera_id"] for item in items] == ["cam1"]
         assert items[0]["capture_from"] == "2026-09-30T09:59:50+00:00"
         logs = client.get("/api/v1/cameras/cam1/logs").json()["entries"]
-        assert any("запись открыта" in entry["line"] for entry in logs)
+        assert any("Причина: движение в кадре." in entry["line"] for entry in logs)
 
 
 def test_motion_quota_deletes_old_clips_and_keeps_incidents(tmp_path: Path):

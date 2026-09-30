@@ -267,10 +267,28 @@
     path.textContent = folder() + "/" + camera.id + "/ГГГГММДД_ЧЧММСС_эпизод." + (camera.container === "mkv" ? "mkv" : "mp4");
   }
 
+  function openEpisode(id) {
+    return episodes.find(function (row) {
+      return row.camera_id === id && (row.state === "queued" || row.state === "recording" || row.state === "stopping");
+    }) || null;
+  }
+
+  function activity(id, camera) {
+    var row = openEpisode(id);
+    if (row && row.incident_id) return { kind: "incident", text: "Запись идёт: авария" };
+    if (row && row.capture_from) return { kind: "motion", text: "Движение есть, запись идёт" };
+    if (row) return { kind: "manual", text: "Запись идёт: ручной старт" };
+    if (camera && camera.motion) return { kind: "idle", text: "Движения нет" };
+    return null;
+  }
+
   function statusText(id) {
+    var camera = cameras.find(function (item) { return item.id === id; });
+    var live = activity(id, camera);
+    if (live && live.kind !== "idle") return live.text;
     var row = status[id];
-    if (!row || row.state === "stopped") return "готова";
-    if (row.state === "recording") return "идёт запись";
+    if (!row || row.state === "stopped") return live ? live.text : "готова";
+    if (row.state === "recording") return live ? live.text : "идёт запись";
     if (row.state === "preview") return "просмотр";
     return "ошибка";
   }
@@ -288,11 +306,12 @@
     cameras.forEach(function (camera) {
       var button = document.createElement("button");
       button.type = "button";
-      button.className = "bb-camera-pick" + (camera.id === selected ? " is-selected" : "") + (camera.enabled ? "" : " is-off");
+      var live = activity(camera.id, camera);
+      button.className = "bb-camera-pick" + (camera.id === selected ? " is-selected" : "") + (camera.enabled ? "" : " is-off") + (live && live.kind === "motion" ? " is-motion" : "");
       var name = document.createElement("strong");
       name.textContent = camera.name || camera.id;
       var meta = document.createElement("span");
-      meta.textContent = [camera.id, statusText(camera.id), camera.motion ? "движение" : ""].filter(Boolean).join(" · ");
+      meta.textContent = [camera.id, statusText(camera.id)].filter(Boolean).join(" · ");
       button.appendChild(name);
       button.appendChild(meta);
       button.addEventListener("click", function () { select(camera.id); });
@@ -361,8 +380,17 @@
     var record = document.getElementById("camera-record");
     if (!camera) return;
     var row = status[camera.id];
+    var live = activity(camera.id, camera);
     if (row && row.state === "error" && row.message) state = row.message;
     node.textContent = watching ? ("Просмотр · " + state) : state;
+    var signal = document.getElementById("camera-signal");
+    var frame = document.getElementById("camera-preview-frame");
+    if (signal && frame) {
+      signal.hidden = !live;
+      signal.className = "bb-signal" + (live ? " is-" + live.kind : "");
+      document.getElementById("camera-signal-text").textContent = live ? live.text : "";
+      frame.classList.toggle("is-motion", !!(live && live.kind === "motion"));
+    }
     watch.innerHTML = watching ? "<i class=\"bi bi-stop-circle\"></i> Остановить просмотр" : "<i class=\"bi bi-eye\"></i> Смотреть";
     var busy = row && row.state === "recording";
     if (busy && watching) {
@@ -450,7 +478,7 @@
     }
     logEntries.forEach(function (entry) {
       var row = document.createElement("div");
-      row.className = "bb-log-row" + (entry.level === "error" ? " is-error" : "") + (entry.source === "hub" ? " is-lifecycle" : "");
+      row.className = "bb-log-row" + (entry.level === "error" ? " is-error" : "") + (entry.source === "hub" ? " is-lifecycle" : "") + (String(entry.line || "").indexOf("Причина:") >= 0 ? " is-reason" : "");
       var time = document.createElement("span");
       time.className = "bb-log-time";
       time.textContent = clock(entry.timestamp);

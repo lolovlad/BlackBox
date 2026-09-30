@@ -2277,6 +2277,36 @@ html.bb-header-closed .bb-header-inner {
 }
 .bb-preview-frame img { width: 100%; height: 100%; object-fit: contain; }
 .bb-preview-frame p { margin: 0; padding: 1rem; color: #d5dbe6; }
+.bb-preview-frame.is-motion { box-shadow: inset 0 0 0 3px #e23b3b; }
+.bb-signal {
+  position: absolute;
+  top: 0.55rem;
+  left: 0.55rem;
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  max-width: calc(100% - 1.1rem);
+  padding: 0.28rem 0.6rem;
+  border-radius: 999px;
+  background: rgba(17, 24, 32, 0.88);
+  color: #fff;
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+.bb-signal-dot {
+  width: 0.65rem;
+  height: 0.65rem;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: #9aa6b6;
+}
+.bb-signal.is-motion .bb-signal-dot { background: #ff4d4f; animation: bb-signal-pulse 1s ease-in-out infinite; }
+.bb-signal.is-incident .bb-signal-dot { background: #fd6e39; }
+.bb-signal.is-manual .bb-signal-dot { background: #6acff6; }
+.bb-camera-pick.is-motion strong { color: #b42318; }
+.bb-log-row.is-reason .bb-log-msg { font-weight: 650; }
+@keyframes bb-signal-pulse { 50% { opacity: 0.25; } }
 .bb-camera-live-copy { display: grid; gap: 0.55rem; align-content: center; }
 #cameras-form { max-width: none; }
 #camera-journal { min-height: 12rem; max-height: 22rem; }

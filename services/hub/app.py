@@ -1934,6 +1934,7 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
         if any(item["camera_id"] == camera_id for item in repo.open_episodes()):
             raise HTTPException(409, detail={"code": "episode_busy", "message": "Эпизод этой камеры уже идёт"})
         episode = repo.enqueue_episode(camera_id)
+        repo.append_camera_logs([{"camera_id": camera_id, "level": "info", "source": "hub", "line": "Запись начата. Причина: ручной старт."}])
         repo.record_audit(int(account["id"]), "video.episode.start", camera_id, {"id": episode["id"]})
         return episode
 
@@ -2224,9 +2225,10 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
                 continue
             changed.append(episode)
             if item.state == "start" and not episode.get("stop_at"):
-                line = "Движение есть, запись открыта" if episode.get("state") == "queued" and not episode.get("path") else "Движение продолжается"
+                opened = episode.get("state") == "queued" and not episode.get("path")
+                line = "Запись начата. Причина: движение в кадре." if opened else "Запись продолжается. Причина: движение в кадре."
             else:
-                line = "Движения нет, запись закроется"
+                line = "Движения больше нет. Запись закроется после паузы."
             repo.append_camera_logs([{"camera_id": item.camera_id, "level": "info", "source": "motion", "line": line}])
         return {"ok": True, "items": changed}
 

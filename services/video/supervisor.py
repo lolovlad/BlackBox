@@ -72,6 +72,7 @@ class Supervisor:
         self.buffers: dict[str, dict[str, Any]] = {}
         self.previews: dict[str, dict[str, Any]] = {}
         self.motion: dict[str, dict[str, Any]] = {}
+        self._motion_paused: set[str] = set()
         self.trackers: dict[str, MotionTracker] = {}
         self.pending_motion: list[dict[str, str]] = []
         self._motion_lock = threading.Lock()
@@ -101,7 +102,12 @@ class Supervisor:
         self._sync_previews(previews, manual_recording | held)
         self._sync_buffers(config, set())
         self._sync_incident_episodes(config, episodes, events)
-        self._sync_motion(config)
+        incident_cameras = {
+            str(item.get("camera_id") or "")
+            for item in episodes
+            if item.get("incident_id") and item.get("state") in {"queued", "recording", "stopping"}
+        }
+        self._sync_motion(config, incident_cameras)
         recording = manual_recording | {
             str(slot["camera_id"])
             for slot in self.incident_episodes.values()
@@ -127,6 +133,7 @@ class Supervisor:
         self.buffers.clear()
         self.previews.clear()
         self.motion.clear()
+        self._motion_paused.clear()
         with self._motion_lock:
             self.trackers.clear()
             self.pending_motion.clear()
@@ -302,6 +309,11 @@ class Supervisor:
         now = datetime.now(timezone.utc).timestamp()
         segment_sec = max(1, config.incident_segment_sec)
         active_ids: set[str] = set()
+        incident_cameras = {
+            str(item.get("camera_id") or "")
+            for item in episodes
+            if item.get("incident_id") and item.get("state") in {"queued", "recording"}
+        }
         for item in episodes:
             episode_id = str(item.get("id") or "")
             if not episode_id or item.get("state") not in {"queued", "recording"} or not _buffer_job(item):
@@ -325,9 +337,27 @@ class Supervisor:
                     self._close(episode_id, event)
                     events.append(event)
                 continue
+            incident_id = str(item.get("incident_id") or "")
+            # Save the motion clip that already exists, then record only the
+            # incident. Do not copy any further motion segments.
+            if not incident_id and camera_id in incident_cameras:
+                slot = self.incident_episodes.pop(episode_id, None)
+                known_paths = slot["paths"] if slot is not None else item.get("paths") or []
+                paths = sorted(str(path) for path in known_paths if path)
+                event = {
+                    "id": episode_id,
+                    "state": "finished",
+                    "path": paths[0] if paths else "",
+                    "paths": paths,
+                    "message": "Сохранено: начался инцидент",
+                    "started_at": str((slot or {}).get("started_at") or item.get("started_at") or ""),
+                    "ended_at": _now(),
+                }
+                self._close(episode_id, event)
+                events.append(event)
+                continue
             active_ids.add(episode_id)
             slot = self.incident_episodes.get(episode_id)
-            incident_id = str(item.get("incident_id") or "")
             if incident_id:
                 output_dir = self.output_root / "incidents" / incident_id / camera_id
             else:
@@ -416,6 +446,10 @@ class Supervisor:
                 self._close(episode_id, event)
                 self.incident_episodes.pop(episode_id, None)
                 events.append(event)
+
+        for episode_id in list(self.incident_episodes):
+            if episode_id not in active_ids:
+                self.incident_episodes.pop(episode_id, None)
 
         retention = max(10, config.incident_pre_sec + segment_sec * 2 + 5)
         for buffer in self.buffers.values():
@@ -530,11 +564,11 @@ class Supervisor:
         self._note(camera_id, "Просмотр остановлен на время записи", level="info", source="hub")
         _stop(slot["proc"])
 
-    def _sync_motion(self, config: VideoConfig) -> None:
+    def _sync_motion(self, config: VideoConfig, incident_cameras: set[str]) -> None:
         wanted = {
             camera.id: camera
             for camera in config.cameras
-            if camera.enabled and camera.url and camera.motion
+            if camera.enabled and camera.url and camera.motion and camera.id not in incident_cameras
         }
         for camera_id in list(self.motion):
             slot = self.motion[camera_id]
@@ -545,8 +579,14 @@ class Supervisor:
                 _stop(slot["proc"])
                 self.motion.pop(camera_id, None)
                 if camera is None:
-                    self._drop_tracker(camera_id)
-                    self._note(camera_id, "Детектор движения остановлен", level="info", source="motion")
+                    paused = camera_id in incident_cameras
+                    self._drop_tracker(camera_id, emit_stop=not paused)
+                    if paused:
+                        self._motion_paused.add(camera_id)
+                        self._note(camera_id, "Детектор движения остановлен на время инцидента", level="info", source="motion")
+                    else:
+                        self._motion_paused.discard(camera_id)
+                        self._note(camera_id, "Детектор движения остановлен", level="info", source="motion")
         for camera_id, camera in wanted.items():
             self._ensure_tracker(camera)
             if camera_id in self.motion:
@@ -567,9 +607,11 @@ class Supervisor:
                 "log_source": "motion",
             }
             threading.Thread(target=_read_frames, args=(proc, camera_id, self._push_frame), daemon=True).start()
+            resumed = camera_id in self._motion_paused
+            self._motion_paused.discard(camera_id)
             self._note(
                 camera_id,
-                f"Детектор движения запущен, {ANALYSIS_WIDTH}×{ANALYSIS_HEIGHT}, {camera.motion_gap_sec} с после последнего изменения",
+                "Детектор движения снова включён" if resumed else f"Детектор движения запущен, {ANALYSIS_WIDTH}×{ANALYSIS_HEIGHT}, {camera.motion_gap_sec} с после последнего изменения",
                 level="info",
                 source="motion",
             )
@@ -587,10 +629,10 @@ class Supervisor:
                 gap_sec=camera.motion_gap_sec,
             )
 
-    def _drop_tracker(self, camera_id: str) -> None:
+    def _drop_tracker(self, camera_id: str, *, emit_stop: bool = True) -> None:
         with self._motion_lock:
             tracker = self.trackers.pop(camera_id, None)
-            if tracker is not None and tracker.active:
+            if emit_stop and tracker is not None and tracker.active:
                 self.pending_motion.append({"camera_id": camera_id, "state": "stop", "at": _now()})
 
     def _push_frame(self, camera_id: str, frame: bytes, now: float | None = None) -> None:
