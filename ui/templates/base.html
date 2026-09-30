@@ -29,6 +29,7 @@
         <a href="/data" class="bb-nav-link{% if path.startswith('/data') %} is-active{% endif %}"><i class="bi bi-table"></i> Данные</a>
         <a href="/charts" class="bb-nav-link{% if path.startswith('/charts') %} is-active{% endif %}"><i class="bi bi-graph-up"></i> Графики</a>
         <a href="/incidents" class="bb-nav-link{% if path.startswith('/incidents') %} is-active{% endif %}"><i class="bi bi-exclamation-diamond"></i> Инциденты</a>
+        <a href="/alarms" class="bb-nav-link{% if path.startswith('/alarms') %} is-active{% endif %}"><i class="bi bi-bell"></i> Аварии</a>
         <a href="/vms" class="bb-nav-link{% if path.startswith('/vms') or path.startswith('/admin/vms') %} is-active{% endif %}"><i class="bi bi-hdd-stack"></i> ВМ</a>
         {% if user.role == 'admin' %}
         <a href="/cameras" class="bb-nav-link{% if path.startswith('/cameras') %} is-active{% endif %}"><i class="bi bi-camera-video"></i> Камеры</a>

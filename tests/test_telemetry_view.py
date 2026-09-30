@@ -220,7 +220,7 @@ def test_values_charts_and_alarm_journal_for_many_sources(tmp_path: Path) -> Non
         assert charts.find('bb-vm-tabs') < charts.find('id="bb-echarts"')
         assert "Обновить график" in charts
         assert "Выберите источники" not in charts
-        assert "Аварии" not in charts
+        assert 'id="bb-alarms-page"' not in charts
         assert 'data-busy' in charts
         assert 'data-busy' in dashboard
 

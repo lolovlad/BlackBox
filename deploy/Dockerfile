@@ -21,7 +21,24 @@ COPY pyproject.toml uv.lock README.md ./
 RUN --mount=type=cache,target=/root/.cache/uv \
     UV_COMPILE_BYTECODE=1 uv sync --frozen --no-dev --no-install-project
 
+FROM base AS ffmpeg
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl xz-utils \
+    && rm -rf /var/lib/apt/lists/*
+ARG TARGETARCH
+RUN set -eux; \
+    case "${TARGETARCH}" in \
+      arm64) arch=linuxarm64 ;; \
+      *) arch=linux64 ;; \
+    esac; \
+    curl -fsSL -o /tmp/ffmpeg.tar.xz "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-${arch}-gpl.tar.xz"; \
+    tar -xJf /tmp/ffmpeg.tar.xz -C /tmp; \
+    install -m 755 "/tmp/ffmpeg-master-latest-${arch}-gpl/bin/ffmpeg" /usr/local/bin/ffmpeg; \
+    install -m 755 "/tmp/ffmpeg-master-latest-${arch}-gpl/bin/ffprobe" /usr/local/bin/ffprobe; \
+    rm -rf /tmp/ffmpeg*
+
 FROM hub-deps AS hub
+COPY --from=ffmpeg /usr/local/bin/ffmpeg /usr/local/bin/ffmpeg
 COPY platform ./platform
 COPY bb_platform ./bb_platform
 COPY services ./services
@@ -60,20 +77,8 @@ RUN uv pip install --python /app/.venv/bin/python "gpiod>=2.1,<3"
 ENTRYPOINT ["/app/.venv/bin/python", "-m", "workers.gpio.main"]
 
 FROM base AS video
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl xz-utils \
-    && rm -rf /var/lib/apt/lists/*
-ARG TARGETARCH
-RUN set -eux; \
-    case "${TARGETARCH}" in \
-      arm64) arch=linuxarm64 ;; \
-      *) arch=linux64 ;; \
-    esac; \
-    curl -fsSL -o /tmp/ffmpeg.tar.xz "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-${arch}-gpl.tar.xz"; \
-    tar -xJf /tmp/ffmpeg.tar.xz -C /tmp; \
-    install -m 755 "/tmp/ffmpeg-master-latest-${arch}-gpl/bin/ffmpeg" /usr/local/bin/ffmpeg; \
-    install -m 755 "/tmp/ffmpeg-master-latest-${arch}-gpl/bin/ffprobe" /usr/local/bin/ffprobe; \
-    rm -rf /tmp/ffmpeg*
+COPY --from=ffmpeg /usr/local/bin/ffmpeg /usr/local/bin/ffmpeg
+COPY --from=ffmpeg /usr/local/bin/ffprobe /usr/local/bin/ffprobe
 RUN pip install --no-cache-dir "pydantic>=2.12.5"
 COPY services/__init__.py ./services/__init__.py
 COPY services/video ./services/video

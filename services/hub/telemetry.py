@@ -292,11 +292,14 @@ def rows_as_csv(payload: dict[str, Any]) -> str:
     writer = csv.writer(buffer, delimiter=";")
     headers = ["Время", "Источник", *[column["label"] for column in payload.get("columns", [])]]
     if payload.get("tab") in {"alarms", "gpio"}:
-        headers = ["Время", "Источник", "Название", "Состояние"]
+        headers = ["Время", "Источник", *( ["BCM"] if payload.get("tab") == "gpio" else []), "Название", "Состояние"]
     writer.writerow(headers)
     for row in payload.get("rows", []):
         if payload.get("tab") in {"alarms", "gpio"}:
-            writer.writerow([row.get("time", ""), row.get("vm_name", ""), row.get("name", ""), row.get("state_label", "")])
+            values = [row.get("time", ""), row.get("vm_name", "")]
+            if payload.get("tab") == "gpio":
+                values.append(row.get("bcm_pin", ""))
+            writer.writerow([*values, row.get("name", ""), row.get("state_label", "")])
         else:
             writer.writerow([row.get("time", ""), row.get("vm_name", ""), *row.get("cells", [])])
     return buffer.getvalue()

@@ -9,6 +9,7 @@ import logging
 import os
 import re
 import secrets
+import shutil
 import tempfile
 import time
 import zipfile
@@ -21,7 +22,7 @@ from uuid import UUID
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.templating import Jinja2Templates
 from fastapi.staticfiles import StaticFiles
 from starlette.background import BackgroundTask
@@ -32,6 +33,7 @@ from bb_platform.parser import adapt_legacy_map, diagnose_read, field_channel, f
 
 from services.video.retention import measure_video_storage, purge_motion_over_quota
 from services.video.settings import CameraSettings, VideoConfig, config_estimates
+from .emergency_rules import validate_rule_expression
 
 from workers.gpio.pins import pins_from_fields
 
@@ -178,6 +180,11 @@ class EpisodeEventItem(BaseModel):
     message: str = ""
     started_at: str | None = None
     ended_at: str | None = None
+
+
+class EmergencyRuleBody(BaseModel):
+    name: str = Field(min_length=1, max_length=255)
+    expression: str = Field(min_length=1, max_length=2000)
 
 
 class EpisodeEventBody(BaseModel):
@@ -715,6 +722,30 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
         stop_ingest = asyncio.Event()
         incident_queue: asyncio.Queue[tuple[TagSample, dict[str, Any]]] = asyncio.Queue()
         stop_incidents = asyncio.Event()
+        rule_queue: asyncio.Queue[TagSample] = asyncio.Queue()
+        stop_rules = asyncio.Event()
+
+        def cleanup_exports() -> None:
+            export_root = cfg.data_root / ".exports"
+            if export_root.is_symlink():
+                logger.warning("Skipping export cleanup because %s is a symbolic link", export_root)
+                return
+            export_root.mkdir(parents=True, exist_ok=True)
+            directory = export_root.resolve()
+            try:
+                directory.relative_to(cfg.data_root.resolve())
+            except ValueError:
+                logger.warning("Skipping export cleanup outside data root: %s", directory)
+                return
+            cutoff = time.time() - 7 * 24 * 60 * 60
+            for candidate in directory.glob("blackbox_*"):
+                try:
+                    if candidate.is_file() and not candidate.is_symlink() and candidate.stat().st_mtime < cutoff:
+                        candidate.unlink(missing_ok=True)
+                except OSError:
+                    logger.warning("Could not clean stale export %s", candidate)
+
+        await asyncio.to_thread(cleanup_exports)
 
         def store_for_vm(vm: dict[str, Any], runtime_config: dict[str, Any]) -> ParquetStore:
             storage_cfg = runtime_config.get("storage", {}) if isinstance(runtime_config, dict) else {}
@@ -793,6 +824,7 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
                 alert_names = {str(item).strip() for item in sample.alerts if str(item).strip()}
                 for event in repo.sync_alarm_edges(vm_key, sample.captured_at, alert_names, kind="alert"):
                     await _process_alarm_event(sample, event)
+                rule_queue.put_nowait(sample)
                 protocol_value = getattr(sample.protocol, "value", sample.protocol)
                 if protocol_value == VmProtocol.GPIO.value:
                     pins = {str(name) for name, value in sample.discrete.items() if value}
@@ -835,7 +867,7 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
                     vm_id=sample.vm_id,
                     timestamp=sample.captured_at,
                     severity="warning" if started else "info",
-                    code="gpio_alert" if kind == "gpio" else "device_alert",
+                    code="gpio_alert" if kind == "gpio" else "emergency_rule" if kind == "emergency" else "device_alert",
                     message=str(event["name"]),
                     active=started,
                     payload={"kind": kind, "state": event["state"]},
@@ -844,6 +876,8 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
             vm_key = str(sample.vm_id)
             if kind == "gpio":
                 text = f"GPIO активно: {event['name']}" if started else f"GPIO снято: {event['name']}"
+            elif kind == "emergency":
+                text = f"Правило аварии сработало: {event['name']}" if started else f"Правило аварии снято: {event['name']}"
             else:
                 text = f"Алерт прибора: {event['name']}" if started else f"Алерт снят: {event['name']}"
             await bus.publish_log(vm_key, text, level="error" if started else "info")
@@ -901,8 +935,65 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
                 finally:
                     incident_queue.task_done()
 
+        def _evaluate_rules_sync(sample: TagSample) -> list[dict[str, Any]]:
+            document = repo.map_by_version(sample.map_version, getattr(sample.protocol, "value", sample.protocol)) or {}
+            fields = {str(field.get("name")) for field in document.get("fields", []) if isinstance(field, dict) and field.get("name")}
+            values = dict(sample.tags)
+            values.update(sample.analog)
+            values.update(sample.discrete)
+            values["active_alarms"] = list(sample.alerts)
+            for field in document.get("fields", []):
+                if isinstance(field, dict) and field.get("type") == "gpio" and field.get("bcm_pin") is not None:
+                    name = str(field.get("name") or f"GPIO_{field['bcm_pin']}")
+                    fields.add(name)
+                    values.setdefault(name, bool(sample.discrete.get(name, False)))
+            transitions = repo.evaluate_emergency_rules(str(sample.vm_id), sample.captured_at, values)
+            return [{**event, "kind": "emergency", "fields": sorted(fields)} for event in transitions]
+
+        async def rule_loop() -> None:
+            while not stop_rules.is_set() or not rule_queue.empty():
+                try:
+                    sample = await asyncio.wait_for(rule_queue.get(), timeout=0.5)
+                except asyncio.TimeoutError:
+                    continue
+                try:
+                    transitions = await asyncio.to_thread(_evaluate_rules_sync, sample)
+                    for event in transitions:
+                        await _publish_alarm_edge(sample, event)
+                        try:
+                            video_config = VideoConfig.model_validate(await asyncio.to_thread(repo.camera_document))
+                            if event["state"] == "active":
+                                incident = await asyncio.to_thread(
+                                    repo.register_incident_start,
+                                    str(sample.vm_id),
+                                    name=str(event["name"]),
+                                    kind="emergency",
+                                    created_at=sample.captured_at,
+                                    camera_ids=[camera.id for camera in video_config.cameras if camera.enabled and camera.url],
+                                    pre_seconds=video_config.incident_pre_sec,
+                                    post_seconds=video_config.incident_post_sec,
+                                )
+                                await asyncio.to_thread(repo.link_emergency_event_incident, event["id"], str(incident["id"]))
+                            else:
+                                await asyncio.to_thread(
+                                    repo.register_incident_end,
+                                    str(sample.vm_id),
+                                    name=str(event["name"]),
+                                    kind="emergency",
+                                    created_at=sample.captured_at,
+                                    post_seconds=video_config.incident_post_sec,
+                                    has_active=bool(event.get("has_active", False)),
+                                )
+                        except Exception:
+                            logger.exception("Failed to associate emergency rule event with incident")
+                except Exception:
+                    logger.exception("Emergency rule evaluation failed")
+                finally:
+                    rule_queue.task_done()
+
         ingest_task = asyncio.create_task(ingest_loop())
         incident_task = asyncio.create_task(incident_loop())
+        rule_task = asyncio.create_task(rule_loop())
         stop_reconciler = asyncio.Event()
         stop_system = asyncio.Event()
 
@@ -922,9 +1013,13 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
             return payload
 
         async def system_loop() -> None:
+            last_export_cleanup = time.monotonic()
             while not stop_system.is_set():
                 try:
                     await bus.publish("system", _system_payload())
+                    if time.monotonic() - last_export_cleanup >= 3600:
+                        await asyncio.to_thread(cleanup_exports)
+                        last_export_cleanup = time.monotonic()
                 except Exception:
                     logger.exception("system monitor publish failed")
                 try:
@@ -1072,6 +1167,9 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
                 pass
         stop_ingest.set()
         await ingest_task
+        await rule_queue.join()
+        stop_rules.set()
+        await rule_task
         await incident_queue.join()
         stop_incidents.set()
         await incident_task
@@ -1887,6 +1985,88 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
             item["vm_name"] = names.get(str(item["vm_id"]), str(item["vm_id"]))
         return {"items": items}
 
+    def _emergency_rule_schema() -> tuple[set[str], set[str], set[str]]:
+        fields = {"active_alarms"}
+        list_fields = {"active_alarms", "active_status", "alarms"}
+        error_labels: set[str] = set()
+        for vm in repo.list_vms():
+            document = repo.map_by_version(str(vm.get("map_version") or ""), str(vm.get("protocol") or "")) or {}
+            for field in document.get("fields", []):
+                if not isinstance(field, dict) or not field.get("name"):
+                    continue
+                fields.add(str(field["name"]))
+                if field.get("type") in {"bitfield", "alert"}:
+                    list_fields.add(str(field["name"]))
+                bits = field.get("bits")
+                if isinstance(bits, dict):
+                    error_labels.update(str(label) for label in bits.values() if label is not None)
+        return fields, list_fields, error_labels
+
+    @app.get("/api/v1/emergency-rules")
+    async def emergency_rules(request: Request):
+        current_user(request, repo, cfg)
+        fields, _, _ = _emergency_rule_schema()
+        return {"items": repo.list_emergency_rules(), "fields": sorted(fields)}
+
+    @app.post("/api/v1/emergency-rules", dependencies=[Depends(csrf_protect)])
+    async def emergency_rule_create(payload: EmergencyRuleBody, request: Request, account=Depends(admin)):
+        fields, list_fields, error_labels = _emergency_rule_schema()
+        valid, error = validate_rule_expression(payload.expression, fields, list_fields=list_fields, error_labels=error_labels)
+        if not valid:
+            raise HTTPException(422, detail={"code": "invalid_rule", "message": error or "Некорректное правило"})
+        try:
+            item = repo.save_emergency_rule(name=payload.name.strip(), expression=payload.expression.strip())
+        except Exception as exc:
+            if "UNIQUE constraint" in str(exc):
+                raise HTTPException(409, detail={"code": "duplicate_rule", "message": "Правило с таким названием уже есть"}) from exc
+            raise
+        repo.record_audit(int(account["id"]), "emergency_rule.create", str(item["id"]), {"name": item["name"]})
+        return item
+
+    @app.put("/api/v1/emergency-rules/{rule_id}", dependencies=[Depends(csrf_protect)])
+    async def emergency_rule_update(rule_id: int, payload: EmergencyRuleBody, request: Request, account=Depends(admin)):
+        fields, list_fields, error_labels = _emergency_rule_schema()
+        valid, error = validate_rule_expression(payload.expression, fields, list_fields=list_fields, error_labels=error_labels)
+        if not valid:
+            raise HTTPException(422, detail={"code": "invalid_rule", "message": error or "Некорректное правило"})
+        try:
+            item = repo.update_emergency_rule(rule_id, name=payload.name.strip(), expression=payload.expression.strip())
+        except Exception as exc:
+            if "UNIQUE constraint" in str(exc):
+                raise HTTPException(409, detail={"code": "duplicate_rule", "message": "Правило с таким названием уже есть"}) from exc
+            raise
+        if item is None:
+            raise HTTPException(404, detail={"code": "not_found", "message": "Правило не найдено"})
+        repo.record_audit(int(account["id"]), "emergency_rule.update", str(rule_id), {"name": item["name"]})
+        return item
+
+    @app.delete("/api/v1/emergency-rules/{rule_id}", dependencies=[Depends(csrf_protect)])
+    async def emergency_rule_delete(rule_id: int, request: Request, account=Depends(admin)):
+        if not repo.delete_emergency_rule(rule_id):
+            raise HTTPException(404, detail={"code": "not_found", "message": "Правило не найдено"})
+        deleted_at = datetime.now(timezone.utc)
+        transitions = await asyncio.to_thread(repo.close_deleted_emergency_rule, rule_id, deleted_at)
+        try:
+            video_config = VideoConfig.model_validate(await asyncio.to_thread(repo.camera_document))
+            for event in transitions:
+                await asyncio.to_thread(
+                    repo.register_incident_end,
+                    event["vm_id"],
+                    name=event["name"],
+                    kind="emergency",
+                    created_at=deleted_at,
+                    post_seconds=video_config.incident_post_sec,
+                )
+        except Exception:
+            logger.exception("Failed to close video incident after deleting emergency rule %s", rule_id)
+        repo.record_audit(int(account["id"]), "emergency_rule.delete", str(rule_id), {})
+        return {"ok": True}
+
+    @app.get("/api/v1/emergency-events")
+    async def emergency_events(request: Request, vm_id: list[str] | None = Query(default=None), date_from: str | None = None, date_to: str | None = None, limit: int = Query(default=200, ge=1, le=1000)):
+        current_user(request, repo, cfg)
+        return {"items": repo.list_emergency_events(_selected_vm_ids(vm_id), date_from=date_from, date_to=date_to, limit=limit)}
+
     @app.get("/api/v1/video/incidents/{incident_id}")
     async def video_incident(incident_id: str, request: Request):
         current_user(request, repo, cfg)
@@ -1911,6 +2091,40 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
         if path is None:
             raise HTTPException(404, detail={"code": "video_missing", "message": "Файл недоступен в хранилище"})
         return FileResponse(path, filename=path.name, media_type="application/octet-stream")
+
+    @app.get("/api/v1/video/incidents/{incident_id}/videos/{episode_id}/{index}/play")
+    async def incident_video_play(incident_id: str, episode_id: str, index: int, request: Request):
+        current_user(request, repo, cfg)
+        incident = repo.get_incident(incident_id)
+        episode = next((item for item in incident.get("episodes", []) if str(item["id"]) == episode_id), None) if incident else None
+        paths = episode.get("paths", []) if episode else []
+        if episode is None or index < 0 or index >= len(paths):
+            raise HTTPException(404, detail={"code": "video_missing", "message": "Видеофрагмент не найден"})
+        path = _safe_video_path(paths[index], _video_roots())
+        if path is None:
+            raise HTTPException(404, detail={"code": "video_missing", "message": "Файл недоступен в хранилище"})
+        if path.suffix.lower() == ".mp4":
+            return FileResponse(path, media_type="video/mp4", headers={"Content-Disposition": "inline", "Cache-Control": "private, no-store"})
+        ffmpeg = shutil.which("ffmpeg")
+        if not ffmpeg:
+            raise HTTPException(503, detail={"code": "playback_unavailable", "message": "Для воспроизведения Matroska не установлен FFmpeg в Hub"})
+
+        async def stream_mp4():
+            process = await asyncio.create_subprocess_exec(
+                ffmpeg, "-hide_banner", "-loglevel", "error", "-i", str(path), "-map", "0:v:0", "-an",
+                "-c:v", "libx264", "-preset", "ultrafast", "-movflags", "frag_keyframe+empty_moov",
+                "-f", "mp4", "pipe:1", stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+            )
+            try:
+                while chunk := await process.stdout.read(64 * 1024):
+                    yield chunk
+                await process.wait()
+            finally:
+                if process.returncode is None:
+                    process.terminate()
+                    await process.wait()
+
+        return StreamingResponse(stream_mp4(), media_type="video/mp4", headers={"Content-Disposition": "inline", "Cache-Control": "private, no-store"})
 
     @app.post("/api/v1/internal/video/status")
     async def video_status(payload: VideoStatusBody, request: Request):
@@ -2313,6 +2527,14 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
             )
             total_pages = max(1, (total + PAGE_SIZE - 1) // PAGE_SIZE) if total else 1
             page_eff = min(page, total_pages)
+            gpio_bcm = {}
+            if active == "gpio":
+                for vm in repo.list_vms():
+                    vm_key = str(vm["id"])
+                    if selected and vm_key not in selected:
+                        continue
+                    document = repo.map_by_version(str(vm.get("map_version") or ""), str(vm.get("protocol") or "")) or {}
+                    gpio_bcm.update({(vm_key, str(field.get("name") or "")): field.get("bcm_pin") for field in document.get("fields", []) if isinstance(field, dict) and field.get("bcm_pin") is not None})
             rows = []
             for event in events:
                 state = str(event["state"])
@@ -2328,6 +2550,7 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
                         "vm_id": event["vm_id"],
                         "vm_name": names.get(str(event["vm_id"]), str(event["vm_id"])),
                         "name": event["name"],
+                        "bcm_pin": gpio_bcm.get((str(event["vm_id"]), str(event["name"])), ""),
                         "state": state,
                         "state_label": state_label,
                     }
@@ -2420,6 +2643,14 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
                 limit=10_000,
             )
             rows = []
+            gpio_bcm = {}
+            if active == "gpio":
+                for vm in repo.list_vms():
+                    vm_key = str(vm["id"])
+                    if selected and vm_key not in selected:
+                        continue
+                    document = repo.map_by_version(str(vm.get("map_version") or ""), str(vm.get("protocol") or "")) or {}
+                    gpio_bcm.update({(vm_key, str(field.get("name") or "")): field.get("bcm_pin") for field in document.get("fields", []) if isinstance(field, dict) and field.get("bcm_pin") is not None})
             for event in events:
                 state = str(event["state"])
                 created = datetime.fromisoformat(str(event["created_at"]))
@@ -2428,6 +2659,7 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
                         "time": format_timestamp(created),
                         "vm_name": names.get(str(event["vm_id"]), str(event["vm_id"])),
                         "name": event["name"],
+                        "bcm_pin": gpio_bcm.get((str(event["vm_id"]), str(event["name"])), ""),
                         "state_label": ("Активно" if state == "active" else "Снято") if active == "gpio" else ("Активна" if state == "active" else "Снята"),
                     }
                 )
@@ -2518,7 +2750,14 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
         discrete_fields = sorted({key for row in measurements for key in row.discrete})
         analog_rows = [[row.captured_at.isoformat(), row.vm_id, *[row.analog.get(key, "") for key in analog_fields]] for row in measurements]
         discrete_rows = [[row.captured_at.isoformat(), row.vm_id, *[int(bool(row.discrete.get(key))) if row.discrete.get(key) is not None else "" for key in discrete_fields]] for row in measurements]
-        alarm_rows = [[item["created_at"], item["kind"], item["name"], item["state"]] for item in incident.get("alerts", [])]
+        incident_video_names = sorted({
+            Path(str(raw)).name
+            for episode in incident.get("episodes", [])
+            for raw in (episode.get("paths") or ([episode.get("path")] if episode.get("path") else []))
+            if raw
+        })
+        alarm_rows = [[item["created_at"], item["kind"], item["name"], item["state"], ", ".join(incident_video_names)] for item in incident.get("alerts", [])]
+        emergency_rows = repo.list_emergency_events([vm_id], date_from=start.isoformat(), date_to=end.isoformat())
         names = {str(vm["id"]): str(vm["name"]) for vm in repo.list_vms()}
         chart = chart_payload(
             measurements,
@@ -2536,7 +2775,8 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
         roots = _video_roots()
         with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=5) as archive:
             archive.writestr("incident.json", json.dumps(metadata, ensure_ascii=False, indent=2))
-            archive.writestr("alarms.csv", _csv_bytes(["Время", "Тип", "Название", "Состояние"], alarm_rows))
+            archive.writestr("alarms.csv", _csv_bytes(["Время", "Тип", "Название", "Состояние", "Видео"], alarm_rows))
+            archive.writestr("emergency.csv", _csv_bytes(["ВМ", "Начало", "Окончание", "Правило", "Условие", "Инцидент"], [[vm_id, row["started_at"], row["ended_at"], row["rule_name"], row["expression"], row.get("incident_id") or ""] for row in emergency_rows]))
             archive.writestr("telemetry/analog.csv", _csv_bytes(["Время UTC", "ВМ", *analog_fields], analog_rows))
             archive.writestr("telemetry/discrete.csv", _csv_bytes(["Время UTC", "ВМ", *discrete_fields], discrete_rows))
             archive.writestr("charts/analog.json", json.dumps(chart, ensure_ascii=False))
@@ -2587,7 +2827,7 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
             raise HTTPException(422, detail={"code": "date_range_required", "message": "Для экспорта укажите начало и конец периода"})
         if start > end:
             start, end = end, start
-        allowed = {"analog", "discrete", "alarms", "gpio", "incidents", "video"}
+        allowed = {"analog", "discrete", "alarms", "gpio", "emergency", "incidents", "video"}
         chosen = set(include or allowed)
         if not chosen or not chosen <= allowed:
             raise HTTPException(422, detail={"code": "invalid_export_tables", "message": "Выберите допустимые разделы экспорта"})
@@ -2619,22 +2859,44 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
                 discrete_fields = [key for key in discrete_fields if key in requested_columns["discrete"]]
             alarms, _ = repo.list_alarm_events(selected, kind="alert", date_from=start.isoformat(), date_to=end.isoformat(), sort_desc=sort != "asc", limit=1_000_000)
             gpio, _ = repo.list_alarm_events(selected, kind="gpio", date_from=start.isoformat(), date_to=end.isoformat(), sort_desc=sort != "asc", limit=1_000_000)
+            emergency = repo.list_emergency_events(selected, date_from=start.isoformat(), date_to=end.isoformat(), sort_desc=sort != "asc")
             incidents = [
                 row for row in repo.list_incidents(vm_ids=selected)
-                if parse_bound(str(row.get("started_at"))) <= end and parse_bound(str(row.get("telemetry_to") or row.get("last_alert_at"))) >= start
+                if (parse_bound(str(row.get("started_at"))) or end) <= end and (parse_bound(str(row.get("telemetry_to") or row.get("last_alert_at"))) or start) >= start
             ]
+            gpio_bcm: dict[tuple[str, str], int] = {}
+            for vm in repo.list_vms():
+                vm_key = str(vm["id"])
+                if selected and vm_key not in selected:
+                    continue
+                document = repo.map_by_version(str(vm.get("map_version") or ""), str(vm.get("protocol") or "")) or {}
+                for field in document.get("fields", []):
+                    if isinstance(field, dict) and field.get("bcm_pin") is not None:
+                        gpio_bcm[(vm_key, str(field.get("name") or ""))] = int(field["bcm_pin"])
+            incident_video_by_alarm: dict[tuple[str, str, str, str], list[str]] = {}
+            for incident in incidents:
+                paths = [
+                    Path(str(raw)).name
+                    for episode in incident.get("episodes", [])
+                    for raw in (episode.get("paths") or ([episode.get("path")] if episode.get("path") else []))
+                    if raw
+                ]
+                for alarm in incident.get("alerts", []):
+                    key = (str(alarm["vm_id"]), str(alarm["name"]), str(alarm["state"]), str(alarm["created_at"]))
+                    incident_video_by_alarm[key] = sorted(set(paths))
             table_rows: dict[str, tuple[list[str], list[list[Any]]]] = {
                 "analog": (["Время UTC", "ВМ", *analog_fields], [[r.captured_at.isoformat(), names.get(r.vm_id, r.vm_id), *[r.analog.get(key, "") for key in analog_fields]] for r in measurements]),
                 "discrete": (["Время UTC", "ВМ", *discrete_fields], [[r.captured_at.isoformat(), names.get(r.vm_id, r.vm_id), *[int(bool(r.discrete.get(key))) if r.discrete.get(key) is not None else "" for key in discrete_fields]] for r in measurements]),
-                "alarms": (["Время UTC", "ВМ", "Название", "Состояние"], [[row["created_at"], names.get(str(row["vm_id"]), row["vm_id"]), row["name"], row["state"]] for row in alarms]),
-                "gpio": (["Время UTC", "ВМ", "Название", "Состояние"], [[row["created_at"], names.get(str(row["vm_id"]), row["vm_id"]), row["name"], row["state"]] for row in gpio]),
+                "alarms": (["Время UTC", "ВМ", "Название", "Состояние", "Видео"], [[row["created_at"], names.get(str(row["vm_id"]), row["vm_id"]), row["name"], row["state"], ", ".join(incident_video_by_alarm.get((str(row["vm_id"]), str(row["name"]), str(row["state"]), str(row["created_at"])), []))] for row in alarms]),
+                "gpio": (["Время UTC", "ВМ", "BCM", "Название", "Состояние"], [[row["created_at"], names.get(str(row["vm_id"]), row["vm_id"]), gpio_bcm.get((str(row["vm_id"]), str(row["name"])), ""), row["name"], row["state"]] for row in gpio]),
+                "emergency": (["ВМ", "Дата начала", "Время начала", "Дата окончания", "Время окончания", "Правило", "Условие", "Инцидент"], [[names.get(str(row["vm_id"]), row["vm_id"]), row["started_at"][:10], row["started_at"][11:19], row["ended_at"][:10], row["ended_at"][11:19], row["rule_name"], row["expression"], row.get("incident_id") or ""] for row in emergency]),
                 "incidents": (["ID", "ВМ", "Состояние", "Начало", "Последний алерт", "Окончание окна", "Алерты", "Видео"], [[row["id"], names.get(str(row["vm_id"]), row["vm_id"]), row["state"], row["started_at"], row["last_alert_at"], row.get("telemetry_to") or "", ", ".join(item["name"] for item in row.get("alerts", [])), ", ".join(path for episode in row.get("episodes", []) for path in (episode.get("paths") or ([episode.get("path")] if episode.get("path") else [])))] for row in incidents]),
             }
             path = _export_path(".zip" if format == "zip" else ".xlsx")
             if format == "xlsx":
                 from openpyxl import Workbook
                 workbook = Workbook(write_only=True)
-                for key in ("analog", "discrete", "alarms", "gpio", "incidents"):
+                for key in ("analog", "discrete", "alarms", "gpio", "emergency", "incidents"):
                     if key not in chosen:
                         continue
                     headers, rows = table_rows[key]
@@ -2707,6 +2969,14 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
         except HTTPException:
             return _login_redirect(request)
         return templates.TemplateResponse(request=request, name="incidents.html", context={"user": account, "vms": repo.list_vms()})
+
+    @app.get("/alarms", response_class=HTMLResponse)
+    async def alarms_page(request: Request):
+        try:
+            account = current_user(request, repo, cfg)
+        except HTTPException:
+            return RedirectResponse("/login", status_code=303)
+        return templates.TemplateResponse(request=request, name="alarms.html", context={"user": account})
 
     @app.get("/incidents/{incident_id}", response_class=HTMLResponse)
     async def incident_detail_page(incident_id: str, request: Request):

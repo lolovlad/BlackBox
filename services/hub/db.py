@@ -160,6 +160,33 @@ class HubRepository:
                     PRIMARY KEY (vm_id, kind, name)
                 );
                 CREATE INDEX IF NOT EXISTS idx_alarm_events_vm ON alarm_events(vm_id, kind, created_at);
+                CREATE TABLE IF NOT EXISTS emergency_rules (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL,
+                    expression TEXT NOT NULL,
+                    is_deleted INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_emergency_rules_name_active ON emergency_rules(name) WHERE is_deleted=0;
+                CREATE TABLE IF NOT EXISTS emergency_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    vm_id TEXT NOT NULL,
+                    rule_id INTEGER NOT NULL,
+                    rule_name TEXT NOT NULL,
+                    expression TEXT NOT NULL,
+                    started_at TEXT NOT NULL,
+                    ended_at TEXT NOT NULL,
+                    incident_id TEXT
+                );
+                CREATE INDEX IF NOT EXISTS idx_emergency_events_vm_time ON emergency_events(vm_id, started_at);
+                CREATE TABLE IF NOT EXISTS emergency_active (
+                    vm_id TEXT NOT NULL,
+                    rule_id INTEGER NOT NULL,
+                    event_id INTEGER NOT NULL,
+                    started_at TEXT NOT NULL,
+                    PRIMARY KEY(vm_id, rule_id)
+                );
                 CREATE TABLE IF NOT EXISTS camera_settings (
                     id INTEGER PRIMARY KEY CHECK (id = 1),
                     document_json TEXT NOT NULL,
@@ -473,7 +500,7 @@ class HubRepository:
         """
         moment = created_at if created_at.tzinfo is not None else created_at.replace(tzinfo=timezone.utc)
         stamp = moment.astimezone(timezone.utc).isoformat()
-        channel = "gpio" if kind == "gpio" else "alert"
+        channel = kind if kind in {"gpio", "emergency"} else "alert"
         desired = {str(name).strip() for name in active_names if str(name).strip()}
         events: list[dict[str, Any]] = []
         with self.connect() as c:
@@ -498,7 +525,10 @@ class HubRepository:
                     )
                     c.execute("DELETE FROM alarm_active WHERE vm_id=? AND kind=? AND name=?", (vm_id, channel, name))
                     events.append({"vm_id": vm_id, "name": name, "state": "inactive", "kind": channel, "created_at": stamp})
-                has_active = c.execute("SELECT 1 FROM alarm_active WHERE vm_id=? LIMIT 1", (vm_id,)).fetchone() is not None
+                has_active = c.execute(
+                    "SELECT 1 FROM alarm_active WHERE vm_id=? UNION ALL SELECT 1 FROM emergency_active WHERE vm_id=? LIMIT 1",
+                    (vm_id, vm_id),
+                ).fetchone() is not None
                 for event in events:
                     event["has_active"] = has_active
                 c.execute("COMMIT")
@@ -518,7 +548,7 @@ class HubRepository:
         offset: int = 0,
         limit: int = 100,
     ) -> tuple[list[dict[str, Any]], int]:
-        channel = "gpio" if kind == "gpio" else "alert"
+        channel = kind if kind in {"gpio", "emergency"} else "alert"
         clauses = ["kind=?"]
         args: list[Any] = [channel]
         if vm_ids:
@@ -540,6 +570,163 @@ class HubRepository:
                 [*args, max(1, limit), max(0, offset)],
             ).fetchall()
         return [dict(row) for row in rows], total
+
+    def list_emergency_rules(self) -> list[dict[str, Any]]:
+        with self.connect() as c:
+            rows = c.execute("SELECT * FROM emergency_rules WHERE is_deleted=0 ORDER BY id").fetchall()
+        return [dict(row) | {"is_deleted": bool(row["is_deleted"])} for row in rows]
+
+    def save_emergency_rule(self, *, name: str, expression: str) -> dict[str, Any]:
+        stamp = datetime.now(timezone.utc).isoformat()
+        with self.connect() as c:
+            cur = c.execute(
+                "INSERT INTO emergency_rules(name,expression,is_deleted,created_at,updated_at) VALUES(?,?,0,?,?)",
+                (name.strip(), expression.strip(), stamp, stamp),
+            )
+            row = c.execute("SELECT * FROM emergency_rules WHERE id=?", (cur.lastrowid,)).fetchone()
+        return dict(row) | {"is_deleted": False}
+
+    def update_emergency_rule(self, rule_id: int, *, name: str, expression: str) -> dict[str, Any] | None:
+        stamp = datetime.now(timezone.utc).isoformat()
+        with self.connect() as c:
+            cur = c.execute(
+                "UPDATE emergency_rules SET name=?,expression=?,updated_at=? WHERE id=? AND is_deleted=0",
+                (name.strip(), expression.strip(), stamp, int(rule_id)),
+            )
+            row = c.execute("SELECT * FROM emergency_rules WHERE id=? AND is_deleted=0", (int(rule_id),)).fetchone() if cur.rowcount else None
+        return (dict(row) | {"is_deleted": False}) if row is not None else None
+
+    def delete_emergency_rule(self, rule_id: int) -> bool:
+        with self.connect() as c:
+            cur = c.execute(
+                "UPDATE emergency_rules SET is_deleted=1,updated_at=? WHERE id=? AND is_deleted=0",
+                (datetime.now(timezone.utc).isoformat(), int(rule_id)),
+            )
+        return cur.rowcount > 0
+
+    def close_deleted_emergency_rule(self, rule_id: int, created_at: datetime) -> list[dict[str, Any]]:
+        moment = created_at if created_at.tzinfo is not None else created_at.replace(tzinfo=timezone.utc)
+        stamp = moment.astimezone(timezone.utc).isoformat()
+        with self.connect() as c:
+            c.execute("BEGIN IMMEDIATE")
+            try:
+                rows = c.execute(
+                    "SELECT a.vm_id,a.event_id,e.rule_name,e.expression FROM emergency_active a "
+                    "JOIN emergency_events e ON e.id=a.event_id WHERE a.rule_id=?",
+                    (int(rule_id),),
+                ).fetchall()
+                c.execute("UPDATE emergency_events SET ended_at=? WHERE id IN (SELECT event_id FROM emergency_active WHERE rule_id=?)", (stamp, int(rule_id)))
+                c.execute("DELETE FROM emergency_active WHERE rule_id=?", (int(rule_id),))
+                transitions = []
+                for row in rows:
+                    vm_id = str(row["vm_id"])
+                    has_active = c.execute(
+                        "SELECT 1 FROM alarm_active WHERE vm_id=? UNION ALL SELECT 1 FROM emergency_active WHERE vm_id=? LIMIT 1",
+                        (vm_id, vm_id),
+                    ).fetchone() is not None
+                    transitions.append({
+                        "vm_id": vm_id,
+                        "id": int(row["event_id"]),
+                        "name": str(row["rule_name"]),
+                        "expression": str(row["expression"]),
+                        "state": "inactive",
+                        "created_at": stamp,
+                        "has_active": has_active,
+                    })
+                c.execute("COMMIT")
+            except Exception:
+                c.execute("ROLLBACK")
+                raise
+        return transitions
+
+    def evaluate_emergency_rules(self, vm_id: str, created_at: datetime, values: dict[str, Any]) -> list[dict[str, Any]]:
+        from .emergency_rules import evaluate_rule_expression
+
+        moment = created_at if created_at.tzinfo is not None else created_at.replace(tzinfo=timezone.utc)
+        stamp = moment.astimezone(timezone.utc).isoformat()
+        with self.connect() as c:
+            c.execute("BEGIN IMMEDIATE")
+            try:
+                rules = c.execute("SELECT * FROM emergency_rules WHERE is_deleted=0 ORDER BY id").fetchall()
+                active_rows = c.execute("SELECT rule_id,event_id FROM emergency_active WHERE vm_id=?", (vm_id,)).fetchall()
+                active = {int(row["rule_id"]): int(row["event_id"]) for row in active_rows}
+                desired: dict[int, tuple[sqlite3.Row, bool | None]] = {}
+                for rule in rules:
+                    fired, error = evaluate_rule_expression(str(rule["expression"]), values)
+                    desired[int(rule["id"])] = (rule, None if error else fired)
+                transitions: list[dict[str, Any]] = []
+                for rule_id, (rule, fired) in desired.items():
+                    if fired is None:
+                        continue
+                    event_id = active.get(rule_id)
+                    if fired and event_id is None:
+                        cur = c.execute(
+                            "INSERT INTO emergency_events(vm_id,rule_id,rule_name,expression,started_at,ended_at) VALUES(?,?,?,?,?,?)",
+                            (vm_id, rule_id, rule["name"], rule["expression"], stamp, stamp),
+                        )
+                        c.execute(
+                            "INSERT INTO emergency_active(vm_id,rule_id,event_id,started_at) VALUES(?,?,?,?)",
+                            (vm_id, rule_id, cur.lastrowid, stamp),
+                        )
+                        transitions.append({"id": int(cur.lastrowid), "rule_id": rule_id, "name": str(rule["name"]), "expression": str(rule["expression"]), "state": "active", "created_at": stamp})
+                    elif fired and event_id is not None:
+                        c.execute("UPDATE emergency_events SET ended_at=? WHERE id=?", (stamp, event_id))
+                    elif not fired and event_id is not None:
+                        c.execute("UPDATE emergency_events SET ended_at=? WHERE id=?", (stamp, event_id))
+                        c.execute("DELETE FROM emergency_active WHERE vm_id=? AND rule_id=?", (vm_id, rule_id))
+                        transitions.append({"id": event_id, "rule_id": rule_id, "name": str(rule["name"]), "expression": str(rule["expression"]), "state": "inactive", "created_at": stamp})
+                for rule_id, event_id in active.items():
+                    if rule_id in desired:
+                        continue
+                    c.execute("UPDATE emergency_events SET ended_at=? WHERE id=?", (stamp, event_id))
+                    c.execute("DELETE FROM emergency_active WHERE vm_id=? AND rule_id=?", (vm_id, rule_id))
+                    row = c.execute("SELECT rule_name,expression FROM emergency_events WHERE id=?", (event_id,)).fetchone()
+                    if row is not None:
+                        transitions.append({"id": event_id, "rule_id": rule_id, "name": str(row["rule_name"]), "expression": str(row["expression"]), "state": "inactive", "created_at": stamp})
+                has_active = c.execute(
+                    "SELECT 1 FROM alarm_active WHERE vm_id=? UNION ALL SELECT 1 FROM emergency_active WHERE vm_id=? LIMIT 1",
+                    (vm_id, vm_id),
+                ).fetchone() is not None
+                for event in transitions:
+                    event["has_active"] = has_active
+                c.execute("COMMIT")
+            except Exception:
+                c.execute("ROLLBACK")
+                raise
+        return transitions
+
+    def link_emergency_event_incident(self, event_id: int, incident_id: str) -> None:
+        with self.connect() as c:
+            c.execute("UPDATE emergency_events SET incident_id=? WHERE id=?", (incident_id, int(event_id)))
+
+    def list_emergency_events(
+        self,
+        vm_ids: list[str] | None,
+        *,
+        date_from: str | None = None,
+        date_to: str | None = None,
+        sort_desc: bool = True,
+        limit: int = 100000,
+    ) -> list[dict[str, Any]]:
+        clauses = ["1=1"]
+        args: list[Any] = []
+        if vm_ids:
+            clauses.append(f"vm_id IN ({','.join('?' for _ in vm_ids)})")
+            args.extend(vm_ids)
+        if date_from:
+            clauses.append("started_at>=?")
+            args.append(date_from)
+        if date_to:
+            clauses.append("started_at<=?")
+            args.append(date_to)
+        order = "DESC" if sort_desc else "ASC"
+        args.append(max(1, min(int(limit), 1_000_000)))
+        with self.connect() as c:
+            rows = c.execute(
+                f"SELECT * FROM emergency_events WHERE {' AND '.join(clauses)} ORDER BY started_at {order},id {order} LIMIT ?",
+                args,
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     def save_map(self, document: dict[str, Any]) -> None:
         now = datetime.now(timezone.utc).isoformat()
@@ -1014,7 +1201,7 @@ class HubRepository:
             incident_id = str(row["id"])
             c.execute(
                 "INSERT INTO video_incident_alerts(incident_id,vm_id,name,kind,state,created_at) VALUES(?,?,?,?,?,?)",
-                (incident_id, vm_id, str(name), "gpio" if kind == "gpio" else "alert", "active", stamp),
+                (incident_id, vm_id, str(name), kind if kind in {"gpio", "emergency"} else "alert", "active", stamp),
             )
             existing = {
                 str(item["camera_id"])
@@ -1052,11 +1239,10 @@ class HubRepository:
         post_seconds = max(0, min(int(post_seconds), 3600))
         with self.connect() as c:
             c.execute("BEGIN IMMEDIATE")
-            active = (
-                c.execute("SELECT 1 FROM alarm_active WHERE vm_id=? LIMIT 1", (vm_id,)).fetchone()
-                if has_active is None
-                else bool(has_active)
-            )
+            active = c.execute(
+                "SELECT 1 FROM alarm_active WHERE vm_id=? UNION ALL SELECT 1 FROM emergency_active WHERE vm_id=? LIMIT 1",
+                (vm_id, vm_id),
+            ).fetchone() is not None
             row = c.execute(
                 "SELECT * FROM video_incidents WHERE vm_id=? AND state IN ('active','finishing') ORDER BY started_at DESC LIMIT 1",
                 (vm_id,),
@@ -1064,7 +1250,7 @@ class HubRepository:
             if row is not None and name:
                 c.execute(
                     "INSERT INTO video_incident_alerts(incident_id,vm_id,name,kind,state,created_at) VALUES(?,?,?,?,?,?)",
-                    (row["id"], vm_id, str(name), "gpio" if kind == "gpio" else "alert", "inactive", stamp),
+                    (row["id"], vm_id, str(name), kind if kind in {"gpio", "emergency"} else "alert", "inactive", stamp),
                 )
             if bool(active) or row is None:
                 c.execute("COMMIT")

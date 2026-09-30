@@ -78,6 +78,8 @@ def test_ffmpeg_argv_copy_skips_scale_and_libx264_limits_bitrate(tmp_path: Path)
     assert "-preset" not in hardware
 
     buffer = build_buffer_argv(_camera(), tmp_path / "%Y%m%d_%H%M%S.mkv", 2)
+    assert buffer[1] == "-nostats"
+    assert buffer[buffer.index("-loglevel") + 1] == "warning"
     assert buffer[buffer.index("-f") + 1] == "segment"
     assert buffer[buffer.index("-segment_time") + 1] == "2"
     assert buffer[-1].endswith("%Y%m%d_%H%M%S.mkv")
@@ -133,8 +135,22 @@ def test_supervisor_records_one_episode_and_reports_when_it_ends(tmp_path: Path)
     supervisor = Supervisor(tmp_path, spawn=spawn)
     camera = _camera(url="rtsp://user:secret@10.0.0.8/stream")
     config = VideoConfig(cameras=[camera])
-    assert supervisor.tick(config, [], [])["statuses"] == [{"id": "cam1", "state": "stopped", "message": ""}]
+    started_buffer = supervisor.tick(config, [], [])
+    assert started_buffer["statuses"] == [{"id": "cam1", "state": "stopped", "message": ""}]
     assert len(started) == 1 and "segment" in " ".join(started[0].argv)
+    assert any("Кольцевой буфер запущен" in item["line"] for item in started_buffer["logs"])
+    supervisor.buffers["cam1"]["lines"].extend(
+        [
+            "frame=14866 fps= 25 q=-1.0 size=N/A time=00:09:54.68 bitrate=N/A speed=   1x",
+            "[segment @ 0x1] Opening '/host/mnt/nvme/video/.buffer/cam1/20260928_132710.mkv' for writing",
+            "[segment @ 0x1] Failed to open segment: Permission denied",
+        ]
+    )
+    quiet = supervisor.tick(config, [], [])
+    logged = " ".join(item["line"] for item in quiet["logs"])
+    assert "frame=" not in logged
+    assert "Opening " not in logged
+    assert any(item["level"] == "error" and "Permission denied" in item["line"] for item in quiet["logs"])
     assert supervisor.tick(VideoConfig(cameras=[_camera(enabled=False)]), [{"id": "ep0", "camera_id": "cam1", "state": "queued"}], [])["episodes"][0]["state"] == "error"
     assert len(started) == 1
 
@@ -316,16 +332,18 @@ def test_alarm_edges_merge_into_one_incident_and_schedule_video_stop(tmp_path: P
     )
     assert extended["id"] == incident_id
     assert len(extended["episodes"]) == 2
+    repo.sync_alarm_edges("vm-1", first + timedelta(seconds=4), {"Another alert"}, kind="alert")
     repo.register_incident_end(
         "vm-1",
         name="Oil pressure",
         kind="alert",
         created_at=first + timedelta(seconds=5),
         post_seconds=15,
+        has_active=False,
     )
     still_open = repo.get_incident(incident_id)
-    assert still_open["state"] == "finishing"
-    assert still_open["stop_at"].endswith("+00:00")
+    assert still_open["state"] == "active"
+    assert still_open["stop_at"] is None
     assert all(item["duration_sec"] == 86400 for item in still_open["episodes"])
     assert all(item["state"] == "queued" for item in still_open["episodes"])
 

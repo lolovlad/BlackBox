@@ -40,7 +40,7 @@
     <fieldset class="bb-export-options">
       <legend>Пакетный экспорт</legend>
       <div class="bb-export-checks">
-        {% for key, title in [('analog', 'Аналоги'), ('discrete', 'Дискреты'), ('alarms', 'Алерты'), ('gpio', 'GPIO'), ('incidents', 'Инциденты'), ('video', 'Видео')] %}
+        {% for key, title in [('analog', 'Аналоги'), ('discrete', 'Дискреты'), ('alarms', 'Алерты'), ('gpio', 'GPIO'), ('emergency', 'Правила аварийности'), ('incidents', 'Инциденты'), ('video', 'Видео')] %}
         <label><input type="checkbox" name="package_include" value="{{ key }}" checked> {{ title }}</label>
         {% endfor %}
       </div>

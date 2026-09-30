@@ -35,7 +35,7 @@
     <div class="bb-table-wrap"><table class="bb-table"><thead><tr><th>Камера</th><th>Состояние</th><th>Интервал</th><th>Файлы</th></tr></thead><tbody>
       {% for episode in incident.episodes %}
       <tr><td>{{ episode.camera_id }}</td><td>{{ episode.state }}</td><td>{{ episode.started_at or incident.started_at }} — {{ episode.ended_at or incident.stop_at or 'запись продолжается' }}</td><td>
-        {% for path in episode.paths %}<a class="bb-btn bb-btn-sm bb-btn-secondary" href="/api/v1/video/incidents/{{ incident.id }}/videos/{{ episode.id }}/{{ loop.index0 }}" download><i class="bi bi-download"></i> Фрагмент {{ loop.index }}</a>{% else %}<span class="bb-muted">Фрагменты появятся после закрытия сегментов камеры.</span>{% endfor %}
+        {% for path in episode.paths %}<div class="bb-video-fragment"><video controls preload="metadata" src="/api/v1/video/incidents/{{ incident.id }}/videos/{{ episode.id }}/{{ loop.index0 }}/play"></video><a class="bb-btn bb-btn-sm bb-btn-secondary" href="/api/v1/video/incidents/{{ incident.id }}/videos/{{ episode.id }}/{{ loop.index0 }}" download><i class="bi bi-download"></i> Скачать фрагмент {{ loop.index }}</a></div>{% else %}<span class="bb-muted">Фрагменты появятся после закрытия сегментов камеры.</span>{% endfor %}
       </td></tr>
       {% else %}<tr><td colspan="4" class="bb-muted">Камеры для этого инцидента не настроены.</td></tr>{% endfor %}
     </tbody></table></div>
