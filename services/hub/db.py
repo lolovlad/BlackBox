@@ -665,6 +665,89 @@ class HubRepository:
                 raise
         return events
 
+    def close_vm_alarms(self, vm_id: str, created_at: datetime) -> list[dict[str, Any]]:
+        """Close every open device, GPIO and rule alarm for a stopped VM.
+
+        Incidents stay open while any of these rows remain. Stop and restart
+        must drop them, otherwise a cleared machine keeps recording.
+        """
+        events = []
+        for kind in ("alert", "gpio"):
+            events.extend(self.sync_alarm_edges(vm_id, created_at, set(), kind=kind))
+        events.extend(self._close_emergency_alarms(vm_id, created_at))
+        return events
+
+    def _close_emergency_alarms(self, vm_id: str, created_at: datetime) -> list[dict[str, Any]]:
+        moment = created_at if created_at.tzinfo is not None else created_at.replace(tzinfo=timezone.utc)
+        stamp = moment.astimezone(timezone.utc).isoformat()
+        with self.connect() as c:
+            c.execute("BEGIN IMMEDIATE")
+            try:
+                rows = c.execute(
+                    "SELECT a.event_id,e.rule_name,e.expression FROM emergency_active a "
+                    "JOIN emergency_events e ON e.id=a.event_id WHERE a.vm_id=?",
+                    (vm_id,),
+                ).fetchall()
+                if rows:
+                    c.execute("UPDATE emergency_events SET ended_at=? WHERE id IN (SELECT event_id FROM emergency_active WHERE vm_id=?)", (stamp, vm_id))
+                    c.execute("DELETE FROM emergency_active WHERE vm_id=?", (vm_id,))
+                has_active = c.execute(
+                    "SELECT 1 FROM alarm_active WHERE vm_id=? AND triggers_incident=1 UNION ALL SELECT 1 FROM emergency_active WHERE vm_id=? LIMIT 1",
+                    (vm_id, vm_id),
+                ).fetchone() is not None
+                events = [
+                    {
+                        "vm_id": vm_id,
+                        "name": str(row["rule_name"]),
+                        "state": "inactive",
+                        "kind": "emergency",
+                        "created_at": stamp,
+                        "triggers_incident": True,
+                        "has_active": has_active,
+                    }
+                    for row in rows
+                ]
+                c.execute("COMMIT")
+            except Exception:
+                c.execute("ROLLBACK")
+                raise
+        return events
+
+    def list_active_alarms(
+        self,
+        vm_ids: list[str] | None,
+        *,
+        kind: str,
+        date_from: str | None = None,
+        date_to: str | None = None,
+        sort_desc: bool = True,
+        offset: int = 0,
+        limit: int = 100,
+    ) -> tuple[list[dict[str, Any]], int]:
+        """Alarms that are open right now. Cleared names are not returned."""
+        channel = kind if kind in {"gpio", "emergency"} else "alert"
+        clauses = ["kind=?"]
+        args: list[Any] = [channel]
+        if vm_ids:
+            placeholders = ",".join("?" for _ in vm_ids)
+            clauses.append(f"vm_id IN ({placeholders})")
+            args.extend(vm_ids)
+        if date_from:
+            clauses.append("started_at>=?")
+            args.append(date_from)
+        if date_to:
+            clauses.append("started_at<=?")
+            args.append(date_to)
+        where = " AND ".join(clauses)
+        order = "DESC" if sort_desc else "ASC"
+        with self.connect() as c:
+            total = int(c.execute(f"SELECT COUNT(*) FROM alarm_active WHERE {where}", args).fetchone()[0])
+            rows = c.execute(
+                f"SELECT vm_id,name,kind,triggers_incident,started_at FROM alarm_active WHERE {where} ORDER BY started_at {order} LIMIT ? OFFSET ?",
+                [*args, max(1, limit), max(0, offset)],
+            ).fetchall()
+        return [dict(row) | {"state": "active", "created_at": row["started_at"]} for row in rows], total
+
     def list_incident_triggers(self) -> list[dict[str, Any]]:
         """Active controller alarms and rules that must keep incidents open."""
         with self.connect() as c:

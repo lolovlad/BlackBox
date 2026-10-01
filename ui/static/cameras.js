@@ -504,7 +504,7 @@
       return;
     }
     var cameraId = selected;
-    fetch("/api/v1/cameras/" + encodeURIComponent(cameraId) + "/logs?tail=500", { credentials: "same-origin" }).then(function (response) {
+    fetch("/api/v1/cameras/" + encodeURIComponent(cameraId) + "/logs?tail=120", { credentials: "same-origin" }).then(function (response) {
       return response.ok ? response.json() : null;
     }).then(function (body) {
       if (!body || cameraId !== selected) return;
@@ -742,23 +742,32 @@
     });
   });
 
-  fetch("/api/v1/cameras", { credentials: "same-origin" }).then(function (response) {
-    if (!response.ok) throw new Error("load");
-    return response.json();
-  }).then(function (body) {
-    apply(body, true);
+  function loadCameras(replace, withUsage) {
+    var query = withUsage ? "?usage=1" : "?usage=0";
+    return fetch("/api/v1/cameras" + query, { credentials: "same-origin" }).then(function (response) {
+      if (!response.ok) throw new Error("load");
+      return response.json();
+    }).then(function (body) {
+      apply(body, replace);
+      return body;
+    });
+  }
+
+  loadCameras(true, false).then(function () {
+    loadCameras(false, true).catch(function () { return null; });
   }).catch(function () {
     document.getElementById("camera-message").textContent = "Не удалось загрузить камеры";
   });
 
   window.setInterval(function () {
-    fetch("/api/v1/cameras", { credentials: "same-origin" }).then(function (response) {
-      return response.ok ? response.json() : null;
-    }).then(function (body) {
-      if (body) apply(body, false);
-      loadLogs();
-    }).catch(function () { return null; });
+    loadCameras(false, false).catch(function () { return null; });
   }, 3000);
+
+  window.setInterval(function () {
+    var journal = document.getElementById("camera-journal-wrap");
+    if (journal && !journal.hidden) loadLogs();
+    loadCameras(false, true).catch(function () { return null; });
+  }, 30000);
 
   window.addEventListener("bb-hub-event", function (event) {
     var message = event.detail || {};

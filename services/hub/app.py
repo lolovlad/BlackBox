@@ -29,7 +29,7 @@ from starlette.background import BackgroundTask
 from pydantic import BaseModel, Field, ValidationError
 
 from bb_platform.contracts import AlarmEvent, MapDocument, Quality, RawBatch, ResourceKind, TagSample, VmCommand, VmLifecycle, VmProtocol, VmStatus, WorkerCommandAck, WorkerError, WorkerHeartbeat, WorkerRegister
-from bb_platform.parser import adapt_legacy_map, diagnose_read, field_channel, field_label, parse_batch
+from bb_platform.parser import _normalize_bit_labels, adapt_legacy_map, diagnose_read, field_channel, field_label, parse_batch
 
 from services.video.retention import measure_video_storage, purge_motion_over_quota
 from services.video.settings import CameraSettings, VideoConfig, config_estimates
@@ -831,15 +831,11 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
                 parsed = parse_batch(batch, MapDocument(**document_payload))
                 runtime_buffer = runtime_config.get("buffer", {})
                 runtime_storage = runtime_config.get("storage", {})
-                store_for_vm(vm, runtime_config).append(
-                    parsed,
-                    flush_rows=int(runtime_buffer.get("ram_rows", 60)),
-                    flush_seconds=float(runtime_storage.get("flush_seconds", 5.0)),
-                )
             except StorageUnavailable as exc:
                 repo.release_ingest_batch(str(batch.batch_id), str(batch.vm_id), batch.seq_start)
                 alarm = AlarmEvent(
                     vm_id=batch.vm_id,
+                    timestamp=datetime.now(timezone.utc),
                     severity="critical",
                     code="storage_unavailable",
                     message=str(exc),
@@ -878,6 +874,29 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
                     for event in repo.sync_alarm_edges(vm_key, sample.captured_at, pins, kind="gpio"):
                         await _process_alarm_event(sample, event)
                 app.state.vm_alerts[vm_key] = sorted(alert_names)
+            try:
+                store = store_for_vm(vm, runtime_config)
+                await asyncio.to_thread(
+                    lambda: store.append(
+                        parsed,
+                        flush_rows=int(runtime_buffer.get("ram_rows", 60)),
+                        flush_seconds=float(runtime_storage.get("flush_seconds", 5.0)),
+                    )
+                )
+            except StorageUnavailable as exc:
+                repo.release_ingest_batch(str(batch.batch_id), str(batch.vm_id), batch.seq_start)
+                alarm = AlarmEvent(
+                    vm_id=batch.vm_id,
+                    timestamp=datetime.now(timezone.utc),
+                    severity="critical",
+                    code="storage_unavailable",
+                    message=str(exc),
+                    active=True,
+                    payload={"storage_resource_id": vm.get("storage_resource_id")},
+                )
+                await bus.publish("alarms", alarm.model_dump(mode="json"))
+                await bus.publish_log(str(batch.vm_id), str(exc), level="error")
+                return {"error": ("storage_unavailable", str(exc), 503)}
             last_quality = parsed[-1].quality if parsed else None
             if parsed and last_quality == Quality.GOOD:
                 current = repo.get_vm(str(batch.vm_id))
@@ -928,6 +947,20 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
             else:
                 text = f"Алерт прибора: {event['name']}" if started else f"Алерт снят: {event['name']}"
             await bus.publish_log(vm_key, text, level="error" if started else "info")
+
+        async def _close_vm_alarms(vm_id: str) -> None:
+            now = datetime.now(timezone.utc)
+            app.state.vm_alerts[vm_id] = []
+            current = repo.get_vm(vm_id) or {}
+            sample = TagSample(
+                vm_id=UUID(vm_id),
+                seq=0,
+                captured_at=now,
+                map_version=str(current.get("map_version") or "stopped"),
+                protocol=current.get("protocol") or VmProtocol.SIMULATOR,
+            )
+            for event in await asyncio.to_thread(repo.close_vm_alarms, vm_id, now):
+                await _process_alarm_event(sample, event)
 
         async def _process_alarm_event(sample: TagSample, event: dict[str, Any]) -> None:
             if not event.get("classification_changed"):
@@ -1246,6 +1279,7 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
                     pass
 
         reconciler_task = asyncio.create_task(reconcile())
+        app.state.close_vm_alarms = _close_vm_alarms
         yield
         stop_system.set()
         await system_task
@@ -1703,6 +1737,8 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
         if vm is None:
             raise HTTPException(404, detail={"code": "not_found", "message": "VM not found"})
         try:
+            if action in {"stop", "restart"}:
+                await app.state.close_vm_alarms(vm_id)
             if action in {"start", "restart"}:
                 read_resources = vm.get("read_resources", vm.get("resources", [])) or []
                 ids = _resource_ids(read_resources)
@@ -1917,15 +1953,19 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
             elif channel == "discrete":
                 discrete_rows.append(row)
             else:
-                labels = field.get("bits") if isinstance(field.get("bits"), dict) else {}
+                labels = _normalize_bit_labels(field.get("bits", field.get("bit_labels")))
+                active = {str(item) for item in alert_names}
                 if labels:
-                    active = {str(item) for item in alert_names}
                     for bit, alarm_name in labels.items():
                         text = str(alarm_name)
-                        alert_catalog.append({"name": text, "bit": str(bit), "active": text in active, "source": name})
+                        if text not in active:
+                            continue
+                        alert_catalog.append({"name": text, "bit": str(bit), "active": True, "source": name})
                 elif isinstance(value, list):
                     for item in value or []:
-                        alert_catalog.append({"name": str(item), "bit": None, "active": True, "source": name})
+                        text = str(item).strip()
+                        if text:
+                            alert_catalog.append({"name": text, "bit": None, "active": True, "source": name})
         seen_alerts = {item["name"] for item in alert_catalog}
         for name in alert_names:
             if name not in seen_alerts:
@@ -1995,24 +2035,27 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
 
     usage_cache: dict[str, Any] = {"at": 0.0, "dir": "", "value": {"used_bytes": 0, "motion_bytes": 0}}
 
-    def _storage_usage(root: Path) -> dict[str, int]:
+    def _storage_usage(root: Path, *, scan: bool = True) -> dict[str, int]:
         now = time.monotonic()
         key = str(root)
-        if usage_cache["dir"] == key and now - float(usage_cache["at"]) < 30:
-            return usage_cache["value"]
+        fresh = usage_cache["dir"] == key and now - float(usage_cache["at"]) < 120
+        if fresh or not scan:
+            if usage_cache["dir"] == key:
+                return usage_cache["value"]
+            return {"used_bytes": 0, "motion_bytes": 0}
         value = measure_video_storage(root) if root.is_dir() else {"used_bytes": 0, "motion_bytes": 0}
         usage_cache["at"] = now
         usage_cache["dir"] = key
         usage_cache["value"] = value
         return value
 
-    def _camera_payload() -> dict[str, Any]:
+    def _camera_payload(include_usage: bool = True) -> dict[str, Any]:
         config = VideoConfig.model_validate(repo.camera_document())
         try:
             storage_dir = _video_output_dir(repo, cfg, config)
         except HTTPException:
             storage_dir = str(cfg.data_root / config.video_subdir)
-        usage = _storage_usage(Path(storage_dir))
+        usage = _storage_usage(Path(storage_dir), scan=include_usage)
         return {
             "config": config.model_dump(mode="json"),
             "storage_dir": storage_dir,
@@ -2051,8 +2094,10 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
             raise HTTPException(401, detail={"code": "video_unauthorized", "message": "Invalid video token"})
 
     @app.get("/api/v1/cameras")
-    async def get_cameras(account=Depends(admin)):
-        return _camera_payload()
+    async def get_cameras(usage: bool = Query(default=False), account=Depends(admin)):
+        if usage:
+            return await asyncio.to_thread(_camera_payload, True)
+        return _camera_payload(False)
 
     @app.put("/api/v1/cameras", dependencies=[Depends(csrf_protect)])
     async def put_cameras(payload: VideoConfig, account=Depends(admin)):

@@ -274,8 +274,9 @@ def test_reading_splits_channels_and_separates_link_from_device_alerts(tmp_path:
         alerts = {row["name"]: row["active"] for row in live["alerts"]}
         assert analog["RPM"] == 1500
         assert discrete["Engine_running"] is True
-        assert alerts["BUS High Volt"] is True
-        assert alerts["Overspeed"] is False
+        assert alerts == {"BUS High Volt": True}
+        alarm_rows = client.get("/api/v1/telemetry/rows", params={"vm_id": vm_id, "tab": "alarms"}).json()
+        assert [(row["name"], row["state"]) for row in alarm_rows["rows"]] == [("BUS High Volt", "active")]
         journal = "\n".join(client.get(f"/api/v1/vms/{vm_id}/logs").json()["lines"])
         assert "Алерт прибора: BUS High Volt" in journal
         lost = RawBatch(
@@ -313,7 +314,127 @@ def test_reading_splits_channels_and_separates_link_from_device_alerts(tmp_path:
         quiet = client.get(f"/api/v1/vms/{vm_id}/reading").json()
         assert quiet["diagnosis"]["code"] == "ok"
         assert {row["name"]: row["value"] for row in quiet["analog"]}["RPM"] == 0
-        assert all(not row["active"] for row in quiet["alerts"])
+        assert quiet["alerts"] == []
+        cleared_rows = client.get("/api/v1/telemetry/rows", params={"vm_id": vm_id, "tab": "alarms"}).json()
+        assert [(row["name"], row["state"]) for row in cleared_rows["rows"]] == [
+            ("BUS High Volt", "inactive"),
+            ("BUS High Volt", "active"),
+        ]
+
+
+def test_alarm_state_updates_without_telemetry_storage(tmp_path: Path, monkeypatch):
+    from services.hub.storage import ParquetStore, StorageUnavailable
+
+    def fail_append(self, samples, **kwargs):
+        raise StorageUnavailable("disk full")
+
+    monkeypatch.setattr(ParquetStore, "append", fail_append)
+    document = {
+        "requests": [{"name": "hr", "fc": 3, "address": 1000, "count": 1}],
+        "fields": [{
+            "name": "Alarm_1000",
+            "type": "bitfield",
+            "kind": "alert",
+            "source": "hr",
+            "address": 1000,
+            "bits": {"0": "Low oil"},
+        }],
+    }
+    with _client(tmp_path) as client:
+        assert client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin-password"}).status_code == 200
+        csrf = client.cookies.get("bb_csrf")
+        _publish_map(client, csrf, protocol="modbus_tcp", version="agc4-alarms", document=document)
+        vm = client.post(
+            "/api/v1/vms",
+            json={"name": "tcp-alarms", "protocol": "modbus_tcp", "map_version": "agc4-alarms", "config": {"reader": {"host": "127.0.0.1", "tcp_port": 502}}},
+            headers={"X-CSRF-Token": csrf},
+        ).json()
+        vm_id = vm["id"]
+        assert client.post(f"/api/v1/vms/{vm_id}/start", headers={"X-CSRF-Token": csrf}).status_code == 200
+        token = client._transport.app.state.worker_tokens[vm_id]  # type: ignore[attr-defined]
+        headers = {"X-Worker-Token": token}
+
+        def send(seq: int, word: int) -> None:
+            batch = RawBatch(
+                vm_id=UUID(vm_id),
+                protocol=VmProtocol.MODBUS_TCP,
+                map_version="agc4-alarms",
+                seq_start=seq,
+                samples=[RawSample(seq=seq, captured_at=f"2026-10-01T08:00:0{seq}Z", sources={"hr": [word]})],
+            )
+            response = client.post("/api/v1/internal/workers/batches", json=batch.model_dump(mode="json"), headers=headers)
+            assert response.status_code == 503, response.text
+
+        send(1, 1)
+        opened = client.get("/api/v1/telemetry/rows", params={"vm_id": vm_id, "tab": "alarms"}).json()
+        assert [row["name"] for row in opened["rows"]] == ["Low oil"]
+        live = client.get(f"/api/v1/vms/{vm_id}/reading").json()
+        assert [row["name"] for row in live["alerts"]] == ["Low oil"]
+        send(2, 0)
+        cleared = client.get("/api/v1/telemetry/rows", params={"vm_id": vm_id, "tab": "alarms"}).json()
+        assert [row["state"] for row in cleared["rows"]] == ["inactive", "active"]
+        quiet = client.get(f"/api/v1/vms/{vm_id}/reading").json()
+        assert quiet["alerts"] == []
+
+
+def test_stop_and_restart_close_active_alarms(tmp_path: Path):
+    document = {
+        "requests": [{"name": "hr", "fc": 3, "address": 0, "count": 1}],
+        "fields": [{
+            "name": "AlarmReg",
+            "type": "bitfield",
+            "kind": "alert",
+            "source": "hr",
+            "address": 0,
+            "bits": {"0": "Low oil"},
+        }],
+    }
+    with _client(tmp_path) as client:
+        assert client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin-password"}).status_code == 200
+        csrf = client.cookies.get("bb_csrf")
+        _publish_map(client, csrf, version="alarm-v1", document=document)
+        vm = client.post(
+            "/api/v1/vms",
+            json={"name": "alarms", "protocol": "simulator", "map_version": "alarm-v1"},
+            headers={"X-CSRF-Token": csrf},
+        ).json()
+        vm_id = vm["id"]
+        assert client.post(f"/api/v1/vms/{vm_id}/start", headers={"X-CSRF-Token": csrf}).status_code == 200
+        app = client._transport.app  # type: ignore[attr-defined]
+        headers = {"X-Worker-Token": app.state.worker_tokens[vm_id]}
+        batch = RawBatch(
+            vm_id=UUID(vm_id),
+            protocol=VmProtocol.SIMULATOR,
+            map_version="alarm-v1",
+            seq_start=1,
+            samples=[RawSample(seq=1, captured_at="2026-10-01T08:00:01Z", sources={"hr": [1]})],
+        )
+        assert client.post("/api/v1/internal/workers/batches", json=batch.model_dump(mode="json"), headers=headers).status_code == 200
+        assert client.get("/api/v1/telemetry/rows", params={"vm_id": vm_id, "tab": "alarms"}).json()["rows"]
+        stopped = client.post(f"/api/v1/vms/{vm_id}/stop", headers={"X-CSRF-Token": csrf})
+        assert stopped.status_code == 200, stopped.text
+        stopped_rows = client.get("/api/v1/telemetry/rows", params={"vm_id": vm_id, "tab": "alarms"}).json()["rows"]
+        assert [(row["name"], row["state"]) for row in stopped_rows] == [("Low oil", "inactive"), ("Low oil", "active")]
+        assert app.state.repo.list_incident_triggers() == []
+        history, total = app.state.repo.list_alarm_events([vm_id], kind="alert")
+        assert total == 2
+        assert [row["state"] for row in history] == ["inactive", "active"]
+
+        assert client.post(f"/api/v1/vms/{vm_id}/start", headers={"X-CSRF-Token": csrf}).status_code == 200
+        headers = {"X-Worker-Token": app.state.worker_tokens[vm_id]}
+        again = RawBatch(
+            vm_id=UUID(vm_id),
+            protocol=VmProtocol.SIMULATOR,
+            map_version="alarm-v1",
+            seq_start=2,
+            samples=[RawSample(seq=2, captured_at="2026-10-01T08:00:02Z", sources={"hr": [1]})],
+        )
+        assert client.post("/api/v1/internal/workers/batches", json=again.model_dump(mode="json"), headers=headers).status_code == 200
+        assert client.post(f"/api/v1/vms/{vm_id}/restart", headers={"X-CSRF-Token": csrf}).status_code == 200
+        restarted = client.get("/api/v1/telemetry/rows", params={"vm_id": vm_id, "tab": "alarms"}).json()["rows"]
+        assert [row["state"] for row in restarted].count("active") == 2
+        assert [row["state"] for row in restarted].count("inactive") == 2
+        assert app.state.repo.list_incident_triggers() == []
 
 
 def test_modbus_vm_persists_reader_and_storage_settings(tmp_path: Path, monkeypatch):
@@ -1118,6 +1239,8 @@ def test_maps_page_opens_version_studio(tmp_path: Path):
         assert "bb-studio" in html
         assert "Новая версия" in html
         assert "Загрузить" in html
+        assert "bb-map-family" in html
+        assert "section in sections" in html
         assert "Опубликовать версию" not in html
         assert "черновик" not in html.lower()
         assert "Удалить" in html

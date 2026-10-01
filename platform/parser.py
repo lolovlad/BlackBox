@@ -503,6 +503,23 @@ def diagnose_read(
     }
 
 
+def _value_index(address: int, values: list[Any], request: dict[str, Any] | None) -> int:
+    """Turn a field address into an index in the values of its request.
+
+    Most maps store an offset from the start of the request. AGC-4 maps store
+    the Modbus register number. When that number falls outside the block the
+    worker returned, shift it by the request start address.
+    """
+    if 0 <= address < len(values):
+        return address
+    if isinstance(request, dict):
+        base = int(request.get("address") or 0)
+        shifted = address - base
+        if base and 0 <= shifted < len(values):
+            return shifted
+    return address
+
+
 def parse_source_values(
     config: dict[str, Any],
     source_values: dict[str, list[Any]],
@@ -510,6 +527,11 @@ def parse_source_values(
     """Parse legacy requests/fields without exposing Python builtins."""
     result: dict[str, Any] = {}
     errors: list[str] = []
+    requests = {
+        str(item.get("name")): item
+        for item in config.get("requests") or []
+        if isinstance(item, dict) and item.get("name")
+    }
     for field in config.get("fields", []):
         name = str(field.get("name", "")).strip()
         if not name:
@@ -522,14 +544,17 @@ def parse_source_values(
                 source = str(field.get("source", ""))
                 address = int(field.get("address", 0))
                 values = source_values.get(source, [])
-                raw = values[address] if 0 <= address < len(values) else 0
+                request = requests.get(source)
+                index = _value_index(address, values, request)
+                raw = values[index] if 0 <= index < len(values) else 0
                 if field_type in {"bool", "boolean"}:
                     value: Any = bool(raw)
                 elif field_type in {"int16", "sint16"}:
                     value = int(raw) & 0xFFFF
                     value = value - 65536 if value >= 32768 else value
                 elif field_type in {"uint32_be", "uint32", "uint32_le", "int32_be", "int32"}:
-                    lo = values[address + 1] if address + 1 < len(values) else 0
+                    lo_index = _value_index(address + 1, values, request)
+                    lo = values[lo_index] if 0 <= lo_index < len(values) else 0
                     if field_type == "uint32_le":
                         value = (int(lo) << 16) | int(raw)
                     else:
@@ -537,9 +562,9 @@ def parse_source_values(
                     if field_type in {"int32_be", "int32"} and value >= 2**31:
                         value -= 2**32
                 elif field_type == "bitfield":
-                    labels = field.get("bits", field.get("bit_labels", {}))
+                    labels = _normalize_bit_labels(field.get("bits", field.get("bit_labels", {})))
                     value = [
-                        str(label)
+                        label
                         for bit, label in labels.items()
                         if int(raw) & (1 << int(bit))
                     ]

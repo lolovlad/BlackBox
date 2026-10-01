@@ -192,7 +192,7 @@
             <table class="bb-read-table" x-show="alertRows.length">
               <thead><tr><th>Сообщение</th><th>Статус</th></tr></thead>
               <tbody>
-                <template x-for="row in alertRows" :key="'e-' + row.name">
+                <template x-for="row in alertRows" :key="'e-' + (row.source || '') + '-' + (row.bit == null ? '' : row.bit) + '-' + row.name">
                   <tr :class="row.active ? 'is-alert-on' : ''">
                     <td x-text="row.name"></td>
                     <td><span class="bb-disc" :class="row.active ? 'is-on' : 'is-off'" x-text="row.active ? 'активен' : 'нет'"></span></td>
@@ -200,7 +200,7 @@
                 </template>
               </tbody>
             </table>
-            <p class="bb-muted" x-show="!alertRows.length">В карте нет bitfield-алертов (active_alarms).</p>
+            <p class="bb-muted" x-show="!alertRows.length">Нет активных аварий.</p>
           </section>
         </div>
       </div>

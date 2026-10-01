@@ -716,6 +716,22 @@
           return family;
         });
       },
+      get sections() {
+        const order = ['modbus_rtu', 'modbus_tcp', 'can', 'gpio', 'simulator'];
+        const grouped = {};
+        this.families.forEach(function (family) {
+          const key = family.protocol || 'other';
+          if (!grouped[key]) grouped[key] = [];
+          grouped[key].push(family);
+        });
+        const keys = order.filter(function (key) { return grouped[key]; });
+        Object.keys(grouped).forEach(function (key) {
+          if (keys.indexOf(key) === -1) keys.push(key);
+        });
+        return keys.map(function (key) {
+          return { key: key, title: labels[key] || key, items: grouped[key] };
+        });
+      },
       get familyVersions() {
         const current = this.currentMap;
         if (!current) return [];
@@ -1044,7 +1060,9 @@
       },
       get analogRows() { return this.filterRows(this.analog); },
       get discreteRows() { return this.filterRows(this.discrete); },
-      get alertRows() { return this.filterRows(this.alerts, ['name']); },
+      get alertRows() {
+        return this.filterRows(this.alerts, ['name']).filter(function (row) { return row.active; });
+      },
       get activeAlertHint() {
         const count = (this.alerts || []).filter(function (row) { return row.active; }).length;
         return count ? ('· ' + count) : '';

@@ -263,6 +263,37 @@ def test_parse_batch_splits_channels_and_blanks_them_on_bad_quality():
     assert lost.alerts == []
 
 
+def test_tcp_alarm_register_number_is_read_inside_its_request_window():
+    """AGC-4 maps store the Modbus register, not an offset into the block."""
+    document = adapt_legacy_map(
+        {
+            "requests": [{"name": "alarms", "fc": 3, "address": 1000, "count": 4}],
+            "fields": [
+                {
+                    "name": "Alarm_1002",
+                    "type": "bitfield",
+                    "kind": "alert",
+                    "source": "alarms",
+                    "address": 1002,
+                    "bits": [{"bit": 0, "name": "Low oil"}, {"bit": 1, "name": "High temp"}],
+                }
+            ],
+        },
+        protocol=VmProtocol.MODBUS_TCP,
+        version="agc4-alarms",
+    )
+    batch = RawBatch(
+        vm_id=uuid4(),
+        protocol=VmProtocol.MODBUS_TCP,
+        map_version="agc4-alarms",
+        seq_start=1,
+        samples=[RawSample(seq=1, captured_at="2026-10-01T00:00:00Z", sources={"alarms": [0, 0, 0b11, 0]})],
+    )
+    parsed = parse_batch(batch, document)[0]
+    assert parsed.alerts == ["Low oil", "High temp"]
+    assert parsed.incident_alerts == ["Low oil", "High temp"]
+
+
 def test_only_explicit_alert_kind_triggers_incident_channel():
     document = adapt_legacy_map(
         {

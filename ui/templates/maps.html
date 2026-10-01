@@ -28,31 +28,39 @@
     </div>
   </div>
 
-  <div class="bb-map-grid">
-    <template x-for="family in families" :key="family.key">
-      <article class="bb-map-card" @click="openMap(family.items[0])">
-        <div class="bb-map-card-top">
-          <strong x-text="family.name"></strong>
-          <span class="bb-map-pills">
-            <span class="bb-map-pill" x-text="'v' + (family.items[0].revision || 1)"></span>
-            <span class="bb-map-pill">актуальная</span>
-          </span>
-        </div>
-        <p class="bb-map-card-meta">
-          <span x-text="protocolLabel(family.protocol)"></span>
-          <span x-text="formatStamp(family.items[0].created_at)"></span>
-        </p>
-        <p class="bb-map-card-meta">
-          <span x-text="family.items.length + (family.items.length === 1 ? ' версия' : ' версий')"></span>
-          <code class="bb-map-checksum" x-text="shortChecksum(family.items[0].checksum)"></code>
-        </p>
-        <div class="bb-map-card-actions">
-          <button type="button" class="bb-btn bb-btn-sm" @click.stop="pickFile(family.items[0])" :disabled="saving">Новая версия</button>
-        </div>
-      </article>
-    </template>
-  </div>
-  <p class="bb-muted" x-show="families.length === 0">Нет карт.</p>
+  <template x-for="section in sections" :key="section.key">
+    <section class="bb-map-family">
+      <header class="bb-map-family-head">
+        <h2 x-text="section.title"></h2>
+        <span x-text="section.items.length"></span>
+      </header>
+      <div class="bb-map-grid">
+        <template x-for="family in section.items" :key="family.key">
+          <article class="bb-map-card" @click="openMap(family.items[0])">
+            <div class="bb-map-card-top">
+              <strong x-text="family.name"></strong>
+              <span class="bb-map-pills">
+                <span class="bb-map-pill" x-text="'v' + (family.items[0].revision || 1)"></span>
+                <span class="bb-map-pill">актуальная</span>
+              </span>
+            </div>
+            <p class="bb-map-card-meta">
+              <span x-text="protocolLabel(family.protocol)"></span>
+              <span x-text="formatStamp(family.items[0].created_at)"></span>
+            </p>
+            <p class="bb-map-card-meta">
+              <span x-text="family.items.length + (family.items.length === 1 ? ' версия' : ' версий')"></span>
+              <code class="bb-map-checksum" x-text="shortChecksum(family.items[0].checksum)"></code>
+            </p>
+            <div class="bb-map-card-actions">
+              <button type="button" class="bb-btn bb-btn-sm" @click.stop="pickFile(family.items[0])" :disabled="saving">Новая версия</button>
+            </div>
+          </article>
+        </template>
+      </div>
+    </section>
+  </template>
+  <p class="bb-muted" x-show="sections.length === 0">Нет карт.</p>
 
   <div class="bb-studio" x-show="studioOpen" x-cloak>
     <div class="bb-studio-backdrop" @click="closeStudio()"></div>

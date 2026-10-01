@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>{% block title %}BlackBox Hub{% endblock %}</title>
-  <link rel="stylesheet" href="/static/app.css?v={{ app_version }}-ui11">
+  <link rel="stylesheet" href="/static/app.css?v={{ app_version }}-ui12">
   <style>#bb-boot{position:fixed;inset:0;z-index:10000;display:flex;align-items:center;justify-content:center;background:#e6eaf6;color:#2d3540}#bb-boot[hidden]{display:none!important}</style>
   <link rel="stylesheet" href="/static/vendor/bootstrap-icons/bootstrap-icons.min.css">
   <script>
@@ -80,7 +80,7 @@
   </script>
   <script src="/static/vendor/htmx.min.js"></script>
   <script type="application/json" id="bb-connection-profiles">{{ connection_profiles | default({}) | tojson }}</script>
-  <script defer src="/static/app.js?v={{ app_version }}-ui9"></script>
+  <script defer src="/static/app.js?v={{ app_version }}-ui11"></script>
   <script defer src="/static/vendor/alpine.min.js"></script>
 </head>
 <body class="bb-body {% block body_class %}{% endblock %}" x-data="bbShell()" @bb-toast.window="pushToast($event.detail)">
