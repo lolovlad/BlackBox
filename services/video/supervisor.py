@@ -51,6 +51,24 @@ def _preview_signature(camera: CameraSettings) -> str:
     return json.dumps(payload, sort_keys=True)
 
 
+def _record_signature(camera: CameraSettings) -> str:
+    payload = {
+        "url": camera.url,
+        "rtsp_transport": camera.rtsp_transport,
+        "codec": camera.codec,
+        "width": camera.width,
+        "height": camera.height,
+        "fps": camera.fps,
+        "bitrate_kbps": camera.bitrate_kbps,
+        "gop_sec": camera.gop_sec,
+        "profile": camera.profile,
+        "preset": camera.preset,
+        "audio": camera.audio,
+        "audio_bitrate_kbps": camera.audio_bitrate_kbps,
+    }
+    return json.dumps(payload, sort_keys=True)
+
+
 class Supervisor:
     def __init__(
         self,
@@ -267,8 +285,9 @@ class Supervisor:
         for camera_id in list(self.buffers):
             slot = self.buffers[camera_id]
             camera = wanted.get(camera_id)
+            encode_as = self._encode_camera(camera) if camera is not None else None
             segment_sec = _segment_seconds(camera) if camera is not None else 0
-            signature = f"{_preview_signature(camera)}|segment:{segment_sec}" if camera is not None else ""
+            signature = f"{_record_signature(encode_as)}|segment:{segment_sec}" if encode_as is not None else ""
             if camera is None or signature != slot["signature"] or not _running(slot["proc"]):
                 self._drain_slot(slot)
                 _stop(slot["proc"])
@@ -277,10 +296,11 @@ class Supervisor:
             if camera_id in self.buffers:
                 continue
             segment_sec = _segment_seconds(camera)
+            encode_as = self._encode_camera(camera)
             directory = self.buffer_root / camera_id
             pattern = directory / "%Y%m%d_%H%M%S.mkv"
-            argv = build_buffer_argv(camera, pattern, segment_sec)
-            signature = f"{_preview_signature(camera)}|segment:{segment_sec}"
+            argv = build_buffer_argv(encode_as, pattern, segment_sec)
+            signature = f"{_record_signature(encode_as)}|segment:{segment_sec}"
             try:
                 directory.mkdir(parents=True, exist_ok=True)
                 proc = self.spawn(argv)
@@ -298,6 +318,8 @@ class Supervisor:
                 "segment_sec": segment_sec,
                 "log_source": "ffmpeg-buffer",
             }
+            if encode_as.codec != camera.codec:
+                self._note(camera_id, "Аппаратный кодер H.264 не найден, запись пишется через libx264", level="error", source="hub")
             self._note(camera_id, f"Кольцевой буфер в памяти, сегмент {segment_sec} с", level="info", source="hub")
 
     def _sync_incident_episodes(
@@ -549,16 +571,21 @@ class Supervisor:
             rows.append({"id": camera.id, "state": "stopped", "message": ""})
         return rows
 
-    def _encoder(self, camera: CameraSettings) -> CameraSettings:
+    def _encode_camera(self, camera: CameraSettings) -> CameraSettings:
         if camera.codec != "h264_v4l2m2m" or self._hardware_ready():
             return camera
-        self._note(
-            camera.id,
-            "Аппаратный кодер H.264 не найден, эпизод пишется через libx264",
-            level="error",
-            source="hub",
-        )
         return camera.model_copy(update={"codec": "libx264"})
+
+    def _encoder(self, camera: CameraSettings) -> CameraSettings:
+        encode_as = self._encode_camera(camera)
+        if encode_as.codec != camera.codec:
+            self._note(
+                camera.id,
+                "Аппаратный кодер H.264 не найден, запись пишется через libx264",
+                level="error",
+                source="hub",
+            )
+        return encode_as
 
     def _hardware_ready(self) -> bool:
         if self._hw_h264 is None:

@@ -250,19 +250,14 @@ def build_episode_argv(camera: CameraSettings, output_file: Path, duration_sec: 
 
 
 def build_buffer_argv(camera: CameraSettings, output_pattern: Path, segment_sec: int | None = None) -> list[str]:
-    """Continuously save independently readable Matroska transport segments."""
+    """Rolling segments for motion and incidents, with the same picture settings as a manual episode."""
     duration = camera.segment_sec if segment_sec is None else segment_sec
     argv = _input_argv(camera)
     argv[argv.index("-loglevel") + 1] = "warning"
     argv.insert(1, "-nostats")
+    argv.extend(_encode_argv(camera))
     argv.extend(
         [
-            "-map",
-            "0:v:0",
-            "-map",
-            "0:a?",
-            "-c",
-            "copy",
             "-f",
             "segment",
             "-segment_time",

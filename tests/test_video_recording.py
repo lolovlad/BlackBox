@@ -82,8 +82,14 @@ def test_ffmpeg_argv_copy_skips_scale_and_libx264_limits_bitrate(tmp_path: Path)
     assert buffer[1] == "-nostats"
     assert buffer[buffer.index("-loglevel") + 1] == "warning"
     assert buffer[buffer.index("-f") + 1] == "segment"
+    assert buffer[buffer.index("-c:v") + 1] == "libx264"
+    assert "scale=1920:1080" in " ".join(buffer)
+    assert "2000k" in buffer
     assert buffer[buffer.index("-segment_time") + 1] == "2"
     assert buffer[-1].endswith("%Y%m%d_%H%M%S.mkv")
+    copied_buffer = build_buffer_argv(_camera(codec="copy"), tmp_path / "%Y%m%d_%H%M%S.mkv", 2)
+    assert copied_buffer[copied_buffer.index("-c:v") + 1] == "copy"
+    assert "scale=" not in " ".join(copied_buffer)
     own_length = build_buffer_argv(_camera(), tmp_path / "%Y%m%d_%H%M%S.mkv")
     assert own_length[own_length.index("-segment_time") + 1] == "60"
 

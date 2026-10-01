@@ -108,6 +108,7 @@
           </section>
           <section class="bb-vm-step" data-camera-panel="picture" hidden>
             <h3 class="bb-vm-step-title">Картинка</h3>
+            <p class="bb-panel-lead">Разрешение, кодек, битрейт и ключевой кадр задают ручную запись, запись движения и инцидент. Режим copy оставляет поток камеры как есть, поэтому битрейт и размер из формы в файл не попадают.</p>
             <div class="bb-settings-grid">
               {% call field('Разрешение', 'Исходное оставляет размер потока камеры.', 'bi-aspect-ratio') %}
               <select data-field="resolution">
@@ -132,7 +133,7 @@
               {% call field('FPS', 'Пусто — как у камеры.', 'bi-speedometer2') %}
               <input data-field="fps" type="number" min="1" max="60" placeholder="исходный">
               {% endcall %}
-              {% call field('Кодек', 'copy кладёт поток камеры как есть. Аппаратный Pi — только если в контейнере есть кодер, иначе эпизод пишется обычным H.264.', 'bi-film') %}
+              {% call field('Кодек', 'copy кладёт поток камеры как есть. Аппаратный Pi используется, только если кодер есть в контейнере, иначе запись идёт обычным H.264.', 'bi-film') %}
               <select data-field="codec">
                 <option value="libx264">H.264</option>
                 <option value="libx265">H.265</option>
@@ -186,7 +187,7 @@
           <section class="bb-vm-step" data-camera-panel="episode" hidden>
             <h3 class="bb-vm-step-title">Эпизод</h3>
             <div class="bb-settings-grid">
-              {% call field('Контейнер', 'Один эпизод — один файл.', 'bi-file-earmark-play') %}
+              {% call field('Контейнер', 'Только для кнопки «Начать запись». Движение и инцидент пишут куски mkv, а закрытый инцидент собирается в один mp4.', 'bi-file-earmark-play') %}
               <select data-field="container">
                 <option value="mp4">mp4</option>
                 <option value="mkv">mkv</option>
