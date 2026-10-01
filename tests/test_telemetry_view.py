@@ -45,6 +45,8 @@ def test_alarm_edges_do_not_repeat_unchanged_state(tmp_path: Path) -> None:
     rows, total = repo.list_alarm_events(["vm-1"], kind="alert")
     assert total == 2
     assert [row["state"] for row in rows] == ["inactive", "active"]
+    assert {row["triggers_incident"] for row in rows} == {0}
+    assert repo.list_incident_triggers() == []
 
 
 def test_parquet_roundtrip_includes_buffer_and_flushed_parts(tmp_path: Path) -> None:
@@ -183,7 +185,9 @@ def test_values_charts_and_alarm_journal_for_many_sources(tmp_path: Path) -> Non
         assert ("gen-1", "BUS High Volt", "inactive") in states
         assert ("gen-2", "BUS High Volt", "active") in states
         assert ("gen-2", "BUS High Volt", "inactive") in states
-        assert client.get("/api/v1/video/incidents").json()["items"] == []
+        incidents = client.get("/api/v1/video/incidents").json()["items"]
+        assert len(incidents) == 2
+        assert {row["class_label"] for row in alarms["rows"]} == {"Авария"}
 
         analogs = client.get("/api/v1/telemetry/rows", params=[("tab", "analog"), ("vm_id", vm_ids[0]), ("column", "RPM")]).json()
         assert analogs["columns"][0]["label"] == "Обороты"

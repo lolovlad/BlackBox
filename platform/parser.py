@@ -328,10 +328,11 @@ def field_channel(field: dict[str, Any]) -> str:
     return "analog"
 
 
-def split_channels(fields: list[Any], tags: dict[str, Any]) -> tuple[dict[str, Any], dict[str, bool], list[str]]:
+def _split_channels(fields: list[Any], tags: dict[str, Any]) -> tuple[dict[str, Any], dict[str, bool], list[str], list[str]]:
     analog: dict[str, Any] = {}
     discrete: dict[str, bool] = {}
     alerts: list[str] = []
+    incident_alerts: list[str] = []
     for field in fields:
         if not isinstance(field, dict):
             continue
@@ -341,10 +342,14 @@ def split_channels(fields: list[Any], tags: dict[str, Any]) -> tuple[dict[str, A
         kind = field_channel(field)
         value = tags.get(name)
         if kind == "alert":
+            decoded: list[str] = []
             if isinstance(value, list):
-                alerts.extend(str(item) for item in value if str(item).strip())
+                decoded = [str(item) for item in value if str(item).strip()]
             elif value not in {None, "", False}:
-                alerts.append(str(value))
+                decoded = [str(value)]
+            alerts.extend(decoded)
+            if str(field.get("kind") or "").strip().lower() == "alert":
+                incident_alerts.extend(decoded)
         elif kind == "discrete":
             discrete[name] = bool(value)
         else:
@@ -356,7 +361,14 @@ def split_channels(fields: list[Any], tags: dict[str, Any]) -> tuple[dict[str, A
             continue
         seen.add(item)
         unique.append(item)
-    return analog, discrete, unique
+    incident_unique = [item for item in unique if item in set(incident_alerts)]
+    return analog, discrete, unique, incident_unique
+
+
+def split_channels(fields: list[Any], tags: dict[str, Any]) -> tuple[dict[str, Any], dict[str, bool], list[str]]:
+    """Compatibility projection used by UI/probes: all bitfield alerts."""
+    analog, discrete, alerts, _incident_alerts = _split_channels(fields, tags)
+    return analog, discrete, alerts
 
 
 _ERRNO_RE = re.compile(r"errno\s+(\d+)\b")
@@ -573,9 +585,9 @@ def parse_batch(batch: RawBatch, map_document: MapDocument) -> list[TagSample]:
         elif sample.quality == Quality.DEGRADED and quality == Quality.GOOD:
             quality = Quality.DEGRADED
         if sample.quality == Quality.BAD:
-            analog, discrete, alerts = {}, {}, []
+            analog, discrete, alerts, incident_alerts = {}, {}, [], []
         else:
-            analog, discrete, alerts = split_channels(list(map_document.fields or []), tags)
+            analog, discrete, alerts, incident_alerts = _split_channels(list(map_document.fields or []), tags)
         if errors:
             tags["_parse_errors"] = errors
         samples.append(
@@ -588,6 +600,7 @@ def parse_batch(batch: RawBatch, map_document: MapDocument) -> list[TagSample]:
                 analog=analog,
                 discrete=discrete,
                 alerts=alerts,
+                incident_alerts=incident_alerts,
                 quality=quality,
                 protocol=batch.protocol,
             )

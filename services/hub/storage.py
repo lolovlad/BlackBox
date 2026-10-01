@@ -61,15 +61,18 @@ class ParquetStore:
 
     def flush(self) -> int:
         with self._lock:
-            if not self._legacy_compacted:
-                compact_legacy_partitions(self.root)
-                self._legacy_compacted = True
-            if not self._buffers:
-                return 0
-            self._arrow()
+            try:
+                if not self._legacy_compacted:
+                    compact_legacy_partitions(self.root)
+                    self._legacy_compacted = True
+                if not self._buffers:
+                    return 0
+                self._arrow()
+                self.root.mkdir(parents=True, exist_ok=True)
+                usage = shutil.disk_usage(self.root)
+            except OSError as exc:
+                raise StorageUnavailable(f"telemetry storage is not writable: {self.root}: {exc}") from exc
             total = 0
-            self.root.mkdir(parents=True, exist_ok=True)
-            usage = shutil.disk_usage(self.root)
             if usage.free < self.min_free_bytes:
                 raise StorageUnavailable(f"free space below telemetry threshold: {usage.free} bytes")
             if self.quota_bytes is not None:
@@ -91,12 +94,14 @@ class ParquetStore:
                     total += len(samples)
                     completed.add(key)
                 self._last_flush = datetime.now().timestamp()
-            except Exception:
+            except Exception as exc:
                 # Keep rows whose daily file was not updated. A finished append
                 # is already in that day's file and must not be written again.
                 for key, samples in buffers.items():
                     if key not in completed:
                         self._buffers[key][0:0] = samples
+                if isinstance(exc, OSError):
+                    raise StorageUnavailable(f"telemetry write failed: {self.root}: {exc}") from exc
                 raise
             return total
 

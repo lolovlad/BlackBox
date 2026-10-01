@@ -249,6 +249,7 @@ def test_parse_batch_splits_channels_and_blanks_them_on_bad_quality():
     parsed = parse_batch(good, document)[0]
     assert parsed.analog["RPM"] == 90
     assert parsed.alerts == ["Overspeed"]
+    assert parsed.incident_alerts == []
     bad = RawBatch(
         vm_id=vm_id,
         protocol=VmProtocol.SIMULATOR,
@@ -260,6 +261,38 @@ def test_parse_batch_splits_channels_and_blanks_them_on_bad_quality():
     assert lost.quality == Quality.BAD
     assert lost.analog == {}
     assert lost.alerts == []
+
+
+def test_only_explicit_alert_kind_triggers_incident_channel():
+    document = adapt_legacy_map(
+        {
+            "requests": [{"name": "hr", "fc": 3, "address": 0, "count": 1}],
+            "fields": [
+                {
+                    "name": "active_alarms",
+                    "type": "bitfield",
+                    "kind": "alert",
+                    "source": "hr",
+                    "address": 0,
+                    "bits": {"0": "Emergency stop"},
+                }
+            ],
+        },
+        protocol=VmProtocol.SIMULATOR,
+        version="incident-map",
+    )
+    parsed = parse_batch(
+        RawBatch(
+            vm_id=uuid4(),
+            protocol=VmProtocol.SIMULATOR,
+            map_version="incident-map",
+            seq_start=1,
+            samples=[RawSample(seq=1, captured_at="2026-09-17T00:00:00Z", sources={"hr": [1]})],
+        ),
+        document,
+    )[0]
+    assert parsed.alerts == ["Emergency stop"]
+    assert parsed.incident_alerts == ["Emergency stop"]
 
 
 def test_modbus_rtu_reader_keeps_other_requests_on_partial_failure():

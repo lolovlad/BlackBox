@@ -288,6 +288,7 @@
     if (live && live.kind !== "idle") return live.text;
     var row = status[id];
     if (!row || row.state === "stopped") return live ? live.text : "готова";
+    if (row.state === "buffering") return "буфер активен";
     if (row.state === "recording") return live ? live.text : "идёт запись";
     if (row.state === "preview") return "просмотр";
     return "ошибка";

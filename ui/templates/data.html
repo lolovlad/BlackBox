@@ -39,6 +39,12 @@
     </div>
     <fieldset class="bb-export-options">
       <legend>Пакетный экспорт</legend>
+      <p class="bb-hint">Машины для пакета</p>
+      <div class="bb-export-checks" id="bb-package-vms">
+        {% for vm in vms %}
+        <label><input type="checkbox" name="package_vm_id" value="{{ vm.id }}" checked> {{ vm.name }}</label>
+        {% endfor %}
+      </div>
       <div class="bb-export-checks">
         {% for key, title in [('analog', 'Аналоги'), ('discrete', 'Дискреты'), ('alarms', 'Алерты'), ('gpio', 'GPIO'), ('emergency', 'Правила аварийности'), ('incidents', 'Инциденты'), ('video', 'Видео')] %}
         <label><input type="checkbox" name="package_include" value="{{ key }}" checked> {{ title }}</label>
@@ -47,7 +53,8 @@
       <label class="bb-filter-field">Формат
         <select id="bb-package-format"><option value="zip">ZIP с CSV и видео</option><option value="xlsx">Excel</option></select>
       </label>
-      <button type="button" class="bb-btn" id="bb-package-export"><i class="bi bi-file-earmark-zip"></i> Скачать пакет</button>
+      <button type="button" class="bb-btn" id="bb-package-export"><i class="bi bi-file-earmark-zip"></i> Создать пакет</button>
+      <div id="bb-export-job" class="bb-hint" role="status" aria-live="polite"></div>
     </fieldset>
   </form>
   <div id="bb-data-table"><p class="bb-hint">Загрузка таблицы…</p></div>

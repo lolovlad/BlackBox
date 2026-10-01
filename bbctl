@@ -51,6 +51,7 @@ Commands:
   smoke      Run the Hub login/VM/Parquet/WebSocket acceptance smoke test
   check-read Probe UART + Modbus RTU holding read (legacy DEIF FC3)
   check-tcp  Probe ICMP/TCP + Modbus TCP holding read
+  maintenance Purge old ingest idempotency rows; pass --vacuum in a maintenance window
   logs       Follow service logs
   ps         Show Compose service state
   help       Show this help
@@ -182,6 +183,11 @@ case "$command" in
     require_docker
     shift
     compose exec -T hub /app/.venv/bin/python -m services.hub.check_tcp "$@"
+    ;;
+  maintenance)
+    require_docker
+    shift
+    compose exec -T hub /app/.venv/bin/python -m services.hub.maintenance "$@"
     ;;
   *)
     echo "ERROR: unknown command: $command" >&2

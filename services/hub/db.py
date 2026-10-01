@@ -156,6 +156,7 @@ class HubRepository:
                     name TEXT NOT NULL,
                     state TEXT NOT NULL,
                     kind TEXT NOT NULL DEFAULT 'alert',
+                    triggers_incident INTEGER NOT NULL DEFAULT 0,
                     created_at TEXT NOT NULL
                 );
                 CREATE TABLE IF NOT EXISTS alarm_active (
@@ -163,6 +164,7 @@ class HubRepository:
                     kind TEXT NOT NULL,
                     name TEXT NOT NULL,
                     started_at TEXT NOT NULL,
+                    triggers_incident INTEGER NOT NULL DEFAULT 0,
                     PRIMARY KEY (vm_id, kind, name)
                 );
                 CREATE INDEX IF NOT EXISTS idx_alarm_events_vm ON alarm_events(vm_id, kind, created_at);
@@ -230,6 +232,33 @@ class HubRepository:
                     capture_from TEXT,
                     created_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS video_episode_segments (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    episode_id TEXT NOT NULL,
+                    camera_id TEXT NOT NULL,
+                    path TEXT NOT NULL UNIQUE,
+                    started_at TEXT,
+                    ended_at TEXT,
+                    size_bytes INTEGER NOT NULL DEFAULT 0,
+                    state TEXT NOT NULL DEFAULT 'ready',
+                    created_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_video_segments_time
+                    ON video_episode_segments(camera_id, started_at, ended_at);
+                CREATE TABLE IF NOT EXISTS export_jobs (
+                    id TEXT PRIMARY KEY,
+                    kind TEXT NOT NULL,
+                    state TEXT NOT NULL,
+                    params_json TEXT NOT NULL DEFAULT '{}',
+                    progress INTEGER NOT NULL DEFAULT 0,
+                    result_path TEXT,
+                    filename TEXT,
+                    message TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    expires_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_export_jobs_expiry ON export_jobs(expires_at);
                 CREATE TABLE IF NOT EXISTS video_incidents (
                     id TEXT PRIMARY KEY,
                     vm_id TEXT NOT NULL,
@@ -279,6 +308,12 @@ class HubRepository:
                 c.execute("UPDATE virtual_machines SET read_resources_json=resources_json WHERE read_resources_json='[]' OR read_resources_json IS NULL")
             if "storage_resource_id" not in columns:
                 c.execute("ALTER TABLE virtual_machines ADD COLUMN storage_resource_id TEXT")
+            alarm_event_columns = {row[1] for row in c.execute("PRAGMA table_info(alarm_events)").fetchall()}
+            if "triggers_incident" not in alarm_event_columns:
+                c.execute("ALTER TABLE alarm_events ADD COLUMN triggers_incident INTEGER NOT NULL DEFAULT 0")
+            alarm_active_columns = {row[1] for row in c.execute("PRAGMA table_info(alarm_active)").fetchall()}
+            if "triggers_incident" not in alarm_active_columns:
+                c.execute("ALTER TABLE alarm_active ADD COLUMN triggers_incident INTEGER NOT NULL DEFAULT 0")
             ingest_info = c.execute("PRAGMA table_info(ingest_batches)").fetchall()
             ingest_columns = {row[1] for row in ingest_info}
             ingest_pk = [row[1] for row in ingest_info if row[5]]
@@ -320,6 +355,7 @@ class HubRepository:
                 c.execute("DROP TABLE ingest_batches")
                 c.execute("ALTER TABLE ingest_batches_v2 RENAME TO ingest_batches")
             c.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_ingest_batches_idempotency ON ingest_batches(idempotency_key)")
+            c.execute("CREATE INDEX IF NOT EXISTS idx_ingest_batches_created_at ON ingest_batches(created_at)")
 
     def bootstrap_admin(self, username: str, password: str) -> None:
         if not password:
@@ -502,7 +538,15 @@ class HubRepository:
             cur = c.execute("DELETE FROM virtual_machines WHERE id=?", (vm_id,))
         return cur.rowcount > 0
 
-    def sync_alarm_edges(self, vm_id: str, created_at: datetime, active_names: set[str] | list[str], *, kind: str = "alert") -> list[dict[str, Any]]:
+    def sync_alarm_edges(
+        self,
+        vm_id: str,
+        created_at: datetime,
+        active_names: set[str] | list[str],
+        *,
+        kind: str = "alert",
+        incident_names: set[str] | list[str] | None = None,
+    ) -> list[dict[str, Any]]:
         """Write one row when an alarm starts and one when it ends.
 
         Repeating the same active set does not insert anything, so a poll
@@ -512,31 +556,56 @@ class HubRepository:
         stamp = moment.astimezone(timezone.utc).isoformat()
         channel = kind if kind in {"gpio", "emergency"} else "alert"
         desired = {str(name).strip() for name in active_names if str(name).strip()}
+        triggers = {str(name).strip() for name in (incident_names or []) if str(name).strip()} & desired
         events: list[dict[str, Any]] = []
         with self.connect() as c:
             c.execute("BEGIN IMMEDIATE")
             try:
-                rows = c.execute("SELECT name FROM alarm_active WHERE vm_id=? AND kind=?", (vm_id, channel)).fetchall()
+                rows = c.execute(
+                    "SELECT name,triggers_incident FROM alarm_active WHERE vm_id=? AND kind=?",
+                    (vm_id, channel),
+                ).fetchall()
                 current = {str(row["name"]) for row in rows}
+                current_triggers = {str(row["name"]) for row in rows if bool(row["triggers_incident"])}
                 for name in sorted(desired - current):
+                    trigger = name in triggers
                     c.execute(
-                        "INSERT INTO alarm_events(vm_id,name,state,kind,created_at) VALUES(?,?,?,?,?)",
-                        (vm_id, name, "active", channel, stamp),
+                        "INSERT INTO alarm_events(vm_id,name,state,kind,triggers_incident,created_at) VALUES(?,?,?,?,?,?)",
+                        (vm_id, name, "active", channel, int(trigger), stamp),
                     )
                     c.execute(
-                        "INSERT OR REPLACE INTO alarm_active(vm_id,kind,name,started_at) VALUES(?,?,?,?)",
-                        (vm_id, channel, name, stamp),
+                        "INSERT OR REPLACE INTO alarm_active(vm_id,kind,name,started_at,triggers_incident) VALUES(?,?,?,?,?)",
+                        (vm_id, channel, name, stamp, int(trigger)),
                     )
-                    events.append({"vm_id": vm_id, "name": name, "state": "active", "kind": channel, "created_at": stamp})
+                    events.append({"vm_id": vm_id, "name": name, "state": "active", "kind": channel, "created_at": stamp, "triggers_incident": trigger})
                 for name in sorted(current - desired):
+                    trigger = name in current_triggers
                     c.execute(
-                        "INSERT INTO alarm_events(vm_id,name,state,kind,created_at) VALUES(?,?,?,?,?)",
-                        (vm_id, name, "inactive", channel, stamp),
+                        "INSERT INTO alarm_events(vm_id,name,state,kind,triggers_incident,created_at) VALUES(?,?,?,?,?,?)",
+                        (vm_id, name, "inactive", channel, int(trigger), stamp),
                     )
                     c.execute("DELETE FROM alarm_active WHERE vm_id=? AND kind=? AND name=?", (vm_id, channel, name))
-                    events.append({"vm_id": vm_id, "name": name, "state": "inactive", "kind": channel, "created_at": stamp})
+                    events.append({"vm_id": vm_id, "name": name, "state": "inactive", "kind": channel, "created_at": stamp, "triggers_incident": trigger})
+                for name in sorted(desired & current):
+                    was_trigger = name in current_triggers
+                    is_trigger = name in triggers
+                    if was_trigger == is_trigger:
+                        continue
+                    c.execute(
+                        "UPDATE alarm_active SET triggers_incident=? WHERE vm_id=? AND kind=? AND name=?",
+                        (int(is_trigger), vm_id, channel, name),
+                    )
+                    events.append({
+                        "vm_id": vm_id,
+                        "name": name,
+                        "state": "active" if is_trigger else "inactive",
+                        "kind": channel,
+                        "created_at": stamp,
+                        "triggers_incident": True,
+                        "classification_changed": True,
+                    })
                 has_active = c.execute(
-                    "SELECT 1 FROM alarm_active WHERE vm_id=? UNION ALL SELECT 1 FROM emergency_active WHERE vm_id=? LIMIT 1",
+                    "SELECT 1 FROM alarm_active WHERE vm_id=? AND triggers_incident=1 UNION ALL SELECT 1 FROM emergency_active WHERE vm_id=? LIMIT 1",
                     (vm_id, vm_id),
                 ).fetchone() is not None
                 for event in events:
@@ -546,6 +615,27 @@ class HubRepository:
                 c.execute("ROLLBACK")
                 raise
         return events
+
+    def list_incident_triggers(self) -> list[dict[str, Any]]:
+        """Active controller alarms and rules that must keep incidents open."""
+        with self.connect() as c:
+            alarms = [
+                dict(row) | {"source_kind": "alert"}
+                for row in c.execute(
+                    "SELECT vm_id,name,started_at FROM alarm_active WHERE triggers_incident=1 ORDER BY started_at"
+                ).fetchall()
+            ]
+            rules = [
+                dict(row) | {"name": str(row["rule_name"]), "source_kind": "emergency"}
+                for row in c.execute(
+                    """
+                    SELECT a.vm_id,a.started_at,r.name AS rule_name
+                    FROM emergency_active a JOIN emergency_rules r ON r.id=a.rule_id
+                    ORDER BY a.started_at
+                    """
+                ).fetchall()
+            ]
+        return alarms + rules
 
     def list_alarm_events(
         self,
@@ -576,7 +666,7 @@ class HubRepository:
         with self.connect() as c:
             total = int(c.execute(f"SELECT COUNT(*) FROM alarm_events WHERE {where}", args).fetchone()[0])
             rows = c.execute(
-                f"SELECT id,vm_id,name,state,kind,created_at FROM alarm_events WHERE {where} ORDER BY created_at {order}, id {order} LIMIT ? OFFSET ?",
+                f"SELECT id,vm_id,name,state,kind,triggers_incident,created_at FROM alarm_events WHERE {where} ORDER BY created_at {order}, id {order} LIMIT ? OFFSET ?",
                 [*args, max(1, limit), max(0, offset)],
             ).fetchall()
         return [dict(row) for row in rows], total
@@ -920,6 +1010,25 @@ class HubRepository:
         with self.connect() as c:
             c.execute("DELETE FROM ingest_batches WHERE idempotency_key=?", (key,))
 
+    def purge_ingest_batches(self, *, older_than_hours: int = 24, batch_size: int = 10_000) -> int:
+        """Bound idempotency metadata without holding a long SQLite write lock."""
+        cutoff = (datetime.now(timezone.utc) - timedelta(hours=max(1, int(older_than_hours)))).isoformat()
+        limit = max(1, min(int(batch_size), 100_000))
+        with self.connect() as c:
+            cur = c.execute(
+                """
+                DELETE FROM ingest_batches
+                WHERE rowid IN (
+                    SELECT rowid FROM ingest_batches
+                    WHERE created_at < ?
+                    ORDER BY created_at
+                    LIMIT ?
+                )
+                """,
+                (cutoff, limit),
+            )
+        return max(0, int(cur.rowcount))
+
     def upsert_resources(self, resources: list[dict[str, Any]]) -> list[dict[str, Any]]:
         now = datetime.now(timezone.utc).isoformat()
         with self.connect() as c:
@@ -1168,6 +1277,7 @@ class HubRepository:
                 row = c.execute("SELECT * FROM video_episodes WHERE id=?", (episode_id,)).fetchone()
                 if row is None or row["state"] in {"finished", "error"}:
                     continue
+                self._upsert_episode_segments(c, row, item)
                 if row["state"] == "recording" and state == "recording":
                     paths = item.get("paths") or ([str(item.get("path"))] if item.get("path") else [])
                     c.execute(
@@ -1190,6 +1300,146 @@ class HubRepository:
                     if incident_id and state in {"finished", "error"}:
                         self._finish_incident_if_complete(c, incident_id, ended or datetime.now(timezone.utc).isoformat())
         return changed
+
+    @staticmethod
+    def _upsert_episode_segments(c: sqlite3.Connection, episode: sqlite3.Row, item: dict[str, Any]) -> None:
+        raw_segments = item.get("segments") if isinstance(item.get("segments"), list) else []
+        metadata = {
+            str(segment.get("path")): segment
+            for segment in raw_segments
+            if isinstance(segment, dict) and segment.get("path")
+        }
+        paths = item.get("paths") or ([item.get("path")] if item.get("path") else [])
+        now = datetime.now(timezone.utc).isoformat()
+        for raw in paths:
+            path = str(raw or "").strip()
+            if not path:
+                continue
+            segment = metadata.get(path, {})
+            started_at = segment.get("started_at")
+            ended_at = segment.get("ended_at")
+            size = int(segment.get("size_bytes") or 0)
+            if not started_at:
+                try:
+                    start = datetime.strptime(Path(path).stem[:15], "%Y%m%d_%H%M%S").replace(tzinfo=timezone.utc)
+                    started_at = start.isoformat()
+                    ended_at = ended_at or (start + timedelta(seconds=2)).isoformat()
+                except ValueError:
+                    started_at = episode["capture_from"] or episode["started_at"]
+            if size <= 0:
+                try:
+                    size = Path(path).stat().st_size
+                except OSError:
+                    size = 0
+            c.execute(
+                """
+                INSERT INTO video_episode_segments(episode_id,camera_id,path,started_at,ended_at,size_bytes,state,created_at)
+                VALUES(?,?,?,?,?,?,?,?)
+                ON CONFLICT(path) DO UPDATE SET
+                    episode_id=excluded.episode_id,camera_id=excluded.camera_id,
+                    started_at=COALESCE(excluded.started_at,video_episode_segments.started_at),
+                    ended_at=COALESCE(excluded.ended_at,video_episode_segments.ended_at),
+                    size_bytes=excluded.size_bytes,state=excluded.state
+                """,
+                (episode["id"], episode["camera_id"], path, started_at, ended_at, size, "ready", now),
+            )
+
+    def list_video_segments(
+        self,
+        *,
+        date_from: str,
+        date_to: str,
+        camera_ids: list[str] | None = None,
+        vm_ids: list[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        clauses = ["COALESCE(s.started_at,e.created_at) <= ?", "COALESCE(s.ended_at,e.ended_at,e.stop_at,e.started_at) >= ?"]
+        args: list[Any] = [date_to, date_from]
+        if camera_ids:
+            clauses.append("s.camera_id IN (%s)" % ",".join("?" for _ in camera_ids))
+            args.extend(camera_ids)
+        if vm_ids:
+            clauses.append("(e.vm_id IN (%s) OR e.vm_id IS NULL)" % ",".join("?" for _ in vm_ids))
+            args.extend(vm_ids)
+        with self.connect() as c:
+            rows = c.execute(
+                f"""
+                SELECT s.*,e.vm_id,e.incident_id,e.capture_from,e.stop_at
+                FROM video_episode_segments s JOIN video_episodes e ON e.id=s.episode_id
+                WHERE {' AND '.join(clauses)}
+                ORDER BY s.camera_id,COALESCE(s.started_at,e.created_at),s.id
+                """,
+                args,
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def backfill_video_segments(self) -> int:
+        """Catalog paths written by versions that predate the segment table."""
+        with self.connect() as c:
+            episodes = c.execute(
+                """
+                SELECT e.* FROM video_episodes e
+                WHERE COALESCE(e.paths_json,'[]')!='[]' OR COALESCE(e.path,'')!=''
+                """
+            ).fetchall()
+            before = int(c.execute("SELECT COUNT(*) FROM video_episode_segments").fetchone()[0])
+            for episode in episodes:
+                paths = json.loads(episode["paths_json"] or "[]")
+                if not paths and episode["path"]:
+                    paths = [episode["path"]]
+                self._upsert_episode_segments(c, episode, {"paths": paths})
+            after = int(c.execute("SELECT COUNT(*) FROM video_episode_segments").fetchone()[0])
+        return after - before
+
+    def create_export_job(self, kind: str, params: dict[str, Any], *, ttl_hours: int = 24) -> dict[str, Any]:
+        job_id = str(uuid4())
+        now = datetime.now(timezone.utc)
+        expires = now + timedelta(hours=max(1, ttl_hours))
+        with self.connect() as c:
+            c.execute(
+                """
+                INSERT INTO export_jobs(id,kind,state,params_json,created_at,updated_at,expires_at)
+                VALUES(?,?, 'queued', ?,?,?,?)
+                """,
+                (job_id, kind, json.dumps(params, ensure_ascii=False), now.isoformat(), now.isoformat(), expires.isoformat()),
+            )
+        return self.get_export_job(job_id) or {}
+
+    def get_export_job(self, job_id: str) -> dict[str, Any] | None:
+        with self.connect() as c:
+            row = c.execute("SELECT * FROM export_jobs WHERE id=?", (job_id,)).fetchone()
+        if row is None:
+            return None
+        result = dict(row)
+        result["params"] = json.loads(result.pop("params_json") or "{}")
+        return result
+
+    def update_export_job(self, job_id: str, **values: Any) -> dict[str, Any] | None:
+        allowed = {"state", "progress", "result_path", "filename", "message"}
+        changes = {key: value for key, value in values.items() if key in allowed}
+        if not changes:
+            return self.get_export_job(job_id)
+        changes["updated_at"] = datetime.now(timezone.utc).isoformat()
+        with self.connect() as c:
+            c.execute(
+                f"UPDATE export_jobs SET {','.join(f'{key}=?' for key in changes)} WHERE id=?",
+                [*changes.values(), job_id],
+            )
+        return self.get_export_job(job_id)
+
+    def cleanup_export_jobs(self) -> int:
+        now = datetime.now(timezone.utc).isoformat()
+        with self.connect() as c:
+            paths = [
+                str(row["result_path"])
+                for row in c.execute("SELECT result_path FROM export_jobs WHERE expires_at<? AND result_path IS NOT NULL", (now,))
+            ]
+            cur = c.execute("DELETE FROM export_jobs WHERE expires_at<?", (now,))
+        for raw in paths:
+            try:
+                Path(raw).unlink(missing_ok=True)
+            except OSError:
+                pass
+        return int(cur.rowcount)
 
     def register_incident_start(
         self,
@@ -1302,16 +1552,15 @@ class HubRepository:
         post_seconds = max(0, min(int(post_seconds), 3600))
         with self.connect() as c:
             c.execute("BEGIN IMMEDIATE")
-            if kind == "emergency":
-                active = c.execute(
-                    "SELECT 1 FROM emergency_active WHERE vm_id=? LIMIT 1",
-                    (vm_id,),
-                ).fetchone() is not None
-            else:
-                active = c.execute(
-                    "SELECT 1 FROM alarm_active WHERE vm_id=? UNION ALL SELECT 1 FROM emergency_active WHERE vm_id=? LIMIT 1",
-                    (vm_id, vm_id),
-                ).fetchone() is not None
+            active = c.execute(
+                """
+                SELECT 1 FROM alarm_active WHERE vm_id=? AND triggers_incident=1
+                UNION ALL
+                SELECT 1 FROM emergency_active WHERE vm_id=?
+                LIMIT 1
+                """,
+                (vm_id, vm_id),
+            ).fetchone() is not None
             row = c.execute(
                 "SELECT * FROM video_incidents WHERE vm_id=? AND state IN ('active','finishing') ORDER BY started_at DESC LIMIT 1",
                 (vm_id,),
@@ -1400,6 +1649,26 @@ class HubRepository:
                 incident["alerts"] = json.loads(row["alerts_json"] or "[]")
                 results.append(incident)
             return results
+
+    def list_incidents_overlapping(self, *, vm_ids: list[str], date_from: str, date_to: str) -> list[dict[str, Any]]:
+        if not vm_ids:
+            return []
+        placeholders = ",".join("?" for _ in vm_ids)
+        with self.connect() as c:
+            ids = [
+                str(row["id"])
+                for row in c.execute(
+                    f"""
+                    SELECT id FROM video_incidents
+                    WHERE vm_id IN ({placeholders})
+                      AND started_at<=?
+                      AND COALESCE(telemetry_to,ended_at,stop_at,last_alert_at,started_at)>=?
+                    ORDER BY started_at
+                    """,
+                    [*vm_ids, date_to, date_from],
+                ).fetchall()
+            ]
+        return [incident for incident_id in ids if (incident := self.get_incident(incident_id)) is not None]
 
     @staticmethod
     def _finish_incident_if_complete(c: sqlite3.Connection, incident_id: str, ended_at: str) -> None:

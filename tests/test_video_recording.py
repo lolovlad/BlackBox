@@ -137,9 +137,9 @@ def test_supervisor_records_one_episode_and_reports_when_it_ends(tmp_path: Path)
     camera = _camera(url="rtsp://user:secret@10.0.0.8/stream")
     config = VideoConfig(cameras=[camera])
     started_buffer = supervisor.tick(config, [], [])
-    assert started_buffer["statuses"] == [{"id": "cam1", "state": "stopped", "message": ""}]
+    assert started_buffer["statuses"] == [{"id": "cam1", "state": "buffering", "message": "Кольцевой буфер активен"}]
     assert len(started) == 1 and "segment" in " ".join(started[0].argv)
-    assert any("Кольцевой буфер запущен" in item["line"] for item in started_buffer["logs"])
+    assert any("Кольцевой буфер в памяти" in item["line"] for item in started_buffer["logs"])
     supervisor.buffers["cam1"]["lines"].extend(
         [
             "frame=14866 fps= 25 q=-1.0 size=N/A time=00:09:54.68 bitrate=N/A speed=   1x",
@@ -336,7 +336,9 @@ def test_alarm_edges_merge_into_one_incident_and_schedule_video_stop(tmp_path: P
     reasons = [item["line"] for item in repo.list_camera_logs("cam1")]
     assert "Запись начата. Причина: авария «Oil pressure»." in reasons
     assert "Запись продолжается. Причина: авария «Temperature»." in reasons
-    repo.sync_alarm_edges("vm-1", first + timedelta(seconds=4), {"Another alert"}, kind="alert")
+    repo.sync_alarm_edges(
+        "vm-1", first + timedelta(seconds=4), {"Another alert"}, kind="alert", incident_names={"Another alert"}
+    )
     repo.register_incident_end(
         "vm-1",
         name="Oil pressure",
@@ -350,6 +352,22 @@ def test_alarm_edges_merge_into_one_incident_and_schedule_video_stop(tmp_path: P
     assert still_open["stop_at"] is None
     assert all(item["duration_sec"] == 86400 for item in still_open["episodes"])
     assert all(item["state"] == "queued" for item in still_open["episodes"])
+
+
+def test_startup_recovers_incident_from_active_full_alarm(tmp_path: Path):
+    repo = HubRepository(tmp_path / "hub.db")
+    started = datetime.now(timezone.utc) - timedelta(seconds=5)
+    repo.sync_alarm_edges(
+        "vm-recovery",
+        started,
+        {"Emergency stop"},
+        incident_names={"Emergency stop"},
+    )
+    with _client(tmp_path) as client:
+        incidents = client.app.state.repo.list_incidents(vm_ids=["vm-recovery"])
+        assert len(incidents) == 1
+        assert incidents[0]["state"] == "active"
+        assert [row["name"] for row in incidents[0]["alerts"]] == ["Emergency stop"]
 
 
 def test_incident_episode_updates_keep_all_segment_paths(tmp_path: Path):
@@ -381,8 +399,13 @@ def test_incident_pages_and_export_routes(tmp_path: Path, monkeypatch):
 
 def test_incident_download_and_bundle_contain_video(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("BB_VIDEO_TOKEN", "video-secret")
+    def fake_merge(paths, output, **_kwargs):
+        output.write_bytes(b"merged-video")
+        return {"state": "included", "segments": [str(path) for path in paths], "omitted": [], "gaps": []}
+    monkeypatch.setattr("services.hub.app.merge_camera_segments", fake_merge)
     with _client(tmp_path) as client:
         assert client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin-password"}).status_code == 200
+        csrf = client.cookies.get("bb_csrf")
         repo = client.app.state.repo
         moment = datetime.now(timezone.utc).replace(microsecond=0)
         incident = repo.register_incident_start(
@@ -402,9 +425,31 @@ def test_incident_download_and_bundle_contain_video(tmp_path: Path, monkeypatch)
         archive = client.get(f"/api/v1/video/incidents/{incident['id']}/export")
         assert archive.status_code == 200
         with zipfile.ZipFile(io.BytesIO(archive.content)) as bundle:
-            assert f"videos/cam1/0001_{video_path.name}" in bundle.namelist()
+            assert "videos/cam1.mp4" in bundle.namelist()
+            assert "videos/manifest.json" in bundle.namelist()
             assert "telemetry/analog.csv" in bundle.namelist()
             assert "charts/analog.json" in bundle.namelist()
+        segments = repo.list_video_segments(
+            date_from=(moment - timedelta(seconds=1)).isoformat(),
+            date_to=(moment + timedelta(seconds=3)).isoformat(),
+            camera_ids=["cam1"],
+        )
+        assert [row["path"] for row in segments] == [str(video_path)]
+
+        queued = client.post(
+            "/api/v1/export-jobs",
+            json={"kind": "incident", "incident_id": incident["id"]},
+            headers={"X-CSRF-Token": csrf},
+        )
+        assert queued.status_code == 202
+        job = queued.json()
+        for _ in range(50):
+            job = client.get(f"/api/v1/export-jobs/{job['id']}").json()
+            if job["state"] not in {"queued", "running"}:
+                break
+            time.sleep(0.02)
+        assert job["state"] == "completed"
+        assert client.get(f"/api/v1/export-jobs/{job['id']}/download").status_code == 200
 
 
 def test_supervisor_stops_incident_episode_at_stop_at(tmp_path: Path):

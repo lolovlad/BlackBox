@@ -9,7 +9,7 @@ import subprocess
 import tempfile
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
 
@@ -86,10 +86,10 @@ class Supervisor:
         episodes: list[dict[str, Any]],
         previews: list[CameraSettings],
         output_root: Path | None = None,
-    ) -> dict[str, list[dict[str, str]]]:
+    ) -> dict[str, list[dict[str, Any]]]:
         if output_root is not None:
             self.output_root = Path(output_root)
-        events: list[dict[str, str]] = []
+        events: list[dict[str, Any]] = []
         self._reap_episodes(events)
         manual_jobs = [item for item in episodes if not _buffer_job(item)]
         self._sync_episodes(config, manual_jobs, events)
@@ -138,7 +138,7 @@ class Supervisor:
             self.trackers.clear()
             self.pending_motion.clear()
 
-    def _reap_episodes(self, events: list[dict[str, str]]) -> None:
+    def _reap_episodes(self, events: list[dict[str, Any]]) -> None:
         for episode_id in list(self.episodes):
             slot = self.episodes[episode_id]
             if _running(slot["proc"]):
@@ -165,7 +165,7 @@ class Supervisor:
             events.append(event)
             del self.episodes[episode_id]
 
-    def _sync_episodes(self, config: VideoConfig, episodes: list[dict[str, Any]], events: list[dict[str, str]]) -> None:
+    def _sync_episodes(self, config: VideoConfig, episodes: list[dict[str, Any]], events: list[dict[str, Any]]) -> None:
         cameras = {camera.id: camera for camera in config.cameras}
         emitted = {event["id"] for event in events}
         root = self.output_root
@@ -303,7 +303,7 @@ class Supervisor:
         self,
         config: VideoConfig,
         episodes: list[dict[str, Any]],
-        events: list[dict[str, str]],
+        events: list[dict[str, Any]],
     ) -> None:
         cameras = {camera.id: camera for camera in config.cameras}
         now = datetime.now(timezone.utc).timestamp()
@@ -349,6 +349,7 @@ class Supervisor:
                     "state": "finished",
                     "path": paths[0] if paths else "",
                     "paths": paths,
+                    "segments": _segment_metadata(paths, segment_sec),
                     "message": "Сохранено: начался инцидент",
                     "started_at": str((slot or {}).get("started_at") or item.get("started_at") or ""),
                     "ended_at": _now(),
@@ -416,6 +417,7 @@ class Supervisor:
                         "state": "recording",
                         "path": paths[0] if paths else str(output_dir),
                         "paths": paths,
+                        "segments": _segment_metadata(paths, segment_sec),
                         "message": "",
                         "started_at": slot["started_at"],
                         "ended_at": "",
@@ -429,6 +431,7 @@ class Supervisor:
                         "state": "finished",
                         "path": paths[0],
                         "paths": paths,
+                        "segments": _segment_metadata(paths, segment_sec),
                         "message": "",
                         "started_at": slot["started_at"],
                         "ended_at": _now(),
@@ -533,6 +536,10 @@ class Supervisor:
                 continue
             if camera.id in wanted and camera.id in self.preview_errors:
                 rows.append({"id": camera.id, "state": "error", "message": self.preview_errors[camera.id]})
+                continue
+            buffer = self.buffers.get(camera.id)
+            if buffer is not None and _running(buffer["proc"]):
+                rows.append({"id": camera.id, "state": "buffering", "message": "Кольцевой буфер активен"})
                 continue
             rows.append({"id": camera.id, "state": "stopped", "message": ""})
         return rows
@@ -743,6 +750,33 @@ def _watch(proc: Any) -> list[str]:
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _segment_metadata(paths: list[str], duration_sec: int) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for raw in paths:
+        path = Path(raw)
+        started_at = ""
+        ended_at = ""
+        try:
+            started = datetime.strptime(path.stem[:15], "%Y%m%d_%H%M%S").replace(tzinfo=timezone.utc)
+            started_at = started.isoformat()
+            ended_at = (started + timedelta(seconds=max(1, duration_sec))).isoformat()
+        except ValueError:
+            pass
+        try:
+            size = path.stat().st_size
+        except OSError:
+            size = 0
+        rows.append(
+            {
+                "path": str(path),
+                "started_at": started_at,
+                "ended_at": ended_at,
+                "size_bytes": size,
+            }
+        )
+    return rows
 
 
 def _buffer_job(item: dict[str, Any]) -> bool:

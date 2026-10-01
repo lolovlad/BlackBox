@@ -35,6 +35,7 @@ from services.video.retention import measure_video_storage, purge_motion_over_qu
 from services.video.settings import CameraSettings, VideoConfig, config_estimates
 from .recordings import RecordingError, annotate_entries, crumbs, incident_folder_label, list_recordings, media_type_for, recording_file
 from .emergency_rules import validate_rule_expression
+from .exports import ExportError, merge_camera_segments
 
 from workers.gpio.pins import pins_from_fields
 
@@ -163,9 +164,22 @@ class ProbeRequest(BaseModel):
     vm_id: str | None = None
 
 
+class ExportJobRequest(BaseModel):
+    kind: Literal["incident", "range"]
+    incident_id: str | None = None
+    vm_ids: list[str] = Field(default_factory=list)
+    date_from: str | None = None
+    date_to: str | None = None
+    sort: Literal["asc", "desc"] = "desc"
+    format: Literal["zip", "xlsx"] = "zip"
+    include: list[str] = Field(default_factory=list)
+    analog_columns: list[str] = Field(default_factory=list)
+    discrete_columns: list[str] = Field(default_factory=list)
+
+
 class VideoStatusItem(BaseModel):
     id: str = Field(min_length=1, max_length=64)
-    state: Literal["recording", "preview", "stopped", "error"] = "stopped"
+    state: Literal["recording", "preview", "buffering", "stopped", "error"] = "stopped"
     message: str = ""
 
 
@@ -680,6 +694,7 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
     bus = EventBus()
     store = ParquetStore(cfg.data_root / "telemetry", min_free_bytes=cfg.telemetry_min_free_bytes, quota_bytes=cfg.telemetry_quota_bytes)
     docker_manager = DockerManager(docker_client, enabled=cfg.docker_enabled)
+    export_tasks: dict[str, asyncio.Task[Any]] = {}
 
     def _replace_worker_container(vm: dict[str, Any], token: str) -> dict[str, Any]:
         """Recreate the worker so Docker --device matches the current UART/GPIO."""
@@ -749,6 +764,11 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
                     logger.warning("Could not clean stale export %s", candidate)
 
         await asyncio.to_thread(cleanup_exports)
+        await asyncio.to_thread(repo.cleanup_export_jobs)
+        await asyncio.to_thread(repo.backfill_video_segments)
+        # Worker retries arrive within seconds; keeping one day is ample for
+        # idempotency and prevents this metadata table from growing forever.
+        await asyncio.to_thread(repo.purge_ingest_batches, older_than_hours=24, batch_size=10_000)
 
         def store_for_vm(vm: dict[str, Any], runtime_config: dict[str, Any]) -> ParquetStore:
             storage_cfg = runtime_config.get("storage", {}) if isinstance(runtime_config, dict) else {}
@@ -825,7 +845,14 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
                     continue
                 vm_key = str(sample.vm_id)
                 alert_names = {str(item).strip() for item in sample.alerts if str(item).strip()}
-                for event in repo.sync_alarm_edges(vm_key, sample.captured_at, alert_names, kind="alert"):
+                incident_names = {str(item).strip() for item in sample.incident_alerts if str(item).strip()}
+                for event in repo.sync_alarm_edges(
+                    vm_key,
+                    sample.captured_at,
+                    alert_names,
+                    kind="alert",
+                    incident_names=incident_names,
+                ):
                     await _process_alarm_event(sample, event)
                 rule_queue.put_nowait(sample)
                 protocol_value = getattr(sample.protocol, "value", sample.protocol)
@@ -886,7 +913,44 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
             await bus.publish_log(vm_key, text, level="error" if started else "info")
 
         async def _process_alarm_event(sample: TagSample, event: dict[str, Any]) -> None:
-            await _publish_alarm_edge(sample, event)
+            if not event.get("classification_changed"):
+                await _publish_alarm_edge(sample, event)
+            if not event.get("triggers_incident"):
+                return
+            await _associate_incident(
+                str(sample.vm_id),
+                event,
+                sample.captured_at,
+            )
+
+        async def _associate_incident(
+            vm_id: str,
+            event: dict[str, Any],
+            created_at: datetime,
+        ) -> dict[str, Any] | None:
+            """Merge controller alarms and custom rules into one VM incident."""
+            video_config = VideoConfig.model_validate(await asyncio.to_thread(repo.camera_document))
+            kind = "emergency" if str(event.get("kind") or "") == "emergency" else "alert"
+            if event["state"] == "active":
+                return await asyncio.to_thread(
+                    repo.register_incident_start,
+                    vm_id,
+                    name=str(event["name"]),
+                    kind=kind,
+                    created_at=created_at,
+                    camera_ids=[camera.id for camera in video_config.cameras if camera.enabled and camera.url],
+                    pre_seconds=video_config.incident_pre_sec,
+                    post_seconds=video_config.incident_post_sec,
+                )
+            return await asyncio.to_thread(
+                repo.register_incident_end,
+                vm_id,
+                name=str(event["name"]),
+                kind=kind,
+                created_at=created_at,
+                post_seconds=video_config.incident_post_sec,
+                has_active=bool(event.get("has_active", False)),
+            )
 
         def _evaluate_rules_sync(sample: TagSample) -> list[dict[str, Any]]:
             latest_by_vm: dict[str, TagSample] = {}
@@ -958,29 +1022,10 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
                         event_sample = sample if target_vm_id == str(sample.vm_id) else sample.model_copy(update={"vm_id": UUID(target_vm_id)})
                         await _publish_alarm_edge(event_sample, event)
                         try:
-                            video_config = VideoConfig.model_validate(await asyncio.to_thread(repo.camera_document))
-                            if event["state"] == "active":
-                                incident = await asyncio.to_thread(
-                                    repo.register_incident_start,
-                                    target_vm_id,
-                                    name=str(event["name"]),
-                                    kind="emergency",
-                                    created_at=sample.captured_at,
-                                    camera_ids=[camera.id for camera in video_config.cameras if camera.enabled and camera.url],
-                                    pre_seconds=video_config.incident_pre_sec,
-                                    post_seconds=video_config.incident_post_sec,
-                                )
+                            event["triggers_incident"] = True
+                            incident = await _associate_incident(target_vm_id, event, sample.captured_at)
+                            if event["state"] == "active" and incident is not None:
                                 await asyncio.to_thread(repo.link_emergency_event_incident, event["id"], str(incident["id"]))
-                            else:
-                                await asyncio.to_thread(
-                                    repo.register_incident_end,
-                                    target_vm_id,
-                                    name=str(event["name"]),
-                                    kind="emergency",
-                                    created_at=sample.captured_at,
-                                    post_seconds=video_config.incident_post_sec,
-                                    has_active=bool(event.get("has_active", False)),
-                                )
                         except Exception:
                             logger.exception("Failed to associate emergency rule event with incident")
                 except Exception:
@@ -990,6 +1035,34 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
 
         ingest_task = asyncio.create_task(ingest_loop())
         rule_task = asyncio.create_task(rule_loop())
+
+        async def recover_open_incidents() -> None:
+            open_vm_ids = {
+                str(item["vm_id"])
+                for item in await asyncio.to_thread(repo.list_incidents, limit=500)
+                if item.get("state") in {"active", "finishing"}
+            }
+            for trigger in await asyncio.to_thread(repo.list_incident_triggers):
+                vm_id = str(trigger["vm_id"])
+                if vm_id in open_vm_ids:
+                    continue
+                try:
+                    started_at = datetime.fromisoformat(str(trigger["started_at"]).replace("Z", "+00:00"))
+                    await _associate_incident(
+                        vm_id,
+                        {
+                            "name": trigger["name"],
+                            "kind": trigger["source_kind"],
+                            "state": "active",
+                            "triggers_incident": True,
+                        },
+                        started_at,
+                    )
+                    open_vm_ids.add(vm_id)
+                except Exception:
+                    logger.exception("Failed to recover incident for VM %s", vm_id)
+
+        await recover_open_incidents()
         stop_reconciler = asyncio.Event()
         stop_system = asyncio.Event()
 
@@ -1010,12 +1083,17 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
 
         async def system_loop() -> None:
             last_export_cleanup = time.monotonic()
+            last_ingest_cleanup = time.monotonic()
             while not stop_system.is_set():
                 try:
                     await bus.publish("system", _system_payload())
                     if time.monotonic() - last_export_cleanup >= 3600:
                         await asyncio.to_thread(cleanup_exports)
+                        await asyncio.to_thread(repo.cleanup_export_jobs)
                         last_export_cleanup = time.monotonic()
+                    if time.monotonic() - last_ingest_cleanup >= 60:
+                        await asyncio.to_thread(repo.purge_ingest_batches, older_than_hours=24, batch_size=10_000)
+                        last_ingest_cleanup = time.monotonic()
                 except Exception:
                     logger.exception("system monitor publish failed")
                 try:
@@ -2626,6 +2704,7 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
                         "bcm_pin": gpio_bcm.get((str(event["vm_id"]), str(event["name"])), ""),
                         "state": state,
                         "state_label": state_label,
+                        "class_label": "Авария" if event.get("triggers_incident") else "Алерт",
                     }
                 )
             return {
@@ -2732,6 +2811,7 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
                         "time": format_timestamp(created),
                         "vm_name": names.get(str(event["vm_id"]), str(event["vm_id"])),
                         "name": event["name"],
+                        "class_label": "Авария" if event.get("triggers_incident") else "Алерт",
                         "bcm_pin": gpio_bcm.get((str(event["vm_id"]), str(event["name"])), ""),
                         "state_label": ("Активно" if state == "active" else "Снято") if active == "gpio" else ("Активна" if state == "active" else "Снята"),
                     }
@@ -2770,6 +2850,29 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
         handle = tempfile.NamedTemporaryFile(prefix="blackbox_", suffix=suffix, dir=directory, delete=False)
         handle.close()
         return Path(handle.name)
+
+    async def _run_export_job(job_id: str, builder: Any, filename: str) -> None:
+        repo.update_export_job(job_id, state="running", progress=10)
+        try:
+            path = await asyncio.to_thread(builder)
+            current = repo.get_export_job(job_id)
+            if current is None or current["state"] == "canceled":
+                Path(path).unlink(missing_ok=True)
+                return
+            repo.update_export_job(
+                job_id, state="completed", progress=100, result_path=str(path), filename=filename
+            )
+        except Exception as exc:
+            logger.exception("Export job %s failed", job_id)
+            repo.update_export_job(job_id, state="failed", progress=100, message=str(exc)[:1000])
+        finally:
+            export_tasks.pop(job_id, None)
+
+    def _queue_export(kind: str, params: dict[str, Any], builder: Any, filename: str) -> dict[str, Any]:
+        job = repo.create_export_job(kind, params)
+        job_id = str(job["id"])
+        export_tasks[job_id] = asyncio.create_task(_run_export_job(job_id, builder, filename))
+        return job
 
     def _video_roots() -> list[Path]:
         roots = [cfg.data_root]
@@ -2853,25 +2956,36 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
             archive.writestr("telemetry/analog.csv", _csv_bytes(["Время UTC", "ВМ", *analog_fields], analog_rows))
             archive.writestr("telemetry/discrete.csv", _csv_bytes(["Время UTC", "ВМ", *discrete_fields], discrete_rows))
             archive.writestr("charts/analog.json", json.dumps(chart, ensure_ascii=False))
-            video_manifest: list[list[Any]] = []
+            video_manifest: list[dict[str, Any]] = []
+            by_camera: dict[str, list[Any]] = {}
             for episode in incident.get("episodes", []):
-                paths = episode.get("paths") or ([episode.get("path")] if episode.get("path") else [])
-                for index, raw in enumerate(paths, start=1):
-                    video = _safe_video_path(raw, roots)
-                    status = "included"
-                    archive_name = ""
-                    if video is None:
-                        status = "missing_or_outside_approved_storage"
-                    else:
-                        archive_name = f"videos/{episode['camera_id']}/{index:04d}_{video.name}"
-                        archive.write(video, archive_name, compress_type=zipfile.ZIP_STORED)
-                    video_manifest.append([episode["camera_id"], episode["id"], str(raw), archive_name, status])
-            archive.writestr("videos/manifest.csv", _csv_bytes(["Камера", "Эпизод", "Путь", "В архиве", "Статус"], video_manifest))
+                by_camera.setdefault(str(episode["camera_id"]), []).extend(
+                    episode.get("paths") or ([episode.get("path")] if episode.get("path") else [])
+                )
+            with tempfile.TemporaryDirectory(prefix="blackbox_incident_") as temp:
+                for camera_id, paths in by_camera.items():
+                    merged = Path(temp) / f"{camera_id}.mp4"
+                    try:
+                        result = merge_camera_segments(paths, merged, roots=roots, range_start=start, range_end=end)
+                    except ExportError as exc:
+                        result = {"state": "error", "message": str(exc), "segments": [str(value) for value in paths]}
+                    if result.get("state") == "included":
+                        archive.write(merged, f"videos/{camera_id}.mp4", compress_type=zipfile.ZIP_STORED)
+                    result["camera_id"] = camera_id
+                    video_manifest.append(result)
+            archive.writestr("videos/manifest.json", json.dumps(video_manifest, ensure_ascii=False, indent=2))
         return path
 
     @app.get("/api/v1/video/incidents/{incident_id}/export")
-    async def video_incident_export(incident_id: str, request: Request):
+    async def video_incident_export(incident_id: str, request: Request, background: bool = False):
         current_user(request, repo, cfg)
+        if background:
+            if repo.get_incident(incident_id) is None:
+                raise HTTPException(404, detail={"code": "not_found", "message": "Инцидент не найден"})
+            job = _queue_export(
+                "incident", {"incident_id": incident_id}, lambda: _incident_export(incident_id), f"incident_{incident_id}.zip"
+            )
+            return JSONResponse(job, status_code=202)
         path = await asyncio.to_thread(_incident_export, incident_id)
         return FileResponse(
             path,
@@ -2888,6 +3002,7 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
         date_to: str | None = None,
         sort: str = "desc",
         format: Literal["zip", "xlsx"] = "zip",
+        background: bool = False,
         include: list[str] | None = Query(default=None),
         analog_column: list[str] | None = Query(default=None),
         discrete_column: list[str] | None = Query(default=None),
@@ -2933,10 +3048,9 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
             alarms, _ = repo.list_alarm_events(selected, kind="alert", date_from=start.isoformat(), date_to=end.isoformat(), sort_desc=sort != "asc", limit=1_000_000)
             gpio, _ = repo.list_alarm_events(selected, kind="gpio", date_from=start.isoformat(), date_to=end.isoformat(), sort_desc=sort != "asc", limit=1_000_000)
             emergency = repo.list_emergency_events(selected, date_from=start.isoformat(), date_to=end.isoformat(), sort_desc=sort != "asc")
-            incidents = [
-                row for row in repo.list_incidents(vm_ids=selected)
-                if (parse_bound(str(row.get("started_at"))) or end) <= end and (parse_bound(str(row.get("telemetry_to") or row.get("last_alert_at"))) or start) >= start
-            ]
+            incidents = repo.list_incidents_overlapping(
+                vm_ids=selected, date_from=start.isoformat(), date_to=end.isoformat()
+            )
             gpio_bcm: dict[tuple[str, str], int] = {}
             for vm in repo.list_vms():
                 vm_key = str(vm["id"])
@@ -2960,7 +3074,7 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
             table_rows: dict[str, tuple[list[str], list[list[Any]]]] = {
                 "analog": (["Время UTC", "ВМ", *analog_fields], [[r.captured_at.isoformat(), names.get(r.vm_id, r.vm_id), *[r.analog.get(key, "") for key in analog_fields]] for r in measurements]),
                 "discrete": (["Время UTC", "ВМ", *discrete_fields], [[r.captured_at.isoformat(), names.get(r.vm_id, r.vm_id), *[int(bool(r.discrete.get(key))) if r.discrete.get(key) is not None else "" for key in discrete_fields]] for r in measurements]),
-                "alarms": (["Время UTC", "ВМ", "Название", "Состояние", "Видео"], [[row["created_at"], names.get(str(row["vm_id"]), row["vm_id"]), row["name"], row["state"], ", ".join(incident_video_by_alarm.get((str(row["vm_id"]), str(row["name"]), str(row["state"]), str(row["created_at"])), []))] for row in alarms]),
+                "alarms": (["Время UTC", "ВМ", "Тип", "Название", "Состояние", "Видео"], [[row["created_at"], names.get(str(row["vm_id"]), row["vm_id"]), "Авария" if row.get("triggers_incident") else "Алерт", row["name"], row["state"], ", ".join(incident_video_by_alarm.get((str(row["vm_id"]), str(row["name"]), str(row["state"]), str(row["created_at"])), []))] for row in alarms]),
                 "gpio": (["Время UTC", "ВМ", "BCM", "Название", "Состояние"], [[row["created_at"], names.get(str(row["vm_id"]), row["vm_id"]), gpio_bcm.get((str(row["vm_id"]), str(row["name"])), ""), row["name"], row["state"]] for row in gpio]),
                 "emergency": (["ВМ", "Дата начала", "Время начала", "Дата окончания", "Время окончания", "Правило", "Условие", "Инцидент"], [[names.get(str(row["vm_id"]), row["vm_id"]), row["started_at"][:10], row["started_at"][11:19], row["ended_at"][:10], row["ended_at"][11:19], row["rule_name"], row["expression"], row.get("incident_id") or ""] for row in emergency]),
                 "incidents": (["ID", "ВМ", "Состояние", "Начало", "Последний алерт", "Окончание окна", "Алерты", "Видео"], [[row["id"], names.get(str(row["vm_id"]), row["vm_id"]), row["state"], row["started_at"], row["last_alert_at"], row.get("telemetry_to") or "", ", ".join(item["name"] for item in row.get("alerts", [])), ", ".join(path for episode in row.get("episodes", []) for path in (episode.get("paths") or ([episode.get("path")] if episode.get("path") else [])))] for row in incidents]),
@@ -2994,26 +3108,104 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
                 manifest = {"from": start.isoformat(), "to": end.isoformat(), "vm_ids": selected, "included": sorted(chosen), "telemetry_truncated": truncated}
                 archive.writestr("manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2))
                 if "video" in chosen:
-                    media_rows: list[list[Any]] = []
+                    media_manifest: list[dict[str, Any]] = []
+                    by_camera: dict[str, list[Any]] = {}
                     for incident in incidents:
                         for episode in incident.get("episodes", []):
-                            paths = episode.get("paths") or ([episode.get("path")] if episode.get("path") else [])
-                            for index, raw in enumerate(paths, start=1):
-                                file_path = _safe_video_path(raw, roots)
-                                name = ""
-                                state = "missing_or_outside_approved_storage"
-                                if file_path is not None:
-                                    name = f"videos/{incident['id']}/{episode['camera_id']}/{index:04d}_{file_path.name}"
-                                    archive.write(file_path, name, compress_type=zipfile.ZIP_STORED)
-                                    state = "included"
-                                media_rows.append([incident["id"], episode["camera_id"], str(raw), name, state])
-                    archive.writestr("videos/manifest.csv", _csv_bytes(["Инцидент", "Камера", "Путь", "В архиве", "Статус"], media_rows))
+                            by_camera.setdefault(str(episode["camera_id"]), []).extend(
+                                episode.get("paths") or ([episode.get("path")] if episode.get("path") else [])
+                            )
+                    # Include all incident and motion segments overlapping the range, not only
+                    # the limited incident listing above.
+                    for segment in repo.list_video_segments(
+                        date_from=start.isoformat(), date_to=end.isoformat(), vm_ids=selected
+                    ):
+                        by_camera.setdefault(str(segment["camera_id"]), []).append(segment["path"])
+                    with tempfile.TemporaryDirectory(prefix="blackbox_range_") as temp:
+                        for camera_id, paths in by_camera.items():
+                            merged = Path(temp) / f"{camera_id}.mp4"
+                            try:
+                                result = merge_camera_segments(paths, merged, roots=roots, range_start=start, range_end=end)
+                            except ExportError as exc:
+                                result = {"state": "error", "message": str(exc), "segments": [str(value) for value in paths]}
+                            if result.get("state") == "included":
+                                archive.write(merged, f"videos/{camera_id}.mp4", compress_type=zipfile.ZIP_STORED)
+                            result["camera_id"] = camera_id
+                            media_manifest.append(result)
+                    archive.writestr("videos/manifest.json", json.dumps(media_manifest, ensure_ascii=False, indent=2))
             return path
 
-        path = await asyncio.to_thread(build_package)
         suffix = ".zip" if format == "zip" else ".xlsx"
+        if background:
+            job = _queue_export(
+                "range",
+                {
+                    "vm_ids": selected,
+                    "date_from": start.isoformat(),
+                    "date_to": end.isoformat(),
+                    "format": format,
+                    "include": sorted(chosen),
+                },
+                build_package,
+                f"blackbox_export{suffix}",
+            )
+            return JSONResponse(job, status_code=202)
+        path = await asyncio.to_thread(build_package)
         media_type = "application/zip" if format == "zip" else "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         return FileResponse(path, media_type=media_type, filename=f"blackbox_export{suffix}", background=BackgroundTask(lambda: path.unlink(missing_ok=True)))
+
+    @app.post("/api/v1/export-jobs")
+    async def create_export_job(payload: ExportJobRequest, request: Request):
+        current_user(request, repo, cfg)
+        if payload.kind == "incident":
+            if not payload.incident_id:
+                raise HTTPException(422, detail={"code": "incident_required", "message": "Укажите инцидент"})
+            return await video_incident_export(payload.incident_id, request, background=True)
+        return await telemetry_export_package(
+            request,
+            vm_id=payload.vm_ids or None,
+            date_from=payload.date_from,
+            date_to=payload.date_to,
+            sort=payload.sort,
+            format=payload.format,
+            background=True,
+            include=payload.include or None,
+            analog_column=payload.analog_columns or None,
+            discrete_column=payload.discrete_columns or None,
+        )
+
+    @app.get("/api/v1/export-jobs/{job_id}")
+    async def export_job_status(job_id: str, request: Request):
+        current_user(request, repo, cfg)
+        job = repo.get_export_job(job_id)
+        if job is None:
+            raise HTTPException(404, detail={"code": "not_found", "message": "Задание экспорта не найдено"})
+        return job
+
+    @app.delete("/api/v1/export-jobs/{job_id}")
+    async def cancel_export_job(job_id: str, request: Request):
+        current_user(request, repo, cfg)
+        job = repo.get_export_job(job_id)
+        if job is None:
+            raise HTTPException(404, detail={"code": "not_found", "message": "Задание экспорта не найдено"})
+        if job["state"] in {"queued", "running"}:
+            repo.update_export_job(job_id, state="canceled", message="Отменено пользователем")
+        return repo.get_export_job(job_id)
+
+    @app.get("/api/v1/export-jobs/{job_id}/download")
+    async def download_export_job(job_id: str, request: Request):
+        current_user(request, repo, cfg)
+        job = repo.get_export_job(job_id)
+        if job is None:
+            raise HTTPException(404, detail={"code": "not_found", "message": "Задание экспорта не найдено"})
+        if job["state"] != "completed" or not job.get("result_path"):
+            raise HTTPException(409, detail={"code": "export_not_ready", "message": "Экспорт ещё не готов"})
+        path = Path(str(job["result_path"]))
+        if not path.is_file():
+            raise HTTPException(410, detail={"code": "export_expired", "message": "Файл экспорта удалён"})
+        suffix = path.suffix.lower()
+        media_type = "application/zip" if suffix == ".zip" else "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        return FileResponse(path, media_type=media_type, filename=str(job.get("filename") or path.name))
 
     @app.get("/dashboard", response_class=HTMLResponse)
     async def dashboard(request: Request):

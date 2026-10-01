@@ -49,7 +49,20 @@ class WorkerClient:
             try:
                 with urllib.request.urlopen(request, timeout=10) as response:
                     return json.loads(response.read().decode())
-            except (HTTPError, URLError, TimeoutError, OSError) as exc:
+            except HTTPError as exc:
+                try:
+                    body = exc.read().decode("utf-8", errors="replace")
+                    detail = json.loads(body).get("detail", body)
+                    if isinstance(detail, dict):
+                        detail = detail.get("message") or detail.get("code") or detail
+                    last_error = RuntimeError(f"HTTP {exc.code}: {detail}")
+                except Exception:
+                    last_error = exc
+                if attempt < 2 and exc.code >= 500:
+                    time.sleep(0.25 * (attempt + 1))
+                    continue
+                break
+            except (URLError, TimeoutError, OSError) as exc:
                 last_error = exc
                 if attempt < 2:
                     time.sleep(0.25 * (attempt + 1))

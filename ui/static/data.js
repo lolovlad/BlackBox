@@ -161,10 +161,10 @@
     const rows = payload.rows || [];
     const journal = payload.tab === 'alarms';
     const head = journal
-      ? '<th>Время</th><th>Название</th><th>Состояние</th>'
+      ? '<th>Время</th><th>Тип</th><th>Название</th><th>Состояние</th>'
       : '<th>Время</th>' + (payload.columns || []).map(function (column) { return '<th>' + esc(column.label) + '</th>'; }).join('');
     const body = rows.map(function (row) {
-      if (journal) return '<tr><td>' + esc(row.time) + '</td><td>' + esc(row.name) + '</td><td>' + esc(row.state_label) + '</td></tr>';
+      if (journal) return '<tr><td>' + esc(row.time) + '</td><td>' + esc(row.class_label || 'Алерт') + '</td><td>' + esc(row.name) + '</td><td>' + esc(row.state_label) + '</td></tr>';
       return '<tr><td>' + esc(row.time) + '</td>' + (row.cells || []).map(function (cell) { return '<td>' + esc(cell) + '</td>'; }).join('') + '</tr>';
     }).join('');
     const title = { analog: 'Аналоги', discrete: 'Дискреты', alarms: 'Аварии' }[payload.tab] || 'Данные';
@@ -327,7 +327,34 @@
     query.delete('page');
     window.location.href = root.dataset.exportUrl + '?' + query.toString();
   });
-  document.getElementById('bb-package-export').addEventListener('click', function () {
+  let exportJobId = '';
+  let exportPoll = null;
+
+  function renderExportJob(job) {
+    const host = document.getElementById('bb-export-job');
+    if (!host) return;
+    const labels = { queued: 'В очереди', running: 'Формируется', completed: 'Готов', failed: 'Ошибка', canceled: 'Отменён' };
+    let html = esc(labels[job.state] || job.state) + ' · ' + esc(job.progress || 0) + '%';
+    if (job.message) html += ' · ' + esc(job.message);
+    if (job.state === 'completed') html += ' · <a class="bb-btn bb-btn-ghost" href="/api/v1/export-jobs/' + encodeURIComponent(job.id) + '/download">Скачать</a>';
+    if (job.state === 'queued' || job.state === 'running') html += ' <button type="button" class="bb-btn bb-btn-ghost" data-cancel-export>Отменить</button>';
+    host.innerHTML = html;
+  }
+
+  async function pollExportJob() {
+    if (!exportJobId) return;
+    try {
+      const response = await fetch('/api/v1/export-jobs/' + encodeURIComponent(exportJobId), { cache: 'no-store' });
+      if (!response.ok) throw new Error('status');
+      const job = await response.json();
+      renderExportJob(job);
+      if (job.state === 'queued' || job.state === 'running') exportPoll = setTimeout(pollExportJob, 1000);
+    } catch (_) {
+      document.getElementById('bb-export-job').textContent = 'Не удалось получить состояние экспорта.';
+    }
+  }
+
+  document.getElementById('bb-package-export').addEventListener('click', async function () {
     const form = document.getElementById('bb-data-form');
     const from = form.elements.date_from.value;
     const to = form.elements.date_to.value;
@@ -341,7 +368,12 @@
       return;
     }
     const query = new URLSearchParams();
-    if (vmId()) query.set('vm_id', vmId());
+    const vmIds = Array.from(form.querySelectorAll('[name="package_vm_id"]:checked')).map(function (input) { return input.value; });
+    if (!vmIds.length) {
+      window.alert('Выберите хотя бы одну машину.');
+      return;
+    }
+    vmIds.forEach(function (id) { query.append('vm_id', id); });
     query.set('date_from', from);
     query.set('date_to', to);
     query.set('sort', form.elements.sort.value);
@@ -353,7 +385,48 @@
         pick.keys.forEach(function (key) { query.append(table + '_column', key); });
       }
     });
-    window.location.href = '/api/v1/telemetry/export-package?' + query.toString();
+    const button = document.getElementById('bb-package-export');
+    button.disabled = true;
+    try {
+      const cookie = document.cookie.split('; ').find(function (item) { return item.startsWith('bb_csrf='); });
+      const token = cookie ? decodeURIComponent(cookie.split('=').slice(1).join('=')) : '';
+      const response = await fetch('/api/v1/export-jobs', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': token },
+        body: JSON.stringify({
+          kind: 'range',
+          vm_ids: vmIds,
+          date_from: from,
+          date_to: to,
+          sort: form.elements.sort.value,
+          format: document.getElementById('bb-package-format').value,
+          include: include,
+          analog_columns: query.getAll('analog_column'),
+          discrete_columns: query.getAll('discrete_column')
+        })
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error((payload.error && payload.error.message) || 'Не удалось создать экспорт');
+      exportJobId = payload.id;
+      renderExportJob(payload);
+      if (exportPoll) clearTimeout(exportPoll);
+      pollExportJob();
+    } catch (error) {
+      document.getElementById('bb-export-job').textContent = error.message || 'Не удалось создать экспорт.';
+    } finally {
+      button.disabled = false;
+    }
+  });
+  document.getElementById('bb-export-job').addEventListener('click', async function (event) {
+    const button = event.target.closest('[data-cancel-export]');
+    if (!button || !exportJobId) return;
+    const cookie = document.cookie.split('; ').find(function (item) { return item.startsWith('bb_csrf='); });
+    const token = cookie ? decodeURIComponent(cookie.split('=').slice(1).join('=')) : '';
+    const response = await fetch('/api/v1/export-jobs/' + encodeURIComponent(exportJobId), {
+      method: 'DELETE',
+      headers: { 'X-CSRF-Token': token }
+    });
+    if (response.ok) renderExportJob(await response.json());
   });
   tableHost.addEventListener('click', function (event) {
     const button = event.target.closest('[data-page]');

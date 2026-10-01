@@ -78,13 +78,11 @@ services:
       - type: bind
         source: /mnt
         target: /host/mnt
-        read_only: true
         bind:
           propagation: rslave
       - type: bind
         source: /media
         target: /host/media
-        read_only: true
         bind:
           propagation: rslave
     healthcheck:

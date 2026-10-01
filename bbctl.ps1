@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Position = 0)]
-    [ValidateSet("up", "down", "update", "smoke", "logs", "ps", "help", "check-read", "check-tcp")]
+    [ValidateSet("up", "down", "update", "smoke", "logs", "ps", "help", "check-read", "check-tcp", "maintenance")]
     [string]$Command = "help",
     [Parameter(ValueFromRemainingArguments = $true)]
     [string[]]$Rest
@@ -98,7 +98,7 @@ function Invoke-Smoke {
 }
 
 if ($Command -eq "help") {
-    Write-Host "Usage: ./bbctl.ps1 <up|down|update|smoke|check-read|check-tcp|logs|ps|help>"
+    Write-Host "Usage: ./bbctl.ps1 <up|down|update|smoke|check-read|check-tcp|maintenance|logs|ps|help>"
     Write-Host "Set BB_PULL=1 to pull newer base images before building."
     exit 0
 }
@@ -131,5 +131,9 @@ switch ($Command) {
     "check-tcp" {
         $ProbeArgs = if ($null -ne $Rest) { @($Rest) } else { @() }
         Invoke-Compose exec -T hub /app/.venv/bin/python -m services.hub.check_tcp @ProbeArgs
+    }
+    "maintenance" {
+        $MaintenanceArgs = if ($null -ne $Rest) { @($Rest) } else { @() }
+        Invoke-Compose exec -T hub /app/.venv/bin/python -m services.hub.maintenance @MaintenanceArgs
     }
 }

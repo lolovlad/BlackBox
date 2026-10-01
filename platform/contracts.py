@@ -60,6 +60,9 @@ class TagSample(Contract):
     analog: dict[str, TagValue] = Field(default_factory=dict)
     discrete: dict[str, bool] = Field(default_factory=dict)
     alerts: list[str] = Field(default_factory=list)
+    # Subset decoded from fields explicitly marked ``kind=alert``. All
+    # bitfields remain visible in ``alerts``; only this subset opens incidents.
+    incident_alerts: list[str] = Field(default_factory=list)
     quality: Quality = Quality.GOOD
     protocol: VmProtocol
     source: str | None = Field(default=None, max_length=128)
