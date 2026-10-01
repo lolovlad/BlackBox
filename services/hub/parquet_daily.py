@@ -50,6 +50,10 @@ def append_daily_file(path: Path, table) -> None:
     """Add ``table`` as a new row group of the daily file at ``path``."""
     path.parent.mkdir(parents=True, exist_ok=True)
     _rollback_pending(path)
+    if path.exists() and path.stat().st_size > 0 and not _has_parquet_magic(path):
+        broken = Path(str(path) + ".broken")
+        logger.warning("daily parquet %s is truncated; starting a new file", path)
+        path.replace(broken)
     if not path.exists() or path.stat().st_size == 0:
         _write_fresh(path, table)
         return
@@ -99,6 +103,20 @@ def compact_legacy_partitions(root: Path) -> None:
                 _compact_day(day_dir)
             except Exception as exc:
                 logger.warning("skipped compacting %s: %s", day_dir, exc)
+
+
+def _has_parquet_magic(path: Path) -> bool:
+    try:
+        size = path.stat().st_size
+        if size < 12:
+            return False
+        with path.open("rb") as handle:
+            head = handle.read(4)
+            handle.seek(size - 4)
+            tail = handle.read(4)
+        return head == b"PAR1" and tail == b"PAR1"
+    except OSError:
+        return False
 
 
 def _write_fresh(path: Path, table) -> None:

@@ -1847,7 +1847,7 @@ class HubRepository:
                     SELECT id FROM video_incidents
                     WHERE vm_id IN ({placeholders})
                       AND started_at<=?
-                      AND COALESCE(telemetry_to,ended_at,stop_at,last_alert_at,started_at)>=?
+                      AND COALESCE(ended_at,stop_at,last_alert_at,started_at)>=?
                     ORDER BY started_at
                     """,
                     [*vm_ids, date_to, date_from],

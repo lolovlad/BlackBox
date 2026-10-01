@@ -388,16 +388,26 @@ def _merge_keys(target: list[dict[str, str]], values: dict[str, Any]) -> None:
         target.append({"key": text, "label": text})
 
 
+def _complete_parquet(path: Path) -> bool:
+    """True when the file has a Parquet footer. A truncated daily file must not 500 the UI."""
+    try:
+        size = path.stat().st_size
+        if size < 12:
+            return False
+        with path.open("rb") as handle:
+            head = handle.read(4)
+            handle.seek(size - 4)
+            tail = handle.read(4)
+        return head == b"PAR1" and tail == b"PAR1"
+    except OSError:
+        return False
+
+
 def _keys_from_newest_file(roots: Iterable[Path], vm_id: str) -> tuple[set[str], set[str]]:
-    entries = _day_entries(roots, {vm_id}, None, None)
-    if not entries:
+    files = _parquet_files(roots, {vm_id}, None, None)
+    if not files:
         return set(), set()
-    newest = max(entries, key=lambda path: path.name)
-    if newest.is_dir():
-        candidates = [path for path in newest.glob("*.parquet") if path.is_file() and not path.name.endswith(".tmp")]
-        if not candidates:
-            return set(), set()
-        newest = max(candidates, key=lambda path: path.name)
+    newest = max(files, key=lambda path: path.name)
     analog: set[str] = set()
     discrete: set[str] = set()
     try:
@@ -409,7 +419,7 @@ def _keys_from_newest_file(roots: Iterable[Path], vm_id: str) -> tuple[set[str],
             ).fetchall()
         finally:
             con.close()
-    except (OSError, StorageUnavailable, ValueError):
+    except Exception:
         return set(), set()
     for analog_keys, discrete_keys in fetched:
         analog.update(str(key) for key in (analog_keys or []) if str(key).strip())
@@ -464,9 +474,12 @@ def _partition_globs(roots: Iterable[Path], vm_ids: set[str] | None, date_from: 
     globs: list[str] = []
     for entry in _day_entries(roots, vm_ids, date_from, date_to):
         if entry.is_file():
-            globs.append(entry.resolve().as_posix())
-        elif next(entry.glob("*.parquet"), None) is not None:
-            globs.append((entry / "*.parquet").resolve().as_posix())
+            if _complete_parquet(entry):
+                globs.append(entry.resolve().as_posix())
+        else:
+            parts = [path for path in entry.glob("*.parquet") if path.is_file() and not path.name.endswith(".tmp") and _complete_parquet(path)]
+            if parts:
+                globs.extend(path.resolve().as_posix() for path in parts)
     return globs
 
 
@@ -474,9 +487,14 @@ def _parquet_files(roots: Iterable[Path], vm_ids: set[str] | None, date_from: da
     files: list[Path] = []
     for entry in _day_entries(roots, vm_ids, date_from, date_to):
         if entry.is_file():
-            files.append(entry)
+            if _complete_parquet(entry):
+                files.append(entry)
         else:
-            files.extend(path for path in entry.glob("*.parquet") if path.is_file() and not path.name.endswith(".tmp"))
+            files.extend(
+                path
+                for path in entry.glob("*.parquet")
+                if path.is_file() and not path.name.endswith(".tmp") and _complete_parquet(path)
+            )
     return files
 
 

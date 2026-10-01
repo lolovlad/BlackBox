@@ -135,6 +135,47 @@ def test_one_parquet_file_per_day(tmp_path: Path) -> None:
     assert [item.seq for item in legacy_rows] == [8, 7]
 
 
+def test_truncated_daily_parquet_is_skipped_and_replaced(tmp_path: Path) -> None:
+    from services.hub.telemetry import describe_sources
+
+    root = tmp_path / "telemetry"
+    vm_id = uuid4()
+    store = ParquetStore(root, flush_rows=1)
+    good_moment = datetime(2026, 10, 1, 8, 0, tzinfo=timezone.utc)
+    store.append([_sample(vm_id, 1, good_moment)], flush_rows=1)
+    broken = root / f"vm_id={vm_id}" / "date=2026-10-02.parquet"
+    broken.write_bytes(b"PAR1" + b" [BTB, MAINS" * 40)
+    rows, _truncated = query_measurements([root], [store], vm_ids={str(vm_id)})
+    assert [item.seq for item in rows] == [1]
+    sources = describe_sources(
+        [{"id": str(vm_id), "name": "vm", "protocol": "simulator", "map_version": "channels-v1"}],
+        {},
+        {},
+        [root],
+    )
+    assert any(field["key"] == "RPM" for field in sources[0]["analog"])
+
+    same_day = root / f"vm_id={vm_id}" / "date=2026-10-01.parquet"
+    same_day.write_bytes(b"PAR1 truncated-without-footer")
+    store.append([_sample(vm_id, 2, good_moment.replace(minute=1))], flush_rows=1)
+    assert same_day.with_name("date=2026-10-01.parquet.broken").is_file()
+    rows, _truncated = query_measurements([root], [store], vm_ids={str(vm_id)})
+    assert [item.seq for item in rows] == [2]
+
+
+def test_overlapping_incidents_ignore_derived_telemetry_to(tmp_path: Path) -> None:
+    repo = HubRepository(tmp_path / "hub.db")
+    moment = datetime(2026, 10, 1, 8, 39, 15, tzinfo=timezone.utc)
+    incident = repo.register_incident_start("vm-1", name="Fuel Level AI4 Connect fail", kind="alert", created_at=moment, camera_ids=[])
+    repo.register_incident_end("vm-1", name="Fuel Level AI4 Connect fail", created_at=moment, post_seconds=0)
+    rows = repo.list_incidents_overlapping(
+        vm_ids=["vm-1"],
+        date_from="2026-10-01T00:00:00+00:00",
+        date_to="2026-10-01T23:59:59+00:00",
+    )
+    assert [row["id"] for row in rows] == [incident["id"]]
+
+
 def _sample(vm_id, seq: int, moment: datetime):
     return TagSample(
         vm_id=vm_id,
