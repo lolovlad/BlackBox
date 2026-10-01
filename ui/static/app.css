@@ -1145,6 +1145,10 @@ html.bb-header-closed .bb-header-inner {
 .bb-map-family-head h2 {
   margin: 0;
   font-size: 1.05rem;
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  line-height: 1.3;
 }
 
 .bb-map-family-head span,
@@ -1152,7 +1156,7 @@ html.bb-header-closed .bb-header-inner {
 
 .bb-map-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 17.5rem), 1fr));
   gap: 0.75rem;
 }
 
@@ -1168,6 +1172,8 @@ html.bb-header-closed .bb-header-inner {
   gap: 0.45rem;
   color: inherit;
   font: inherit;
+  min-width: 0;
+  overflow: hidden;
 }
 
 .bb-map-card:hover {
@@ -1177,14 +1183,30 @@ html.bb-header-closed .bb-header-inner {
 
 .bb-map-card-top {
   display: flex;
+  flex-wrap: wrap;
   justify-content: space-between;
-  gap: 0.5rem;
+  gap: 0.4rem 0.55rem;
   align-items: flex-start;
+  min-width: 0;
 }
 
-.bb-map-card-top strong { font-size: 1rem; }
+.bb-map-card-top strong {
+  flex: 1 1 8rem;
+  min-width: 0;
+  font-size: 1rem;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
 
-.bb-map-pills { display: flex; gap: 0.35rem; flex-wrap: wrap; justify-content: flex-end; }
+.bb-map-pills {
+  display: flex;
+  gap: 0.35rem;
+  flex: 0 1 auto;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  margin-left: auto;
+  max-width: 100%;
+}
 
 .bb-map-pill {
   display: inline-flex;
@@ -1197,6 +1219,7 @@ html.bb-header-closed .bb-header-inner {
   font-weight: 800;
   letter-spacing: 0.03em;
   text-transform: uppercase;
+  white-space: nowrap;
 }
 
 .bb-map-pill-warn { background: #ffc63e; }
@@ -1204,15 +1227,20 @@ html.bb-header-closed .bb-header-inner {
 .bb-map-card-meta {
   margin: 0;
   display: flex;
+  flex-wrap: wrap;
   justify-content: space-between;
-  gap: 0.5rem;
+  gap: 0.2rem 0.65rem;
+  min-width: 0;
   color: var(--bb-slate);
   font-size: 0.78rem;
 }
 
 .bb-map-checksum {
+  display: block;
+  min-width: 0;
   font-size: 0.72rem;
   color: var(--bb-slate);
+  overflow-wrap: anywhere;
 }
 
 .bb-map-card-actions {
@@ -1255,7 +1283,9 @@ html.bb-header-closed .bb-header-inner {
   grid-template-rows: auto auto;
 }
 
-.bb-studio-head { padding: 1rem 1.15rem; border-bottom: 1px solid var(--bb-border); }
+.bb-studio-head { padding: 1rem 1.15rem; border-bottom: 1px solid var(--bb-border); min-width: 0; }
+
+.bb-studio-head > div:first-child { min-width: 0; flex: 1 1 14rem; }
 
 .bb-studio-meta {
   display: flex;
@@ -1270,6 +1300,9 @@ html.bb-header-closed .bb-header-inner {
 .bb-studio-meta label {
   display: grid;
   gap: 0.3rem;
+  min-width: 0;
+  flex: 1 1 12rem;
+  max-width: 100%;
   font-size: 0.78rem;
   font-weight: 700;
 }
@@ -1278,10 +1311,12 @@ html.bb-header-closed .bb-header-inner {
 .bb-studio-meta select {
   font: inherit;
   font-weight: 400;
+  width: 100%;
+  box-sizing: border-box;
   padding: 0.5rem 0.65rem;
   border: 1px solid var(--bb-border);
   border-radius: 8px;
-  min-width: 9rem;
+  min-width: 0;
   background: #fff;
 }
 
@@ -1297,7 +1332,12 @@ html.bb-header-closed .bb-header-inner {
 }
 
 .bb-studio-head h2,
-.bb-publish-panel h2 { margin: 0.15rem 0 0.2rem; font-size: 1.25rem; }
+.bb-publish-panel h2 {
+  margin: 0.15rem 0 0.2rem;
+  font-size: 1.25rem;
+  overflow-wrap: anywhere;
+  line-height: 1.25;
+}
 
 .bb-studio-sub {
   margin: 0;
@@ -1351,6 +1391,10 @@ html.bb-header-closed .bb-header-inner {
   color: inherit;
 }
 
+.bb-version-item > span { min-width: 0; }
+
+.bb-version-item strong { overflow-wrap: anywhere; }
+
 .bb-version-item small { display: block; color: var(--bb-slate); font-size: 0.72rem; }
 
 .bb-version-item.is-active {
@@ -1369,7 +1413,20 @@ html.bb-header-closed .bb-header-inner {
 
 .bb-version-dot.is-latest { background: var(--bb-orange); }
 
-.bb-studio-editor { padding: 1rem; min-width: 0; display: grid; }
+.bb-studio-editor { padding: 1rem; min-width: 0; display: grid; align-content: start; }
+
+.bb-studio-editor-tools { display: flex; justify-content: flex-end; }
+
+.bb-studio-editor-tools .bb-btn { position: relative; overflow: hidden; cursor: pointer; }
+
+.bb-studio-editor-tools input[type="file"] {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  width: 100%;
+  height: 100%;
+  cursor: pointer;
+}
 
 .bb-studio-json-label {
   display: grid;

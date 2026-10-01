@@ -913,26 +913,34 @@ class HubRepository:
                 if existing["checksum"] == document["checksum"]:
                     return
                 raise ValueError(f"Снимок «{document['version']}» уже занят другой картой.")
-            c.execute(
-                "INSERT INTO map_versions(id,version,protocol,preset_id,checksum,document_json,created_at,name,revision) VALUES(?,?,?,?,?,?,?,?,?)",
-                (
-                    document["map_id"],
-                    document["version"],
-                    document["protocol"],
-                    document.get("preset_id"),
-                    document["checksum"],
-                    json.dumps(stored),
-                    now,
-                    name,
-                    revision,
-                ),
-            )
+            try:
+                c.execute(
+                    "INSERT INTO map_versions(id,version,protocol,preset_id,checksum,document_json,created_at,name,revision) VALUES(?,?,?,?,?,?,?,?,?)",
+                    (
+                        document["map_id"],
+                        document["version"],
+                        document["protocol"],
+                        document.get("preset_id"),
+                        document["checksum"],
+                        json.dumps(stored),
+                        now,
+                        name,
+                        revision,
+                    ),
+                )
+            except sqlite3.IntegrityError as exc:
+                raise ValueError(f"Снимок «{document['version']}» уже занят другой картой.") from exc
 
     def maps_in_family(self, name: str, protocol: str) -> list[dict[str, Any]]:
         with self.connect() as c:
             rows = c.execute(
-                "SELECT id,version,name,revision,protocol,preset_id,checksum,document_json,created_at FROM map_versions WHERE name=? AND protocol=? ORDER BY revision",
-                (name, protocol),
+                """
+                SELECT id,version,name,revision,protocol,preset_id,checksum,document_json,created_at
+                FROM map_versions
+                WHERE protocol=? AND (name=? OR version=? OR version GLOB ?)
+                ORDER BY revision, created_at
+                """,
+                (protocol, name, name, name + "@[0-9]*"),
             ).fetchall()
         items: list[dict[str, Any]] = []
         for row in rows:

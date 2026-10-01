@@ -1327,18 +1327,24 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
             current = MapDocument.model_validate(row["document"])
             return current.model_copy(update={"name": row["name"], "revision": int(row["revision"])})
         revision = 1 + max((int(row["revision"]) for row in family_rows), default=0)
-        snapshot = snapshot_version(family, revision)
-        if len(snapshot) > 128:
-            raise HTTPException(422, detail={"code": "invalid_map", "message": "Название карты слишком длинное"})
-        try:
-            document = adapt_legacy_map(document_payload, protocol=protocol, preset_id=preset_id, version=snapshot)
-        except (ValueError, ValidationError, TypeError) as exc:
-            raise HTTPException(422, detail={"code": "invalid_map", "message": _exc_message(exc)}) from exc
-        document = document.model_copy(update={"name": family, "revision": revision})
-        try:
-            repo.save_map(document.model_dump(mode="json"))
-        except ValueError as exc:
-            raise HTTPException(409, detail={"code": "map_immutable", "message": str(exc)}) from exc
+        document = None
+        for _ in range(50):
+            snapshot = snapshot_version(family, revision)
+            if len(snapshot) > 128:
+                raise HTTPException(422, detail={"code": "invalid_map", "message": "Название карты слишком длинное"})
+            try:
+                document = adapt_legacy_map(document_payload, protocol=protocol, preset_id=preset_id, version=snapshot)
+            except (ValueError, ValidationError, TypeError) as exc:
+                raise HTTPException(422, detail={"code": "invalid_map", "message": _exc_message(exc)}) from exc
+            document = document.model_copy(update={"name": family, "revision": revision})
+            try:
+                repo.save_map(document.model_dump(mode="json"))
+                break
+            except ValueError:
+                revision += 1
+                document = None
+        if document is None:
+            raise HTTPException(409, detail={"code": "map_immutable", "message": "Не удалось сохранить следующую версию карты"})
         if revision > 1:
             _adopt_map_revision(protocol.value, [str(row["version"]) for row in family_rows], document.version)
         repo.record_audit(int(account["id"]), "map.publish", document.version, {"checksum": document.checksum, "name": family, "revision": revision})

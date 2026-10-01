@@ -64,7 +64,7 @@
     <div class="bb-studio-panel" role="dialog" aria-modal="true" aria-labelledby="bb-studio-title" @click.stop>
       <header class="bb-studio-head">
         <div>
-          <h2 id="bb-studio-title" x-text="draft ? (publishVersion || 'Новая карта') : (currentMap ? ((currentMap.name || currentMap.version) + ' · v' + (currentMap.revision || 1)) : 'Карта')"></h2>
+          <h2 id="bb-studio-title" x-text="draft ? ((publishVersion || 'Новая карта') + ' · v' + plannedRevision) : (currentMap ? ((currentMap.name || currentMap.version) + ' · v' + (currentMap.revision || 1)) : 'Карта')"></h2>
           <p class="bb-studio-sub">
             <span x-text="protocolLabel(draftProtocol)"></span>
             <span x-show="draftPreset" x-text="draftPreset"></span>
@@ -72,7 +72,7 @@
           </p>
         </div>
         <div class="bb-studio-head-actions">
-          <button type="button" class="bb-btn" x-show="!draft" @click="openUpload(true)"><i class="bi bi-plus-lg"></i> Новая версия</button>
+          <button type="button" class="bb-btn" x-show="!draft && currentMap" @click="startNewVersion()"><i class="bi bi-plus-lg"></i> Новая версия</button>
           <button type="button" class="bb-btn bb-btn-danger bb-btn-sm" x-show="!draft && currentMap" @click="deleteMap(currentMap)"><i class="bi bi-trash"></i> Удалить</button>
           <button type="button" class="bb-btn bb-btn-secondary bb-btn-sm" @click="copyJson()" :disabled="!documentText"><i class="bi bi-clipboard"></i> Копировать</button>
           <button type="button" class="bb-btn bb-btn-secondary bb-btn-sm" @click="downloadJson()" :disabled="!documentText"><i class="bi bi-download"></i> Скачать</button>
@@ -82,11 +82,14 @@
 
       <div class="bb-studio-meta">
         <label>Название
-          <input x-model="publishVersion" :readonly="!draft" required>
+          <input x-model="publishVersion" :readonly="!draft || newRevision" required>
         </label>
-        <p class="bb-hint bb-studio-version-hint" x-show="draft">То же название публикует следующую версию: v2, v3 и дальше. Виртуальные машины с этой картой переключатся на неё.</p>
+        <label>Версия
+          <input readonly :value="draft ? ('v' + plannedRevision) : (currentMap ? ('v' + (currentMap.revision || 1)) : '—')">
+        </label>
+        <p class="bb-hint bb-studio-version-hint" x-show="draft">Название остаётся прежним. Сохранится следующая версия, предыдущие останутся в списке.</p>
         <label>Тип
-          <select x-model="draftProtocol" :disabled="!draft">
+          <select x-model="draftProtocol" :disabled="!draft || newRevision">
             <option value="simulator">Simulator</option>
             <option value="modbus_rtu">Modbus RTU</option>
             <option value="modbus_tcp">Modbus TCP</option>
@@ -94,7 +97,7 @@
           </select>
         </label>
         <label>Preset
-          <input x-model="draftPreset" :readonly="!draft">
+          <input x-model="draftPreset" :readonly="!draft || newRevision">
         </label>
         <button type="button" class="bb-btn" x-show="draft" @click="publishFromEditor()" :disabled="saving || !documentText">
           <span x-show="!saving">Опубликовать версию</span>
@@ -122,6 +125,12 @@
         </aside>
         <div class="bb-studio-editor">
           <p class="bb-muted" x-show="loading">Загрузка…</p>
+          <div class="bb-studio-editor-tools" x-show="draft">
+            <label class="bb-btn bb-btn-secondary bb-btn-sm">
+              <i class="bi bi-upload"></i> Подставить файл
+              <input type="file" accept="application/json,.json" @change="onFileChosen($event)">
+            </label>
+          </div>
           <label class="bb-studio-json-label">Карта
             <textarea class="bb-json-editor" spellcheck="false" x-model="documentText" :readonly="loading || !draft"></textarea>
           </label>

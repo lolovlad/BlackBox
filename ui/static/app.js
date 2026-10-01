@@ -661,6 +661,7 @@
       studioOpen: false,
       publishOpen: false,
       uploadAsNewVersion: false,
+      newRevision: false,
       draft: false,
       loading: false,
       saving: false,
@@ -719,6 +720,13 @@
           return family;
         });
       },
+      get plannedRevision() {
+        let max = 0;
+        this.familyVersions.forEach(function (map) {
+          max = Math.max(max, map.revision || 1);
+        });
+        return max + 1;
+      },
       get familyVersions() {
         const current = this.currentMap;
         const protocol = current ? current.protocol : this.draftProtocol;
@@ -738,9 +746,21 @@
         if (this.draft && this.documentText && !window.confirm('Черновик не опубликован. Закрыть окно?')) return;
         this.studioOpen = false;
         this.draft = false;
+        this.newRevision = false;
+      },
+      startNewVersion() {
+        if (!this.currentMap || !this.documentText) {
+          toast('Сначала дождитесь загрузки карты.', 'error');
+          return;
+        }
+        this.newRevision = true;
+        this.uploadAsNewVersion = true;
+        this.publishVersion = mapNameOf(this.currentMap);
+        this.draft = true;
       },
       openUpload(asNewVersion) {
         this.uploadAsNewVersion = !!asNewVersion;
+        if (!asNewVersion) this.newRevision = false;
         this.publishOpen = true;
       },
       onFileChosen(event) {
@@ -767,14 +787,15 @@
           toast('В корне файла должен быть объект карты.', 'error');
           return;
         }
-        const keepName = this.uploadAsNewVersion && this.currentMap ? mapNameOf(this.currentMap) : '';
-        const keepProtocol = this.uploadAsNewVersion ? this.draftProtocol : '';
-        const keepPreset = this.uploadAsNewVersion ? this.draftPreset : '';
-        this.draftProtocol = parsed.protocol || keepProtocol || 'modbus_tcp';
-        this.draftPreset = parsed.preset_id || keepPreset || '';
-        const fromFile = String(parsed.version || keepName || String(file.name || '').replace(/\.json$/i, '') || 'map').replace(/@\d+$/, '');
-        this.publishVersion = fromFile;
-        this.selectedKey = '';
+        const lockedName = (this.newRevision || this.uploadAsNewVersion) ? (mapNameOf(this.currentMap) || String(this.publishVersion || '').replace(/@\d+$/, '')) : '';
+        const keepProtocol = (this.newRevision || this.uploadAsNewVersion) ? this.draftProtocol : '';
+        const keepPreset = (this.newRevision || this.uploadAsNewVersion) ? this.draftPreset : '';
+        this.draftProtocol = lockedName ? (keepProtocol || parsed.protocol || 'modbus_tcp') : (parsed.protocol || keepProtocol || 'modbus_tcp');
+        this.draftPreset = lockedName ? (keepPreset || parsed.preset_id || '') : (parsed.preset_id || keepPreset || '');
+        const fromFile = String(parsed.version || lockedName || String(file.name || '').replace(/\.json$/i, '') || 'map').replace(/@\d+$/, '');
+        this.publishVersion = lockedName || fromFile;
+        this.newRevision = !!lockedName;
+        if (!lockedName) this.selectedKey = '';
         this.documentText = JSON.stringify(parsed, null, 2);
         this.originalText = '';
         this.draft = true;
@@ -786,6 +807,7 @@
           return;
         }
         this.draft = false;
+        this.newRevision = false;
         this.selectedKey = map.version + '::' + map.protocol;
         this.draftProtocol = map.protocol;
         this.draftPreset = map.preset_id || '';
@@ -907,9 +929,11 @@
           this.documentText = JSON.stringify(created, null, 2);
           this.originalText = this.documentText;
           this.draft = false;
+          this.newRevision = false;
+          this.uploadAsNewVersion = false;
           toast(already
-            ? ('Это уже версия ' + record.revision + ' карты ' + record.name)
-            : ('Опубликована ' + record.name + ', версия ' + record.revision), 'ok');
+            ? ('Содержимое совпадает с версией ' + record.revision + '. Новая версия не создана.')
+            : (record.name + ', версия ' + record.revision + ' сохранена. Предыдущие версии на месте.'), already ? 'info' : 'ok');
         } catch (error) {
           toast(error.message, 'error');
         } finally {
