@@ -14,6 +14,7 @@ from bb_platform.parser import field_channel, field_label
 from .storage import ParquetStore, StorageUnavailable
 
 PAGE_SIZE = 100
+LIST_PAGE_SIZE = 50
 CHART_POINT_CAP = 3000
 READ_ROW_CAP = 100_000
 _COLUMNS = "vm_id, seq, captured_at, COALESCE(quality, '') AS quality, COALESCE(protocol, '') AS protocol, COALESCE(analog_json, '{}') AS analog_json, COALESCE(discrete_json, '{}') AS discrete_json"
@@ -110,6 +111,7 @@ def query_measurements(
     date_to: datetime | None = None,
     include_bad: bool = False,
     point_cap: int | None = None,
+    recent: bool = False,
 ) -> tuple[list[Measurement], bool]:
     """Return matching samples. ``point_cap`` keeps an even time sample for charts."""
     if point_cap is not None and point_cap > 0:
@@ -121,6 +123,7 @@ def query_measurements(
             date_to=date_to,
             include_bad=include_bad,
             point_cap=point_cap,
+            recent=recent,
         )
     con, sql, bind = _open_scan(roots, stores, vm_ids=vm_ids, date_from=date_from, date_to=date_to, include_bad=include_bad)
     if sql is None:
@@ -149,51 +152,41 @@ def query_window(
     page_size: int = PAGE_SIZE,
     sort_desc: bool = True,
 ) -> tuple[list[Measurement], int, int]:
-    """One table page. DuckDB applies the filter, order and limit."""
+    """One table page. Only the daily files that overlap that page are opened."""
     size = max(1, page_size)
-    scan_args = (roots, stores)
-    scan_kwargs = dict(vm_ids=vm_ids, date_from=date_from, date_to=date_to, include_bad=include_bad)
-    con, sql, bind = _open_scan(*scan_args, **scan_kwargs)
-    if sql is None:
-        con.close()
-        return [], 0, 1
-    try:
-        # COUNT(*) OVER() gives the page and its exact total in one Parquet
-        # scan. The old implementation opened two DuckDB connections and
-        # scanned every matching file twice, which dominated page latency.
-        order = "DESC" if sort_desc else "ASC"
-        offset = max(0, (max(1, int(page)) - 1) * size)
-        fetched = con.execute(
-            f"SELECT *, count(*) OVER() AS __total FROM ({sql}) q ORDER BY captured_at {order}, seq {order} LIMIT ? OFFSET ?",
-            [*bind, size, offset],
-        ).fetchall()
-        if fetched:
-            total = int(fetched[0][-1] or 0)
-            rows = [tuple(item[:-1]) for item in fetched]
-        else:
-            total = int(con.execute(f"SELECT count(*) FROM ({_count_sql(sql)}) q", bind).fetchone()[0])
-            rows = []
-    finally:
-        con.close()
+    pending = _pending_measurements(stores, vm_ids=vm_ids, date_from=date_from, date_to=date_to, include_bad=include_bad)
+    pending.sort(key=lambda item: (item.captured_at, item.seq), reverse=sort_desc)
+    files = _parquet_files(roots, vm_ids, date_from, date_to)
+    files.sort(key=_file_sort_key, reverse=sort_desc)
+    counts = [_parquet_num_rows(path) for path in files]
+    total = len(pending) + sum(counts)
     if total == 0:
         return [], 0, 1
     pages = max(1, (total + size - 1) // size)
     current = min(max(1, int(page)), pages)
-    if not rows and current != max(1, int(page)):
-        # A request beyond the final page is rare; fetch the clamped page only
-        # in that case so normal navigation keeps the single-scan fast path.
-        return query_window(
-            roots,
-            stores,
+    skip = (current - 1) * size
+    need = size
+    rows: list[Measurement] = []
+    if sort_desc:
+        chunk, skip, need = _slice_rows(pending, skip, need)
+        rows.extend(chunk)
+    if need > 0:
+        chunk, skip, need = _read_file_page(
+            files,
+            counts,
+            skip=skip,
+            need=need,
             vm_ids=vm_ids,
             date_from=date_from,
             date_to=date_to,
             include_bad=include_bad,
-            page=current,
-            page_size=size,
             sort_desc=sort_desc,
         )
-    return _measurements(rows), total, current
+        rows.extend(chunk)
+    if not sort_desc and need > 0:
+        chunk, _skip, _need = _slice_rows(pending, skip, need)
+        rows.extend(chunk)
+    return rows, total, current
 
 
 def page_table(
@@ -404,27 +397,62 @@ def _complete_parquet(path: Path) -> bool:
 
 
 def _keys_from_newest_file(roots: Iterable[Path], vm_id: str) -> tuple[set[str], set[str]]:
-    files = _parquet_files(roots, {vm_id}, None, None)
-    if not files:
+    newest = _newest_complete_parquet(roots, vm_id)
+    if newest is None:
         return set(), set()
-    newest = max(files, key=lambda path: path.name)
     analog: set[str] = set()
     discrete: set[str] = set()
     try:
         con = _duckdb()
         try:
             fetched = con.execute(
-                "SELECT json_keys(analog_json), json_keys(discrete_json) FROM read_parquet(?)",
+                "SELECT json_keys(analog_json), json_keys(discrete_json) FROM read_parquet(?) LIMIT 1",
                 [newest.resolve().as_posix()],
-            ).fetchall()
+            ).fetchone()
         finally:
             con.close()
     except Exception:
         return set(), set()
-    for analog_keys, discrete_keys in fetched:
-        analog.update(str(key) for key in (analog_keys or []) if str(key).strip())
-        discrete.update(str(key) for key in (discrete_keys or []) if str(key).strip())
+    if not fetched:
+        return analog, discrete
+    analog_keys, discrete_keys = fetched
+    analog.update(str(key) for key in (analog_keys or []) if str(key).strip())
+    discrete.update(str(key) for key in (discrete_keys or []) if str(key).strip())
     return analog, discrete
+
+
+def _newest_complete_parquet(roots: Iterable[Path], vm_id: str) -> Path | None:
+    newest: Path | None = None
+    newest_token = ""
+    for root in roots:
+        directory = Path(root) / f"vm_id={vm_id}"
+        if not directory.is_dir():
+            continue
+        for candidate in directory.glob("date=*"):
+            token = _day_token(candidate)
+            if token is None or (newest_token and token < newest_token):
+                continue
+            path = _complete_day_file(candidate)
+            if path is None:
+                continue
+            newest = path
+            newest_token = token
+    return newest
+
+
+def _complete_day_file(candidate: Path) -> Path | None:
+    if candidate.is_file():
+        return candidate if _complete_parquet(candidate) else None
+    if not candidate.is_dir():
+        return None
+    parts = [
+        path
+        for path in candidate.glob("*.parquet")
+        if path.is_file() and not path.name.endswith(".tmp") and _complete_parquet(path)
+    ]
+    if not parts:
+        return None
+    return max(parts, key=lambda path: path.name)
 
 
 def _day_entries(roots: Iterable[Path], vm_ids: set[str] | None, date_from: datetime | None, date_to: datetime | None) -> list[Path]:
@@ -496,6 +524,85 @@ def _parquet_files(roots: Iterable[Path], vm_ids: set[str] | None, date_from: da
                 if path.is_file() and not path.name.endswith(".tmp") and _complete_parquet(path)
             )
     return files
+
+
+def _file_sort_key(path: Path) -> tuple[str, str]:
+    return (_day_token(path) or "", path.as_posix())
+
+
+def _parquet_num_rows(path: Path) -> int:
+    try:
+        import pyarrow.parquet as pq
+
+        return int(pq.read_metadata(path).num_rows or 0)
+    except Exception:
+        return 0
+
+
+def _pending_measurements(
+    stores: Iterable[ParquetStore],
+    *,
+    vm_ids: set[str] | None,
+    date_from: datetime | None,
+    date_to: datetime | None,
+    include_bad: bool,
+) -> list[Measurement]:
+    rows: list[Measurement] = []
+    for store in stores:
+        for sample in store.pending_samples():
+            item = _from_sample(sample)
+            if item is None or not _accept(item, vm_ids, date_from, date_to, include_bad):
+                continue
+            rows.append(item)
+    return rows
+
+
+def _slice_rows(items: list[Measurement], skip: int, need: int) -> tuple[list[Measurement], int, int]:
+    if need <= 0 or not items:
+        return [], skip, need
+    if skip >= len(items):
+        return [], skip - len(items), need
+    chunk = items[skip : skip + need]
+    return chunk, 0, need - len(chunk)
+
+
+def _read_file_page(
+    files: list[Path],
+    counts: list[int],
+    *,
+    skip: int,
+    need: int,
+    vm_ids: set[str] | None,
+    date_from: datetime | None,
+    date_to: datetime | None,
+    include_bad: bool,
+    sort_desc: bool,
+) -> tuple[list[Measurement], int, int]:
+    if need <= 0 or not files:
+        leftover = skip - sum(counts) if skip else 0
+        return [], max(0, leftover), need
+    clause, params = _filter_clause(vm_ids=vm_ids, date_from=date_from, date_to=date_to, include_bad=include_bad)
+    order = "DESC" if sort_desc else "ASC"
+    rows: list[Measurement] = []
+    con = _duckdb()
+    try:
+        for path, count in zip(files, counts):
+            if need <= 0:
+                break
+            if skip >= count:
+                skip -= count
+                continue
+            fetched = con.execute(
+                f"SELECT {_COLUMNS} FROM read_parquet(?) WHERE {clause} ORDER BY captured_at {order}, seq {order} LIMIT ? OFFSET ?",
+                [path.resolve().as_posix(), *params, need, skip],
+            ).fetchall()
+            skip = 0
+            chunk = _measurements(fetched)
+            rows.extend(chunk)
+            need -= len(chunk)
+    finally:
+        con.close()
+    return rows, skip, need
 
 
 def _duckdb():
@@ -583,8 +690,23 @@ def _query_chart(
     date_to: datetime | None,
     include_bad: bool,
     point_cap: int,
+    recent: bool = False,
 ) -> tuple[list[Measurement], bool]:
     """Even sample across part files. A row_number over a full day reads every 5-second part."""
+    if recent:
+        rows, _total, _page = query_window(
+            roots,
+            stores,
+            vm_ids=vm_ids,
+            date_from=date_from,
+            date_to=date_to,
+            include_bad=include_bad,
+            page=1,
+            page_size=point_cap,
+            sort_desc=True,
+        )
+        rows = list(reversed(rows))
+        return rows, len(rows) >= point_cap
     files = _parquet_files(roots, vm_ids, date_from, date_to)
     files.sort(key=lambda path: (path.parent.name, path.name))
     sampled = len(files) > point_cap
@@ -612,22 +734,19 @@ def _query_chart(
             ).fetchall()
         elif files:
             paths = [path.resolve().as_posix() for path in files]
-            total = int(con.execute(f"SELECT count(*) FROM read_parquet(?) WHERE {clause}", [paths, *params]).fetchone()[0])
+            total = sum(_parquet_num_rows(path) for path in files)
             if total > point_cap:
-                stride = max(1, total // point_cap)
                 fetched = con.execute(
                     f"""
-                    SELECT vm_id, seq, captured_at, quality, protocol, analog_json, discrete_json
-                    FROM (
-                        SELECT {_COLUMNS}, row_number() OVER (ORDER BY captured_at, seq) AS n
-                        FROM read_parquet(?)
-                        WHERE {clause}
-                    ) numbered
-                    WHERE n = 1 OR n = ? OR ((n - 1) % ? = 0)
-                    ORDER BY captured_at, seq
+                    SELECT {_COLUMNS}
+                    FROM read_parquet(?)
+                    WHERE {clause}
+                    ORDER BY captured_at DESC, seq DESC
+                    LIMIT ?
                     """,
-                    [paths, *params, total, stride],
+                    [paths, *params, point_cap],
                 ).fetchall()
+                fetched = list(reversed(fetched))
                 sampled = True
             else:
                 fetched = con.execute(

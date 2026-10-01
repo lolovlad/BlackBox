@@ -7,6 +7,7 @@
 
   let page = 1;
   let catalog = [];
+  let catalogVm = '';
   let refreshTimer = null;
   let openPicker = false;
   let activeFetch = null;
@@ -201,15 +202,18 @@
     const headers = { 'Cache-Control': 'no-store', Pragma: 'no-cache' };
     const fetchOpts = { cache: 'no-store', headers: headers, signal: ctl.signal };
     try {
-      const catalogQuery = new URLSearchParams();
-      catalogQuery.append('vm_id', id);
-      catalogQuery.set('_', stamp);
-      const catalogRes = await fetch('/api/v1/telemetry/catalog?' + catalogQuery.toString(), fetchOpts);
+      if (catalogVm !== id || !catalog.length) {
+        const catalogQuery = new URLSearchParams();
+        catalogQuery.append('vm_id', id);
+        catalogQuery.set('_', stamp);
+        const catalogRes = await fetch('/api/v1/telemetry/catalog?' + catalogQuery.toString(), fetchOpts);
+        if (token !== loadToken) return;
+        if (!catalogRes.ok) throw new Error('catalog');
+        catalog = (await catalogRes.json()).sources || [];
+        catalogVm = id;
+      }
       if (token !== loadToken) return;
-      if (!catalogRes.ok) throw new Error('catalog');
-      catalog = (await catalogRes.json()).sources || [];
-      if (token !== loadToken) return;
-      renderFields();
+      if (!keepPlace) renderFields();
       const tableRes = await fetch('/api/v1/telemetry/rows?' + params(stamp).toString(), fetchOpts);
       if (token !== loadToken) return;
       if (!tableRes.ok) throw new Error('rows');
@@ -229,7 +233,7 @@
   function schedule() {
     if (!liveMode()) return;
     if (refreshTimer) clearTimeout(refreshTimer);
-    refreshTimer = setTimeout(function () { reloadView({ keepPlace: true }); }, 400);
+    refreshTimer = setTimeout(function () { reloadView({ keepPlace: true }); }, 2500);
   }
 
   function chooseColumn(key) {

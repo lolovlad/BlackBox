@@ -958,6 +958,7 @@ class HubRepository:
         date_from: str | None = None,
         date_to: str | None = None,
         sort_desc: bool = True,
+        offset: int = 0,
         limit: int = 100000,
     ) -> list[dict[str, Any]]:
         clauses = ["1=1"]
@@ -972,13 +973,34 @@ class HubRepository:
             clauses.append("started_at<=?")
             args.append(date_to)
         order = "DESC" if sort_desc else "ASC"
-        args.append(max(1, min(int(limit), 1_000_000)))
+        where = " AND ".join(clauses)
         with self.connect() as c:
             rows = c.execute(
-                f"SELECT * FROM emergency_events WHERE {' AND '.join(clauses)} ORDER BY started_at {order},id {order} LIMIT ?",
-                args,
+                f"SELECT * FROM emergency_events WHERE {where} ORDER BY started_at {order},id {order} LIMIT ? OFFSET ?",
+                [*args, max(1, min(int(limit), 1_000_000)), max(0, int(offset))],
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def count_emergency_events(
+        self,
+        vm_ids: list[str] | None,
+        *,
+        date_from: str | None = None,
+        date_to: str | None = None,
+    ) -> int:
+        clauses = ["1=1"]
+        args: list[Any] = []
+        if vm_ids:
+            clauses.append(f"vm_id IN ({','.join('?' for _ in vm_ids)})")
+            args.extend(vm_ids)
+        if date_from:
+            clauses.append("started_at>=?")
+            args.append(date_from)
+        if date_to:
+            clauses.append("started_at<=?")
+            args.append(date_to)
+        with self.connect() as c:
+            return int(c.execute(f"SELECT COUNT(*) FROM emergency_events WHERE {' AND '.join(clauses)}", args).fetchone()[0])
 
     def save_map(self, document: dict[str, Any]) -> None:
         now = datetime.now(timezone.utc).isoformat()
@@ -1804,25 +1826,40 @@ class HubRepository:
             result["alerts"] = json.loads(row["alerts_json"] or "[]")
             return result
 
-    def list_incidents(self, *, vm_ids: list[str] | None = None, limit: int = 100) -> list[dict[str, Any]]:
+    def list_incidents(
+        self,
+        *,
+        vm_ids: list[str] | None = None,
+        limit: int = 100,
+        offset: int = 0,
+        detail: bool = True,
+    ) -> list[dict[str, Any]]:
         cap = max(1, min(int(limit), 500))
+        skip = max(0, int(offset))
         if vm_ids is not None and not vm_ids:
             return []
         with self.connect() as c:
             if vm_ids is not None:
                 placeholders = ",".join("?" for _ in vm_ids)
                 where = f"i.vm_id IN ({placeholders})"
-                args = [*vm_ids, cap]
+                args: list[Any] = [*vm_ids, cap, skip]
             else:
                 where = "1=1"
-                args = [cap]
-            rows = c.execute(
-                f"""
+                args = [cap, skip]
+            if detail:
+                select = """
                 SELECT i.*,
                     (SELECT json_group_array(json_object('id',e.id,'camera_id',e.camera_id,'vm_id',e.vm_id,'incident_id',e.incident_id,'state',e.state,'path',e.path,'paths_json',e.paths_json,'message',e.message,'started_at',e.started_at,'ended_at',e.ended_at,'stop_at',e.stop_at,'capture_from',e.capture_from,'duration_sec',e.duration_sec,'created_at',e.created_at)) FROM video_episodes e WHERE e.incident_id=i.id) AS episodes_json,
                     (SELECT json_group_array(json_object('id',a.id,'vm_id',a.vm_id,'name',a.name,'kind',a.kind,'state',a.state,'created_at',a.created_at)) FROM video_incident_alerts a WHERE a.incident_id=i.id) AS alerts_json
-                FROM video_incidents i WHERE {where} ORDER BY i.started_at DESC LIMIT ?
-                """,
+                """
+            else:
+                select = """
+                SELECT i.*,
+                    (SELECT json_group_array(json_object('camera_id',e.camera_id)) FROM video_episodes e WHERE e.incident_id=i.id) AS episodes_json,
+                    (SELECT json_group_array(json_object('name',a.name)) FROM video_incident_alerts a WHERE a.incident_id=i.id) AS alerts_json
+                """
+            rows = c.execute(
+                f"{select} FROM video_incidents i WHERE {where} ORDER BY i.started_at DESC LIMIT ? OFFSET ?",
                 args,
             ).fetchall()
             results = []
@@ -1830,10 +1867,20 @@ class HubRepository:
                 incident = _incident_dict(row)
                 incident["episodes"] = json.loads(row["episodes_json"] or "[]")
                 for episode in incident["episodes"]:
-                    episode["paths"] = json.loads(episode.pop("paths_json") or "[]")
+                    if "paths_json" in episode:
+                        episode["paths"] = json.loads(episode.pop("paths_json") or "[]")
                 incident["alerts"] = json.loads(row["alerts_json"] or "[]")
                 results.append(incident)
             return results
+
+    def count_incidents(self, *, vm_ids: list[str] | None = None) -> int:
+        if vm_ids is not None and not vm_ids:
+            return 0
+        with self.connect() as c:
+            if vm_ids is not None:
+                placeholders = ",".join("?" for _ in vm_ids)
+                return int(c.execute(f"SELECT COUNT(*) FROM video_incidents WHERE vm_id IN ({placeholders})", vm_ids).fetchone()[0])
+            return int(c.execute("SELECT COUNT(*) FROM video_incidents").fetchone()[0])
 
     def list_incidents_overlapping(self, *, vm_ids: list[str], date_from: str, date_to: str) -> list[dict[str, Any]]:
         if not vm_ids:

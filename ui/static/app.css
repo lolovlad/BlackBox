@@ -2081,6 +2081,9 @@ html.bb-header-closed .bb-header-inner {
   cursor: pointer;
 }
 .bb-row-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; margin: 0.8rem 0; position: relative; z-index: 5; overflow: visible; }
+.bb-pager { margin-top: 0.75rem; }
+.bb-pager .bb-hint { margin: 0 0 0.35rem; }
+.bb-pager .bb-row-actions { margin: 0; }
 .bb-table-wrap { overflow: auto; border: 1px solid var(--bb-border); border-radius: 10px; }
 .bb-table-wrap table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
 .bb-table-wrap th,

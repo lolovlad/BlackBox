@@ -24,6 +24,9 @@
   let selected = '';
   let sortKey = 'name';
   let sortDir = 'asc';
+  let listPage = 1;
+  let listMeta = null;
+  const LIST_PAGE = 50;
   const folders = new Map();
   const expanded = new Set(['']);
 
@@ -88,8 +91,14 @@
     return entries.find(function (entry) { return entry.path === selected; }) || null;
   }
 
-  async function fetchList(path) {
-    const response = await fetch('/api/v1/video/files?path=' + encodeURIComponent(path), { credentials: 'same-origin' });
+  async function fetchList(path, forTree) {
+    const query = new URLSearchParams();
+    query.set('path', path || '');
+    if (!forTree) {
+      query.set('page', String(listPage));
+      query.set('page_size', String(LIST_PAGE));
+    }
+    const response = await fetch('/api/v1/video/files?' + query.toString(), { credentials: 'same-origin' });
     if (!response.ok) throw new Error('list');
     return response.json();
   }
@@ -103,7 +112,7 @@
     let acc = '';
     for (let index = 0; index < parts.length; index += 1) {
       if (!folders.has(acc)) {
-        const data = await fetchList(acc);
+        const data = await fetchList(acc, true);
         rememberFolders(acc, data.entries || []);
       }
       expanded.add(acc);
@@ -155,6 +164,8 @@
     const chosen = selectedEntry();
     const tail = chosen ? ' · ' + (chosen.label || chosen.name) : '';
     statusBox.textContent = (where ? where + ' · ' : '') + countLabel(entries.length) + tail;
+    const pager = document.getElementById('bb-explorer-pager');
+    if (pager && window.bbPagerHtml && listMeta) pager.innerHTML = window.bbPagerHtml(listMeta);
   }
 
   function renderChrome() {
@@ -173,6 +184,7 @@
   }
 
   async function open(path, record) {
+    if (record) listPage = 1;
     rows.innerHTML = '<tr class="bb-explorer-empty"><td colspan="4"><div class="bb-explorer-blank"><i class="bi bi-arrow-repeat"></i><p>Загрузка…</p></div></td></tr>';
     try {
       const data = await fetchList(path);
@@ -180,6 +192,7 @@
       place = data.place || 'root';
       crumbItems = data.crumbs && data.crumbs.length ? data.crumbs : [{ label: 'Записи', path: '' }];
       entries = data.entries || [];
+      listMeta = data;
       selected = '';
       hideFile();
       rememberFolders(current, entries);
@@ -287,7 +300,7 @@
         renderTree();
         return;
       }
-      fetchList(path).then(function (data) {
+      fetchList(path, true).then(function (data) {
         rememberFolders(path, data.entries || []);
         renderTree();
       }).catch(function () {
@@ -306,6 +319,17 @@
     if (!row) return;
     activate(entries.find(function (entry) { return entry.path === row.getAttribute('data-path'); }));
   });
+
+  const pagerHost = document.getElementById('bb-explorer-pager');
+  if (pagerHost) {
+    pagerHost.addEventListener('click', function (event) {
+      const button = event.target.closest('[data-page]');
+      if (!button || button.disabled) return;
+      listPage += button.dataset.page === 'next' ? 1 : -1;
+      if (listPage < 1) listPage = 1;
+      open(current, false);
+    });
+  }
 
   open('', false);
 })();

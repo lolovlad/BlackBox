@@ -14,6 +14,7 @@
   let sources = [];
   let groups = [[{ source: '', field: '', operator: 'lt', value: '' }]];
   let advancedMode = false;
+  let eventsPage = 1;
 
   function esc(value) {
     return String(value ?? '').replace(/[&<>"']/g, function (ch) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]; });
@@ -132,9 +133,12 @@
   }
 
   async function loadEvents() {
-    const response = await fetch('/api/v1/emergency-events?limit=1000', { credentials: 'same-origin' });
+    const pager = document.getElementById('bb-emergency-pager');
+    const response = await fetch('/api/v1/emergency-events?limit=50&page=' + encodeURIComponent(String(eventsPage)), { credentials: 'same-origin' });
     if (!response.ok) throw new Error('Не удалось загрузить события');
     const data = await response.json();
+    eventsPage = data.page || eventsPage;
+    if (pager && window.bbPagerHtml) pager.innerHTML = window.bbPagerHtml(data);
     const vmsResponse = await fetch('/api/v1/vms', { credentials: 'same-origin' });
     const vmNames = new Map();
     if (vmsResponse.ok) (await vmsResponse.json()).items.forEach(function (vm) { vmNames.set(vm.id, vm.name); });
@@ -262,6 +266,15 @@
   });
 
   document.getElementById('bb-rule-cancel')?.addEventListener('click', resetForm);
-  document.getElementById('bb-emergency-refresh').addEventListener('click', reload);
+  document.getElementById('bb-emergency-refresh').addEventListener('click', function () { eventsPage = 1; reload(); });
+  document.getElementById('bb-emergency-pager')?.addEventListener('click', function (event) {
+    const button = event.target.closest('[data-page]');
+    if (!button || button.disabled) return;
+    eventsPage += button.dataset.page === 'next' ? 1 : -1;
+    if (eventsPage < 1) eventsPage = 1;
+    loadEvents().catch(function (reason) {
+      eventsBody.innerHTML = '<tr><td colspan="6" class="bb-error-inline">' + esc(reason.message) + '</td></tr>';
+    });
+  });
   reload();
 })();

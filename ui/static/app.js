@@ -80,6 +80,23 @@
     return response;
   }
 
+  window.bbPagerHtml = function (payload, extra) {
+    const page = Number(payload.page || 1);
+    const totalPages = Math.max(1, Number(payload.total_pages || 1));
+    const total = payload.total_rows;
+    const size = payload.page_size;
+    const hint = (total != null && total !== '' ? ('Всего: ' + total + ' · ') : '') +
+      'страница ' + page + ' из ' + totalPages +
+      (size ? ' (по ' + size + ')' : '');
+    return '<div class="bb-pager">' +
+      '<p class="bb-hint">' + hint + '</p>' +
+      '<div class="bb-row-actions">' +
+      '<button type="button" class="bb-btn bb-btn-ghost" data-page="prev"' + (page <= 1 ? ' disabled' : '') + '>Назад</button>' +
+      '<button type="button" class="bb-btn bb-btn-ghost" data-page="next"' + (page >= totalPages ? ' disabled' : '') + '>Вперёд</button>' +
+      (extra || '') +
+      '</div></div>';
+  };
+
   window.bbBusy = function (root, on, label) {
     if (!root) return;
     const busy = !!on;
@@ -1524,19 +1541,18 @@
     });
   }
 
-  document.querySelectorAll('[data-resource-approve]').forEach(function (button) {
-    button.addEventListener('click', async function () {
-      button.disabled = true;
-      try {
-        await mutate('/api/v1/resources/' + encodeURIComponent(button.dataset.resourceApprove) + '/approve', { method: 'POST' });
-        toast('Ресурс подтверждён', 'ok');
-        location.reload();
-      } catch (error) {
-        toast(error.message, 'error');
-      } finally {
-        button.disabled = false;
-      }
-    });
+  document.addEventListener('click', async function (event) {
+    const button = event.target instanceof Element ? event.target.closest('[data-resource-approve]') : null;
+    if (!button) return;
+    button.disabled = true;
+    try {
+      await mutate('/api/v1/resources/' + encodeURIComponent(button.dataset.resourceApprove) + '/approve', { method: 'POST' });
+      toast('Ресурс подтверждён', 'ok');
+      location.reload();
+    } catch (error) {
+      toast(error.message, 'error');
+      button.disabled = false;
+    }
   });
 
   const logout = document.querySelector('[data-logout]');

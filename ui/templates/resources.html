@@ -7,14 +7,14 @@
     <button type="button" class="bb-btn" data-resource-scan><i class="bi bi-radar"></i> Сканировать</button>
     <span id="resource-message" class="bb-muted" role="status"></span>
   </div>
-  {% for group in read_resource_groups %}
+    {% for group in read_resource_groups %}
   <h2 class="bb-section-title">{{ group.label }}</h2>
   <div class="bb-table-wrap">
     <table class="bb-table">
       <thead>
         <tr><th>Устройство</th><th>Путь / адрес</th><th>Состояние</th><th></th></tr>
       </thead>
-      <tbody>
+      <tbody data-resource-body="{{ group.kind }}">
       {% for r in group.devices %}
         <tr class="{% if not r.available %}is-gone{% endif %}">
           <td>
@@ -45,6 +45,7 @@
       </tbody>
     </table>
   </div>
+  <div class="bb-pager" data-resource-pager="{{ group.kind }}" data-page="{{ group.page }}" data-pages="{{ group.total_pages }}" data-total="{{ group.total_rows }}" {% if group.total_pages <= 1 %}hidden{% endif %}></div>
   {% else %}
   <h2 class="bb-section-title">Откуда читать</h2>
   <p class="bb-muted">Нет устройств. Нажмите «Сканировать» после подключения прибора.</p>
@@ -53,7 +54,7 @@
   <div class="bb-table-wrap">
     <table class="bb-table">
       <thead><tr><th>Носитель</th><th>Путь</th><th>Свободно</th><th>Статус</th><th></th></tr></thead>
-      <tbody>
+      <tbody data-resource-body="storage">
       {% for r in storage_resources %}
         <tr class="{% if not r.available %}is-gone{% endif %}">
           <td>{{ r.name }}</td>
@@ -66,5 +67,7 @@
       </tbody>
     </table>
   </div>
+  <div class="bb-pager" data-resource-pager="storage" data-page="{{ storage_page|default(1) }}" data-pages="{{ storage_total_pages|default(1) }}" data-total="{{ storage_total_rows|default(0) }}" {% if storage_total_pages|default(1) <= 1 %}hidden{% endif %}></div>
 </section>
+<script defer src="/static/resources.js?v={{ app_version }}"></script>
 {% endblock %}

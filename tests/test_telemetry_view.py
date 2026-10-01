@@ -10,7 +10,7 @@ from bb_platform.contracts import RawBatch, RawSample, TagSample, VmProtocol
 from services.hub.db import HubRepository
 from services.hub.monitor import collect_system_monitor
 from services.hub.storage import ParquetStore
-from services.hub.telemetry import query_measurements
+from services.hub.telemetry import query_measurements, query_window
 from tests.test_hub_vnext import _client, _publish_map
 
 
@@ -135,6 +135,22 @@ def test_one_parquet_file_per_day(tmp_path: Path) -> None:
     assert [item.seq for item in legacy_rows] == [8, 7]
 
 
+def test_query_window_pages_newest_day_first(tmp_path: Path) -> None:
+    root = tmp_path / "telemetry"
+    store = ParquetStore(root, flush_rows=1)
+    vm_id = uuid4()
+    for day, seq in ((20, 1), (21, 2), (22, 3)):
+        store.append([_sample(vm_id, seq, datetime(2026, 9, day, 12, tzinfo=timezone.utc))], flush_rows=1)
+    rows, total, page = query_window([root], [store], vm_ids={str(vm_id)}, page=1, page_size=1, sort_desc=True)
+    assert page == 1
+    assert total == 3
+    assert [item.seq for item in rows] == [3]
+    older, total_older, page_older = query_window([root], [store], vm_ids={str(vm_id)}, page=2, page_size=1, sort_desc=True)
+    assert page_older == 2
+    assert total_older == 3
+    assert [item.seq for item in older] == [2]
+
+
 def test_truncated_daily_parquet_is_skipped_and_replaced(tmp_path: Path) -> None:
     from services.hub.telemetry import describe_sources
 
@@ -226,8 +242,17 @@ def test_values_charts_and_alarm_journal_for_many_sources(tmp_path: Path) -> Non
         assert ("gen-1", "BUS High Volt", "inactive") in states
         assert ("gen-2", "BUS High Volt", "active") in states
         assert ("gen-2", "BUS High Volt", "inactive") in states
-        incidents = client.get("/api/v1/video/incidents").json()["items"]
-        assert len(incidents) == 2
+        incidents = client.get("/api/v1/video/incidents").json()
+        assert incidents["total_rows"] == 2
+        assert incidents["page"] == 1
+        assert len(incidents["items"]) == 2
+        paged = client.get("/api/v1/video/incidents", params={"page": 1, "limit": 1}).json()
+        assert paged["page_size"] == 1
+        assert paged["total_pages"] == 2
+        assert len(paged["items"]) == 1
+        resources_page = client.get("/admin/resources").text
+        assert 'data-resource-pager="storage"' in resources_page
+        assert "resources.js" in resources_page
         assert {row["class_label"] for row in alarms["rows"]} == {"Авария"}
 
         analogs = client.get("/api/v1/telemetry/rows", params=[("tab", "analog"), ("vm_id", vm_ids[0]), ("column", "RPM")]).json()

@@ -6,7 +6,7 @@
   const chartEl = document.getElementById('bb-echarts');
   if (!root || !form || !fieldHost || !meta || !chartEl) return;
 
-  const state = { chart: null, table: 'analog', columns: [], live: false, lastTs: 0, catalog: [] };
+  const state = { chart: null, table: 'analog', columns: [], live: false, lastTs: 0, catalog: [], catalogVm: '' };
   let openPicker = false;
   let activeFetch = null;
   let loadToken = 0;
@@ -332,13 +332,16 @@
     const headers = { 'Cache-Control': 'no-store', Pragma: 'no-cache' };
     const fetchOpts = { cache: 'no-store', headers: headers, signal: ctl.signal };
     try {
-      const catalogQuery = new URLSearchParams();
-      catalogQuery.append('vm_id', id);
-      catalogQuery.set('_', stamp);
-      const catalogRes = await fetch('/api/v1/telemetry/catalog?' + catalogQuery.toString(), fetchOpts);
-      if (token !== loadToken) return;
-      if (!catalogRes.ok) throw new Error('catalog');
-      state.catalog = (await catalogRes.json()).sources || [];
+      if (state.catalogVm !== id || !state.catalog.length) {
+        const catalogQuery = new URLSearchParams();
+        catalogQuery.append('vm_id', id);
+        catalogQuery.set('_', stamp);
+        const catalogRes = await fetch('/api/v1/telemetry/catalog?' + catalogQuery.toString(), fetchOpts);
+        if (token !== loadToken) return;
+        if (!catalogRes.ok) throw new Error('catalog');
+        state.catalog = (await catalogRes.json()).sources || [];
+        state.catalogVm = id;
+      }
       if (token !== loadToken) return;
       renderFields();
       const seriesRes = await fetch(root.dataset.seriesUrl + '?' + params(stamp).toString(), fetchOpts);

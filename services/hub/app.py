@@ -64,7 +64,7 @@ from .security import (
 )
 from .state import EventBus
 from .storage import ParquetStore, StorageUnavailable, purge_vm_directories
-from .telemetry import CHART_POINT_CAP, PAGE_SIZE, READ_ROW_CAP, chart_payload, collect_roots, column_defs, describe_sources, format_timestamp, page_table, parse_bound, query_measurements, query_window, rows_as_csv
+from .telemetry import CHART_POINT_CAP, LIST_PAGE_SIZE, PAGE_SIZE, READ_ROW_CAP, chart_payload, collect_roots, column_defs, describe_sources, format_timestamp, page_table, parse_bound, query_measurements, query_window, rows_as_csv
 from .vm_config import normalize_runtime_config
 
 logger = logging.getLogger("blackbox.hub")
@@ -668,6 +668,19 @@ def _approved_resource_groups(repo: HubRepository) -> dict[str, list[dict[str, A
 
 def _resource_ids(resources: list[dict[str, Any]] | None) -> list[str]:
     return [str(item["resource_id"]) for item in (resources or []) if isinstance(item, dict) and item.get("resource_id")]
+
+
+def _page_meta(total: int, page: int, page_size: int) -> dict[str, int]:
+    size = max(1, int(page_size))
+    pages = max(1, (total + size - 1) // size) if total else 1
+    current = min(max(1, int(page)), pages)
+    return {"page": current, "total_pages": pages, "total_rows": total, "page_size": size, "offset": (current - 1) * size}
+
+
+def _page_items(items: list[Any], page: int, page_size: int) -> tuple[list[Any], dict[str, int]]:
+    meta = _page_meta(len(items), page, page_size)
+    start = meta["offset"]
+    return items[start : start + meta["page_size"]], meta
 
 
 def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
@@ -2002,8 +2015,19 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
         }
 
     @app.get("/api/v1/resources")
-    async def resources(account=Depends(admin)):
-        return {"items": repo.list_resources()}
+    async def resources(
+        kind: str | None = None,
+        page: int = Query(default=1, ge=1),
+        page_size: int = Query(default=0, ge=0, le=500),
+        account=Depends(admin),
+    ):
+        items = repo.list_resources()
+        if kind:
+            items = [item for item in items if item.get("kind") == kind]
+        if page_size <= 0:
+            return {"items": items, "page": 1, "total_pages": 1, "total_rows": len(items), "page_size": len(items) or 0}
+        sliced, meta = _page_items(items, page, page_size)
+        return {"items": sliced, "page": meta["page"], "total_pages": meta["total_pages"], "total_rows": meta["total_rows"], "page_size": meta["page_size"]}
 
     @app.get("/api/v1/resources/candidates")
     async def resource_candidates(protocol: str | None = None, account=Depends(admin)):
@@ -2162,14 +2186,21 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
         }
 
     @app.get("/api/v1/video/incidents")
-    async def video_incidents(request: Request, vm_id: list[str] | None = Query(default=None), limit: int = Query(default=100, ge=1, le=500)):
+    async def video_incidents(
+        request: Request,
+        vm_id: list[str] | None = Query(default=None),
+        limit: int = Query(default=LIST_PAGE_SIZE, ge=1, le=500),
+        page: int = Query(default=1, ge=1),
+    ):
         current_user(request, repo, cfg)
         selected = _selected_vm_ids(vm_id)
         names = {str(vm["id"]): str(vm["name"]) for vm in repo.list_vms()}
-        items = repo.list_incidents(vm_ids=selected, limit=limit)
+        total = repo.count_incidents(vm_ids=selected)
+        meta = _page_meta(total, page, limit)
+        items = repo.list_incidents(vm_ids=selected, limit=meta["page_size"], offset=meta["offset"], detail=False)
         for item in items:
             item["vm_name"] = names.get(str(item["vm_id"]), str(item["vm_id"]))
-        return {"items": items}
+        return {"items": items, "page": meta["page"], "total_pages": meta["total_pages"], "total_rows": meta["total_rows"], "page_size": meta["page_size"]}
 
     def _emergency_rule_schema(vm_id: str | None = None) -> tuple[set[str], set[str], set[str]]:
         fields = {"active_alarms"}
@@ -2293,9 +2324,20 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
         return {"ok": True}
 
     @app.get("/api/v1/emergency-events")
-    async def emergency_events(request: Request, vm_id: list[str] | None = Query(default=None), date_from: str | None = None, date_to: str | None = None, limit: int = Query(default=200, ge=1, le=1000)):
+    async def emergency_events(
+        request: Request,
+        vm_id: list[str] | None = Query(default=None),
+        date_from: str | None = None,
+        date_to: str | None = None,
+        limit: int = Query(default=LIST_PAGE_SIZE, ge=1, le=1000),
+        page: int = Query(default=1, ge=1),
+    ):
         current_user(request, repo, cfg)
-        return {"items": repo.list_emergency_events(_selected_vm_ids(vm_id), date_from=date_from, date_to=date_to, limit=limit)}
+        selected = _selected_vm_ids(vm_id)
+        total = repo.count_emergency_events(selected, date_from=date_from, date_to=date_to)
+        meta = _page_meta(total, page, limit)
+        items = repo.list_emergency_events(selected, date_from=date_from, date_to=date_to, offset=meta["offset"], limit=meta["page_size"])
+        return {"items": items, "page": meta["page"], "total_pages": meta["total_pages"], "total_rows": meta["total_rows"], "page_size": meta["page_size"]}
 
     @app.get("/api/v1/video/incidents/{incident_id}")
     async def video_incident(incident_id: str, request: Request):
@@ -2369,7 +2411,7 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
             return {}
         labels: dict[str, str] = {}
         names = {str(vm["id"]): str(vm["name"]) for vm in repo.list_vms()}
-        for item in repo.list_incidents(limit=500):
+        for item in repo.list_incidents(limit=500, detail=False):
             alerts = item.get("alerts") or []
             alert_name = str(alerts[0].get("name") or "") if alerts else ""
             if not alert_name:
@@ -2378,11 +2420,16 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
         return labels
 
     @app.get("/api/v1/video/files")
-    async def video_files(request: Request, path: str = ""):
+    async def video_files(
+        request: Request,
+        path: str = "",
+        page: int = Query(default=1, ge=1),
+        page_size: int = Query(default=0, ge=0, le=500),
+    ):
         current_user(request, repo, cfg)
         root, cameras = _recording_root()
         try:
-            payload = list_recordings(root, path)
+            payload = list_recordings(root, path, page=page, page_size=page_size)
         except RecordingError as exc:
             raise HTTPException(404, detail={"code": "recording_missing", "message": "Папка не найдена"}) from exc
         incidents = _incident_labels(str(payload["path"]))
@@ -2821,6 +2868,7 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
             date_from=start,
             date_to=end,
             point_cap=point_cap,
+            recent=realtime,
         )
         return rows, truncated, realtime
 
@@ -2828,7 +2876,7 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
     async def telemetry_catalog(request: Request, vm_id: list[str] | None = Query(default=None)):
         current_user(request, repo, cfg)
         selected = set(_selected_vm_ids(vm_id))
-        return {"sources": _sources(selected)}
+        return {"sources": await asyncio.to_thread(_sources, selected)}
 
     @app.get("/api/v1/telemetry/rows")
     async def telemetry_rows(
@@ -2848,7 +2896,8 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
         end = parse_bound(date_to, end_of_day=True)
         names = {str(vm["id"]): str(vm["name"]) for vm in repo.list_vms()}
         if active in {"alarms", "gpio"}:
-            events, total = repo.list_alarm_events(
+            events, total = await asyncio.to_thread(
+                repo.list_alarm_events,
                 selected,
                 kind="gpio" if active == "gpio" else "alert",
                 date_from=start.isoformat() if start else None,
@@ -2898,9 +2947,10 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
                 "page_size": PAGE_SIZE,
                 "truncated": False,
             }
-        sources = _sources(set(selected))
+        sources = await asyncio.to_thread(_sources, set(selected))
         columns = column_defs(sources, active, column or None)
-        measurements, total, page_used = query_window(
+        measurements, total, page_used = await asyncio.to_thread(
+            query_window,
             _telemetry_roots(),
             _telemetry_stores(),
             vm_ids=set(selected),
@@ -2937,8 +2987,10 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
         selected = _selected_vm_ids(vm_id)
         start = parse_bound(date_from)
         end = parse_bound(date_to, end_of_day=True)
-        measurements, _truncated, realtime = _measurement_rows(selected, start, end, today_if_open=True, point_cap=CHART_POINT_CAP)
-        sources = _sources(set(selected))
+        measurements, _truncated, realtime = await asyncio.to_thread(
+            _measurement_rows, selected, start, end, today_if_open=True, point_cap=CHART_POINT_CAP
+        )
+        sources = await asyncio.to_thread(_sources, set(selected))
         labels = {item["key"]: item["label"] for item in column_defs(sources, active, None)}
         fields = column or list(labels)
         return chart_payload(
@@ -3562,23 +3614,38 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
         if isinstance(account, RedirectResponse):
             return account
         resources = repo.list_resources()
+        read_groups = []
+        for kind in inventory_kinds():
+            devices = [item for item in resources if item.get("kind") == kind]
+            if not devices:
+                continue
+            meta = _page_meta(len(devices), 1, LIST_PAGE_SIZE)
+            read_groups.append(
+                {
+                    "kind": kind,
+                    "label": KIND_LABELS.get(kind, kind),
+                    "devices": devices[: meta["page_size"]],
+                    "page": 1,
+                    "total_pages": meta["total_pages"],
+                    "total_rows": meta["total_rows"],
+                    "page_size": meta["page_size"],
+                }
+            )
+        storage_all = [r for r in resources if r.get("kind") == ResourceKind.STORAGE.value]
+        storage_meta = _page_meta(len(storage_all), 1, LIST_PAGE_SIZE)
         return templates.TemplateResponse(
             request=request,
             name="resources.html",
             context={
                 "user": account,
                 "resources": resources,
-                "read_resource_groups": [
-                    {
-                        "kind": kind,
-                        "label": KIND_LABELS.get(kind, kind),
-                        "devices": [item for item in resources if item.get("kind") == kind],
-                    }
-                    for kind in inventory_kinds()
-                    if any(item.get("kind") == kind for item in resources)
-                ],
+                "read_resource_groups": read_groups,
                 "read_resources": [r for r in resources if r.get("kind") != ResourceKind.STORAGE.value],
-                "storage_resources": [r for r in resources if r.get("kind") == ResourceKind.STORAGE.value],
+                "storage_resources": storage_all[: storage_meta["page_size"]],
+                "storage_page": 1,
+                "storage_total_pages": storage_meta["total_pages"],
+                "storage_total_rows": storage_meta["total_rows"],
+                "storage_page_size": storage_meta["page_size"],
             },
         )
 
