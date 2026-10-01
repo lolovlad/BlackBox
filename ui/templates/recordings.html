@@ -40,6 +40,23 @@
     </div>
     <div id="bb-explorer-status" class="bb-explorer-status"></div>
   </div>
+  <div id="bb-explorer-file" class="bb-file-dialog" hidden>
+    <div class="bb-file-card" role="dialog" aria-modal="true" aria-labelledby="bb-file-title">
+      <div class="bb-file-head">
+        <span class="bb-explorer-glyph is-file" aria-hidden="true"><i class="bi bi-play-btn-fill"></i></span>
+        <div>
+          <h2 id="bb-file-title"></h2>
+          <p id="bb-file-name" class="bb-muted"></p>
+        </div>
+        <button type="button" class="bb-btn bb-btn-ghost bb-btn-sm bb-icon-btn" data-file-close aria-label="Закрыть"><i class="bi bi-x-lg"></i></button>
+      </div>
+      <dl id="bb-file-facts" class="bb-file-facts"></dl>
+      <div class="bb-actions">
+        <a class="bb-btn" id="bb-file-download"><i class="bi bi-download"></i> Скачать</a>
+        <button type="button" class="bb-btn bb-btn-secondary" data-file-close>Закрыть</button>
+      </div>
+    </div>
+  </div>
 </section>
-<script defer src="/static/recordings.js?v={{ app_version }}"></script>
+<script defer src="/static/recordings.js?v={{ app_version }}-ui13"></script>
 {% endblock %}

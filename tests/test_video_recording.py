@@ -84,6 +84,8 @@ def test_ffmpeg_argv_copy_skips_scale_and_libx264_limits_bitrate(tmp_path: Path)
     assert buffer[buffer.index("-f") + 1] == "segment"
     assert buffer[buffer.index("-segment_time") + 1] == "2"
     assert buffer[-1].endswith("%Y%m%d_%H%M%S.mkv")
+    own_length = build_buffer_argv(_camera(), tmp_path / "%Y%m%d_%H%M%S.mkv")
+    assert own_length[own_length.index("-segment_time") + 1] == "60"
 
     motion = build_motion_argv(_camera())
     assert motion[motion.index("-f") + 1] == "rawvideo"
@@ -199,10 +201,11 @@ def test_ring_buffer_stays_in_ram_and_closed_segments_are_copied_to_the_archive(
     ram = tmp_path / "ram"
     archive = tmp_path / "archive"
     supervisor = Supervisor(tmp_path, spawn=spawn, buffer_root=ram)
-    camera = _camera()
-    config = VideoConfig(cameras=[camera], incident_pre_sec=10, incident_segment_sec=2)
+    camera = _camera(segment_sec=5)
+    config = VideoConfig(cameras=[camera], incident_pre_sec=10)
     supervisor.tick(config, [], [], output_root=archive)
     buffer = next(proc for proc in started if "segment" in proc.argv)
+    assert buffer.argv[buffer.argv.index("-segment_time") + 1] == "5"
     assert ram.as_posix() in Path(buffer.argv[-1]).as_posix() or str(ram) in buffer.argv[-1]
     assert ".buffer" not in buffer.argv[-1]
     assert not (archive / ".buffer").exists()
@@ -210,7 +213,7 @@ def test_ring_buffer_stays_in_ram_and_closed_segments_are_copied_to_the_archive(
 
     segment = ram / "cam1" / "20260930_100000.mkv"
     segment.write_bytes(b"closed-segment")
-    closed_at = time.time() - 4
+    closed_at = time.time() - 6
     os.utime(segment, (closed_at, closed_at))
     moment = datetime.now(timezone.utc)
     capture_from = (moment - timedelta(seconds=10)).isoformat()
@@ -452,6 +455,65 @@ def test_incident_download_and_bundle_contain_video(tmp_path: Path, monkeypatch)
         assert client.get(f"/api/v1/export-jobs/{job['id']}/download").status_code == 200
 
 
+def test_incident_close_merges_camera_segments(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("BB_VIDEO_TOKEN", "video-secret")
+    calls: list[list[str]] = []
+
+    def fake_merge(paths, output, **_kwargs):
+        calls.append([str(path) for path in paths])
+        output.write_bytes(b"one-video")
+        return {"state": "included", "segments": [str(path) for path in paths], "omitted": [], "gaps": []}
+
+    monkeypatch.setattr("services.hub.app.merge_camera_segments", fake_merge)
+    with _client(tmp_path) as client:
+        assert client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin-password"}).status_code == 200
+        repo = client.app.state.repo
+        moment = datetime.now(timezone.utc).replace(microsecond=0)
+        incident = repo.register_incident_start(
+            "vm-test", name="Alarm", kind="alert", created_at=moment, camera_ids=["cam1"]
+        )
+        episode = incident["episodes"][0]
+        folder = tmp_path / "data" / "video" / "incidents" / incident["id"] / "cam1"
+        folder.mkdir(parents=True)
+        first = folder / "part-a.mkv"
+        second = folder / "part-b.mkv"
+        first.write_bytes(b"aaa")
+        second.write_bytes(b"bbb")
+        response = client.post(
+            "/api/v1/internal/video/episodes",
+            headers={"X-Video-Token": "video-secret"},
+            json={"items": [{
+                "id": episode["id"],
+                "state": "finished",
+                "path": str(first),
+                "paths": [str(first), str(second)],
+                "started_at": moment.isoformat(),
+                "ended_at": moment.isoformat(),
+            }]},
+        )
+        assert response.status_code == 200
+        stored = repo.get_incident(incident["id"])
+        assert stored is not None and stored["state"] == "closed"
+        assert stored["episodes"][0]["paths"] == [str(folder / "cam1.mp4")]
+        assert (folder / "cam1.mp4").read_bytes() == b"one-video"
+        assert not first.exists() and not second.exists()
+        assert len(calls) == 1
+        play = client.get(f"/api/v1/video/incidents/{incident['id']}/videos/{episode['id']}/0")
+        assert play.status_code == 200
+        assert play.content == b"one-video"
+        archive = client.get(f"/api/v1/video/incidents/{incident['id']}/export")
+        assert archive.status_code == 200
+        with zipfile.ZipFile(io.BytesIO(archive.content)) as bundle:
+            assert bundle.read("videos/cam1.mp4") == b"one-video"
+        assert len(calls) == 1
+        segments = repo.list_video_segments(
+            date_from=(moment - timedelta(seconds=30)).isoformat(),
+            date_to=(moment + timedelta(seconds=30)).isoformat(),
+            camera_ids=["cam1"],
+        )
+        assert [row["path"] for row in segments] == [str(folder / "cam1.mp4")]
+
+
 def test_supervisor_stops_incident_episode_at_stop_at(tmp_path: Path):
     started: list[_Proc] = []
 
@@ -648,7 +710,7 @@ def test_motion_analysis_reports_an_edge_and_copies_buffer_segments(tmp_path: Pa
     ram = tmp_path / "ram"
     archive = tmp_path / "archive"
     supervisor = Supervisor(tmp_path, spawn=spawn, spawn_raw=spawn, buffer_root=ram)
-    camera = _camera(motion=True, motion_gap_sec=10, motion_min_frames=2)
+    camera = _camera(motion=True, motion_gap_sec=10, motion_min_frames=2, segment_sec=5)
     config = VideoConfig(cameras=[camera])
     first = supervisor.tick(config, [], [], output_root=archive)
     analyze = next(proc for proc in started if "rawvideo" in proc.argv)
@@ -667,7 +729,7 @@ def test_motion_analysis_reports_an_edge_and_copies_buffer_segments(tmp_path: Pa
 
     segment = ram / "cam1" / "20260930_100000.mkv"
     segment.write_bytes(b"motion-segment")
-    closed_at = time.time() - 4
+    closed_at = time.time() - 6
     os.utime(segment, (closed_at, closed_at))
     moment = datetime.now(timezone.utc)
     result = supervisor.tick(
@@ -750,13 +812,13 @@ def test_supervisor_keeps_one_copy_when_motion_and_incident_overlap(tmp_path: Pa
     ram = tmp_path / "ram"
     archive = tmp_path / "archive"
     supervisor = Supervisor(tmp_path, spawn=spawn, spawn_raw=spawn, buffer_root=ram)
-    camera = _camera(motion=True)
-    config = VideoConfig(cameras=[camera], incident_pre_sec=30, incident_segment_sec=2)
+    camera = _camera(motion=True, segment_sec=5)
+    config = VideoConfig(cameras=[camera], incident_pre_sec=30)
     supervisor.tick(config, [], [], output_root=archive)
     segment = ram / "cam1" / "clip.mkv"
     segment.parent.mkdir(parents=True, exist_ok=True)
     segment.write_bytes(b"same-seconds")
-    closed_at = time.time() - 4
+    closed_at = time.time() - 6
     os.utime(segment, (closed_at, closed_at))
     moment = datetime.now(timezone.utc)
     capture = (moment - timedelta(seconds=20)).isoformat()

@@ -2681,6 +2681,33 @@ html.bb-header-closed .bb-header-inner {
   color: var(--bb-slate);
   font-size: 0.82rem;
 }
+.bb-file-dialog {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: grid;
+  place-items: center;
+  padding: 1.25rem;
+  background: rgba(45, 53, 64, 0.42);
+}
+.bb-file-dialog[hidden] { display: none; }
+.bb-file-card {
+  display: grid;
+  gap: 1rem;
+  width: min(100%, 32rem);
+  padding: 1.15rem 1.25rem;
+  border: 1px solid var(--bb-border);
+  border-radius: var(--bb-radius);
+  background: var(--bb-surface);
+  box-shadow: var(--bb-shadow);
+}
+.bb-file-head { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 0.75rem; align-items: center; }
+.bb-file-head h2 { margin: 0; overflow-wrap: anywhere; font-size: 1.15rem; }
+.bb-file-head p { margin: 0.15rem 0 0; overflow-wrap: anywhere; font-size: 0.82rem; }
+.bb-file-facts { display: grid; gap: 0.55rem; margin: 0; }
+.bb-file-facts div { display: grid; grid-template-columns: 6.5rem minmax(0, 1fr); gap: 0.75rem; padding-top: 0.55rem; border-top: 1px solid var(--bb-border); }
+.bb-file-facts dt { color: var(--bb-slate); }
+.bb-file-facts dd { margin: 0; overflow-wrap: anywhere; font-weight: 650; }
 @media (max-width: 800px) {
   .bb-explorer-body { grid-template-columns: 1fr; }
   .bb-explorer-side { max-height: 14rem; border-right: 0; border-bottom: 1px solid var(--bb-border); }

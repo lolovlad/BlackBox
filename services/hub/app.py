@@ -35,7 +35,7 @@ from services.video.retention import measure_video_storage, purge_motion_over_qu
 from services.video.settings import CameraSettings, VideoConfig, config_estimates
 from .recordings import RecordingError, annotate_entries, crumbs, incident_folder_label, list_recordings, media_type_for, recording_file
 from .emergency_rules import validate_rule_expression
-from .exports import ExportError, merge_camera_segments
+from .exports import ExportError, approved_file, merge_camera_segments
 
 from workers.gpio.pins import pins_from_fields
 
@@ -2420,10 +2420,77 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
             await bus.publish_log(f"camera:{item['camera_id']}", item["line"], level=item["level"])
         return {"ok": True, "count": len(items)}
 
+    def _consolidate_incident(incident_id: str) -> None:
+        """Merge each camera's incident chunks into one file after the incident closes."""
+        incident = repo.get_incident(incident_id)
+        if incident is None or incident.get("state") != "closed":
+            return
+        roots = _video_roots()
+        grouped: dict[str, list[str]] = {}
+        for episode in incident.get("episodes") or []:
+            camera_id = str(episode.get("camera_id") or "")
+            if not camera_id:
+                continue
+            raw_paths = episode.get("paths") or ([episode.get("path")] if episode.get("path") else [])
+            bucket = grouped.setdefault(camera_id, [])
+            for raw in raw_paths:
+                text = str(raw or "").strip()
+                if text and text not in bucket:
+                    bucket.append(text)
+        for camera_id, paths in grouped.items():
+            files = [path for path in paths if Path(path).is_file()]
+            if not files:
+                continue
+            output = Path(files[0]).parent / f"{camera_id}.mp4"
+            if len(files) == 1 and Path(files[0]).resolve() == output.resolve():
+                continue
+            sources = [path for path in files if Path(path).resolve() != output.resolve()]
+            if not sources:
+                continue
+            staging = output.with_name(f".{camera_id}.merging.mp4")
+            try:
+                result = merge_camera_segments(sources, staging, roots=roots)
+            except ExportError as exc:
+                staging.unlink(missing_ok=True)
+                repo.append_camera_logs([{
+                    "camera_id": camera_id,
+                    "level": "error",
+                    "source": "hub",
+                    "line": f"Не удалось собрать запись инцидента: {exc}",
+                }])
+                continue
+            if result.get("state") != "included" or not staging.is_file():
+                staging.unlink(missing_ok=True)
+                continue
+            try:
+                staging.replace(output)
+            except OSError as exc:
+                staging.unlink(missing_ok=True)
+                repo.append_camera_logs([{
+                    "camera_id": camera_id,
+                    "level": "error",
+                    "source": "hub",
+                    "line": f"Не удалось собрать запись инцидента: {exc}",
+                }])
+                continue
+            repo.replace_incident_camera_file(incident_id, camera_id, str(output))
+            for raw in sources:
+                path = Path(raw)
+                if path.resolve() != output.resolve():
+                    path.unlink(missing_ok=True)
+            repo.append_camera_logs([{
+                "camera_id": camera_id,
+                "level": "info",
+                "source": "hub",
+                "line": "Запись инцидента собрана в один файл",
+            }])
+
     @app.post("/api/v1/internal/video/episodes")
     async def video_episode_events(payload: EpisodeEventBody, request: Request):
         _video_auth(request)
-        changed = repo.apply_episode_events([item.model_dump() for item in payload.items])
+        changed, closed_ids = repo.apply_episode_events([item.model_dump() for item in payload.items])
+        if closed_ids:
+            await asyncio.to_thread(lambda: [_consolidate_incident(incident_id) for incident_id in closed_ids])
         for row in changed:
             if row["state"] not in {"finished", "error"}:
                 continue
@@ -3078,6 +3145,23 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
                 )
             with tempfile.TemporaryDirectory(prefix="blackbox_incident_") as temp:
                 for camera_id, paths in by_camera.items():
+                    stored: list[Path] = []
+                    for raw in paths:
+                        approved = approved_file(raw, roots)
+                        if approved is not None and approved not in stored:
+                            stored.append(approved)
+                    if len(stored) == 1 and stored[0].name == f"{camera_id}.mp4":
+                        archive.write(stored[0], f"videos/{camera_id}.mp4", compress_type=zipfile.ZIP_STORED)
+                        video_manifest.append({
+                            "state": "included",
+                            "path": str(stored[0]),
+                            "mode": "stored",
+                            "segments": [str(stored[0])],
+                            "omitted": [],
+                            "gaps": [],
+                            "camera_id": camera_id,
+                        })
+                        continue
                     merged = Path(temp) / f"{camera_id}.mp4"
                     try:
                         result = merge_camera_segments(paths, merged, roots=roots, range_start=start, range_end=end)

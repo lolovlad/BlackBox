@@ -8,6 +8,11 @@
   const upButton = document.getElementById('bb-explorer-up');
   const refreshButton = document.getElementById('bb-explorer-refresh');
   const downloadButton = document.getElementById('bb-explorer-download');
+  const fileDialog = document.getElementById('bb-explorer-file');
+  const fileTitle = document.getElementById('bb-file-title');
+  const fileName = document.getElementById('bb-file-name');
+  const fileFacts = document.getElementById('bb-file-facts');
+  const fileDownload = document.getElementById('bb-file-download');
   if (!root || !rows || !treeBox || !crumbsBox || !statusBox) return;
 
   let history = [''];
@@ -176,6 +181,7 @@
       crumbItems = data.crumbs && data.crumbs.length ? data.crumbs : [{ label: 'Записи', path: '' }];
       entries = data.entries || [];
       selected = '';
+      hideFile();
       rememberFolders(current, entries);
       if (record && history[cursor] !== current) {
         history = history.slice(0, cursor + 1);
@@ -190,13 +196,42 @@
     }
   }
 
-  function download(path) {
-    const link = document.createElement('a');
-    link.href = '/api/v1/video/files/download?path=' + encodeURIComponent(path);
-    link.setAttribute('download', '');
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
+  function hideFile() {
+    if (fileDialog) fileDialog.hidden = true;
+  }
+
+  function showFile(entry) {
+    if (!fileDialog || !entry || entry.kind !== 'file') return;
+    selected = entry.path;
+    fileTitle.textContent = entry.label || entry.name;
+    const hasAlias = entry.label && entry.label !== entry.name;
+    fileName.hidden = !hasAlias;
+    fileName.textContent = hasAlias ? entry.name : '';
+    const facts = [
+      ['Тип', typeName(entry)],
+      ['Размер', formatSize(entry.size) || '—'],
+      ['Изменён', when(entry.modified) || '—'],
+      ['Путь', entry.path],
+    ];
+    fileFacts.innerHTML = facts.map(function (fact) {
+      return '<div><dt>' + esc(fact[0]) + '</dt><dd>' + esc(fact[1]) + '</dd></div>';
+    }).join('');
+    fileDownload.href = '/api/v1/video/files/download?path=' + encodeURIComponent(entry.path);
+    fileDownload.setAttribute('download', entry.name || '');
+    fileDialog.hidden = false;
+    renderRows();
+    renderStatus();
+    renderChrome();
+  }
+
+  function activate(entry) {
+    if (!entry) return;
+    if (entry.kind === 'dir') {
+      hideFile();
+      open(entry.path, true);
+      return;
+    }
+    showFile(entry);
   }
 
   backButton.addEventListener('click', function () {
@@ -219,7 +254,13 @@
   });
   downloadButton.addEventListener('click', function () {
     const chosen = selectedEntry();
-    if (chosen && chosen.kind === 'file') download(chosen.path);
+    if (chosen && chosen.kind === 'file') showFile(chosen);
+  });
+  fileDialog?.addEventListener('click', function (event) {
+    if (event.target === fileDialog || event.target.closest('[data-file-close]')) hideFile();
+  });
+  document.addEventListener('keydown', function (event) {
+    if (event.key === 'Escape' && fileDialog && !fileDialog.hidden) hideFile();
   });
   root.addEventListener('click', function (event) {
     const sort = event.target.closest('[data-sort]');
@@ -263,17 +304,7 @@
   rows.addEventListener('click', function (event) {
     const row = event.target.closest('tr[data-path]');
     if (!row) return;
-    selected = row.getAttribute('data-path') || '';
-    renderRows();
-    renderStatus();
-    renderChrome();
-  });
-  rows.addEventListener('dblclick', function (event) {
-    const row = event.target.closest('tr[data-path]');
-    if (!row) return;
-    const path = row.getAttribute('data-path') || '';
-    if (row.getAttribute('data-kind') === 'dir') open(path, true);
-    else download(path);
+    activate(entries.find(function (entry) { return entry.path === row.getAttribute('data-path'); }));
   });
 
   open('', false);

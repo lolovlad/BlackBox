@@ -1449,8 +1449,9 @@ class HubRepository:
             rows = c.execute("SELECT * FROM video_episodes ORDER BY created_at DESC LIMIT ?", (cap,)).fetchall()
         return [_episode_dict(row) for row in rows]
 
-    def apply_episode_events(self, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def apply_episode_events(self, items: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[str]]:
         changed: list[dict[str, Any]] = []
+        closed_incidents: list[str] = []
         with self.connect() as c:
             for item in items:
                 episode_id = str(item.get("id") or "").strip()
@@ -1481,8 +1482,9 @@ class HubRepository:
                     changed.append(_episode_dict(updated))
                     incident_id = str(updated["incident_id"] or "") if "incident_id" in updated.keys() else ""
                     if incident_id and state in {"finished", "error"}:
-                        self._finish_incident_if_complete(c, incident_id, ended or datetime.now(timezone.utc).isoformat())
-        return changed
+                        if self._finish_incident_if_complete(c, incident_id, ended or datetime.now(timezone.utc).isoformat()):
+                            closed_incidents.append(incident_id)
+        return changed, closed_incidents
 
     @staticmethod
     def _upsert_episode_segments(c: sqlite3.Connection, episode: sqlite3.Row, item: dict[str, Any]) -> None:
@@ -1854,13 +1856,53 @@ class HubRepository:
         return [incident for incident_id in ids if (incident := self.get_incident(incident_id)) is not None]
 
     @staticmethod
-    def _finish_incident_if_complete(c: sqlite3.Connection, incident_id: str, ended_at: str) -> None:
+    def _finish_incident_if_complete(c: sqlite3.Connection, incident_id: str, ended_at: str) -> bool:
         row = c.execute("SELECT state FROM video_incidents WHERE id=?", (incident_id,)).fetchone()
         if row is None or row["state"] == "closed":
-            return
+            return False
         active = c.execute("SELECT 1 FROM video_episodes WHERE incident_id=? AND state IN ('queued','recording','stopping') LIMIT 1", (incident_id,)).fetchone()
-        if active is None:
-            c.execute("UPDATE video_incidents SET state='closed', ended_at=?, stop_at=NULL WHERE id=?", (ended_at, incident_id))
+        if active is not None:
+            return False
+        c.execute("UPDATE video_incidents SET state='closed', ended_at=?, stop_at=NULL WHERE id=?", (ended_at, incident_id))
+        return True
+
+    def replace_incident_camera_file(self, incident_id: str, camera_id: str, merged_path: str) -> None:
+        """Point the incident camera at one merged file and drop the chunk catalog."""
+        with self.connect() as c:
+            episodes = c.execute(
+                "SELECT id, started_at, ended_at, capture_from FROM video_episodes WHERE incident_id=? AND camera_id=? ORDER BY created_at",
+                (incident_id, camera_id),
+            ).fetchall()
+            if not episodes:
+                return
+            ids = [str(row["id"]) for row in episodes]
+            placeholders = ",".join("?" for _ in ids)
+            spans = c.execute(
+                f"SELECT MIN(started_at) AS started_at, MAX(ended_at) AS ended_at FROM video_episode_segments WHERE episode_id IN ({placeholders})",
+                ids,
+            ).fetchone()
+            c.execute(f"DELETE FROM video_episode_segments WHERE episode_id IN ({placeholders})", ids)
+            primary = ids[0]
+            try:
+                size = Path(merged_path).stat().st_size
+            except OSError:
+                size = 0
+            started = (spans["started_at"] if spans is not None else None) or episodes[0]["capture_from"] or episodes[0]["started_at"]
+            ended = (spans["ended_at"] if spans is not None else None) or episodes[0]["ended_at"]
+            now = datetime.now(timezone.utc).isoformat()
+            c.execute(
+                "UPDATE video_episodes SET path=?, paths_json=? WHERE id=?",
+                (merged_path, json.dumps([merged_path]), primary),
+            )
+            for extra in ids[1:]:
+                c.execute("UPDATE video_episodes SET path='', paths_json='[]' WHERE id=?", (extra,))
+            c.execute(
+                """
+                INSERT INTO video_episode_segments(episode_id,camera_id,path,started_at,ended_at,size_bytes,state,created_at)
+                VALUES(?,?,?,?,?,?,?,?)
+                """,
+                (primary, camera_id, merged_path, started, ended, size, "ready", now),
+            )
 
 
     def list_resource_leases(self) -> dict[str, str]:

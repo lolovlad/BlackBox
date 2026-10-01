@@ -264,10 +264,10 @@ class Supervisor:
             for camera in config.cameras
             if camera.enabled and camera.url and camera.id not in suspended
         }
-        segment_sec = config.incident_segment_sec
         for camera_id in list(self.buffers):
             slot = self.buffers[camera_id]
             camera = wanted.get(camera_id)
+            segment_sec = _segment_seconds(camera) if camera is not None else 0
             signature = f"{_preview_signature(camera)}|segment:{segment_sec}" if camera is not None else ""
             if camera is None or signature != slot["signature"] or not _running(slot["proc"]):
                 self._drain_slot(slot)
@@ -276,6 +276,7 @@ class Supervisor:
         for camera_id, camera in wanted.items():
             if camera_id in self.buffers:
                 continue
+            segment_sec = _segment_seconds(camera)
             directory = self.buffer_root / camera_id
             pattern = directory / "%Y%m%d_%H%M%S.mkv"
             argv = build_buffer_argv(camera, pattern, segment_sec)
@@ -307,7 +308,6 @@ class Supervisor:
     ) -> None:
         cameras = {camera.id: camera for camera in config.cameras}
         now = datetime.now(timezone.utc).timestamp()
-        segment_sec = max(1, config.incident_segment_sec)
         active_ids: set[str] = set()
         incident_cameras = {
             str(item.get("camera_id") or "")
@@ -337,6 +337,10 @@ class Supervisor:
                     self._close(episode_id, event)
                     events.append(event)
                 continue
+            segment_sec = _segment_seconds(camera)
+            known_buffer = self.buffers.get(camera_id)
+            if known_buffer is not None:
+                segment_sec = max(1, int(known_buffer.get("segment_sec") or segment_sec))
             incident_id = str(item.get("incident_id") or "")
             # Save the motion clip that already exists, then record only the
             # incident. Do not copy any further motion segments.
@@ -454,8 +458,9 @@ class Supervisor:
             if episode_id not in active_ids:
                 self.incident_episodes.pop(episode_id, None)
 
-        retention = max(10, config.incident_pre_sec + segment_sec * 2 + 5)
         for buffer in self.buffers.values():
+            segment_sec = max(1, int(buffer.get("segment_sec") or 60))
+            retention = max(10, config.incident_pre_sec + segment_sec * 2 + 5)
             directory = Path(buffer["directory"])
             for segment in directory.glob("*.mkv"):
                 try:
@@ -750,6 +755,10 @@ def _watch(proc: Any) -> list[str]:
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _segment_seconds(camera: CameraSettings) -> int:
+    return max(1, int(camera.segment_sec))
 
 
 def _segment_metadata(paths: list[str], duration_sec: int) -> list[dict[str, Any]]:

@@ -192,7 +192,7 @@
                 <option value="mkv">mkv</option>
               </select>
               {% endcall %}
-              {% call field('Длительность, с', 'Столько пишется эпизод, затем ffmpeg закрывает файл и сервис отдаёт событие.', 'bi-clock') %}
+              {% call field('Длительность, с', 'Длина одного куска кольцевого буфера и ручной записи. После закрытия инцидента куски камеры склеиваются в один файл.', 'bi-clock') %}
               <input data-field="segment_sec" type="number" min="5" max="3600" required>
               {% endcall %}
             </div>

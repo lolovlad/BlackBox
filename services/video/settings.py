@@ -93,6 +93,7 @@ class VideoConfig(BaseModel):
     video_subdir: str = "video"
     incident_pre_sec: int = Field(default=10, ge=0, le=3600)
     incident_post_sec: int = Field(default=15, ge=0, le=3600)
+    # Older documents still carry this value. The ring buffer cuts on CameraSettings.segment_sec.
     incident_segment_sec: int = Field(default=2, ge=1, le=30)
     motion_quota_gb: int = Field(default=20, ge=0, le=100000)
     cameras: list[CameraSettings] = Field(default_factory=list, max_length=16)
@@ -248,8 +249,9 @@ def build_episode_argv(camera: CameraSettings, output_file: Path, duration_sec: 
     return argv
 
 
-def build_buffer_argv(camera: CameraSettings, output_pattern: Path, segment_sec: int = 2) -> list[str]:
+def build_buffer_argv(camera: CameraSettings, output_pattern: Path, segment_sec: int | None = None) -> list[str]:
     """Continuously save independently readable Matroska transport segments."""
+    duration = camera.segment_sec if segment_sec is None else segment_sec
     argv = _input_argv(camera)
     argv[argv.index("-loglevel") + 1] = "warning"
     argv.insert(1, "-nostats")
@@ -264,7 +266,7 @@ def build_buffer_argv(camera: CameraSettings, output_pattern: Path, segment_sec:
             "-f",
             "segment",
             "-segment_time",
-            str(max(1, int(segment_sec))),
+            str(max(1, int(duration))),
             "-reset_timestamps",
             "1",
             "-strftime",
