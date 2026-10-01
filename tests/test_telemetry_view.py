@@ -254,6 +254,10 @@ def test_values_charts_and_alarm_journal_for_many_sources(tmp_path: Path) -> Non
         assert 'data-resource-pager="storage"' in resources_page
         assert "resources.js" in resources_page
         assert {row["class_label"] for row in alarms["rows"]} == {"Авария"}
+        all_alarms = client.get("/api/v1/telemetry/rows", params={"tab": "alarms"}).json()
+        assert all_alarms["total_rows"] == 4
+        assert {row["vm_name"] for row in all_alarms["rows"]} == {"gen-1", "gen-2"}
+        assert client.get("/api/v1/telemetry/rows", params={"tab": "alarms", "scope": "open"}).json()["total_rows"] == 0
 
         analogs = client.get("/api/v1/telemetry/rows", params=[("tab", "analog"), ("vm_id", vm_ids[0]), ("column", "RPM")]).json()
         assert analogs["columns"][0]["label"] == "Обороты"
@@ -273,13 +277,21 @@ def test_values_charts_and_alarm_journal_for_many_sources(tmp_path: Path) -> Non
         assert any(column.endswith("|RPM") for column in series["columns"])
         assert "gen-1 · Обороты" in series["column_labels"].values()
 
+        _ingest(client, vm_ids[0], seq=4, when="2026-09-21T14:39:00Z", rpm=900, alarm_bit=1, running=1)
+        opened = client.get("/api/v1/telemetry/rows", params={"tab": "alarms", "scope": "open"}).json()
+        assert opened["total_rows"] == 1
+        assert opened["rows"][0]["vm_name"] == "gen-1"
+        assert opened["rows"][0]["state"] == "active"
+        assert opened["rows"][0]["name"] == "BUS High Volt"
+
         dashboard = client.get("/dashboard").text
         assert "Главная панель" in dashboard
         assert "Плата Hub" in dashboard
         assert "SYSTEM ON CHIP" in dashboard
         assert "gen-1" in dashboard and "gen-2" in dashboard
         data_page = client.get("/data").text
-        assert "Аналоги" in data_page and "Аварии" in data_page and "gen-1" in data_page
+        assert "Аналоги" in data_page and "Алерты" in data_page and "gen-1" in data_page
+        assert "Все машины" in data_page
         assert 'id="bb-data-form"' in data_page
         assert data_page.find('id="bb-data-form"') < data_page.find('name="vm_id"')
         assert data_page.find('bb-vm-tabs') < data_page.find('id="bb-data-table"')
@@ -348,3 +360,21 @@ def _ingest(client: TestClient, vm_id: str, *, seq: int, when: str, rpm: int, al
     )
     response = client.post("/api/v1/internal/workers/batches", json=batch.model_dump(mode="json"), headers={"X-Worker-Token": token})
     assert response.status_code == 200, response.text
+
+
+def test_excel_csv_uses_comma_decimal_and_keeps_dates() -> None:
+    from services.hub.telemetry import excel_csv_value, rows_as_csv
+
+    assert excel_csv_value(12.34) == "12,34"
+    assert excel_csv_value(1500) == "1500"
+    assert excel_csv_value(True) == "1"
+    assert excel_csv_value("12.500000") == "12,500000"
+    assert excel_csv_value("01.10.2026 10:41:03") == "01.10.2026 10:41:03"
+    assert excel_csv_value("2026-10-01T08:39:12.573991+00:00") == "2026-10-01T08:39:12.573991+00:00"
+    csv_text = rows_as_csv({
+        "tab": "analog",
+        "columns": [{"label": "Ugen"}],
+        "rows": [{"time": "01.10.2026 10:41:03", "vm_name": "test TCP", "cells": ["400.125", ""]}],
+    })
+    assert csv_text.splitlines()[1] == "01.10.2026 10:41:03;test TCP;400,125;"
+

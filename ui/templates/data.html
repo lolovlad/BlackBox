@@ -6,8 +6,9 @@
   <h1 class="bb-page-title">Данные</h1>
   <form id="bb-data-form" onsubmit="return false;" inert>
     <div class="bb-tabs bb-vm-tabs" role="tablist" aria-label="Машины">
+      <label class="bb-tab"><input type="radio" name="vm_id" value="" checked> Все машины</label>
       {% for vm in vms %}
-      <label class="bb-tab"><input type="radio" name="vm_id" value="{{ vm.id }}" {% if loop.first %}checked{% endif %}> {{ vm.name }}</label>
+      <label class="bb-tab"><input type="radio" name="vm_id" value="{{ vm.id }}"> {{ vm.name }}</label>
       {% else %}
       <p class="bb-hint">Виртуальных машин пока нет.</p>
       {% endfor %}
@@ -29,9 +30,12 @@
     <div class="bb-tabs" role="tablist" aria-label="Вид таблицы">
       <label class="bb-tab"><input type="radio" name="active_tab" value="analog" checked> Аналоги</label>
       <label class="bb-tab"><input type="radio" name="active_tab" value="discrete"> Дискреты</label>
-      <label class="bb-tab"><input type="radio" name="active_tab" value="alarms"> Аварии</label>
+      <label class="bb-tab"><input type="radio" name="active_tab" value="alarms"> Алерты</label>
+      <label class="bb-tab"><input type="radio" name="active_tab" value="gpio"> GPIO</label>
     </div>
-    <p class="bb-hint" data-tab-hint="alarms" hidden>Сначала строка «Активна», когда сигнал снят — строка «Снята». Повтор того же состояния новую строку не создаёт.</p>
+    <p class="bb-hint" data-tab-hint="alarms" hidden>Единый журнал по всем выбранным машинам. «Алерт» — бит без kind=alert, «Авария» открывает инцидент. Сначала «Активна», затем «Снята».</p>
+    <p class="bb-hint" data-tab-hint="gpio" hidden>Открытые и снятые GPIO-сигналы по выбранным машинам.</p>
+    <div id="bb-data-open" class="bb-open-alerts" hidden></div>
     <div class="bb-row-actions">
       <div id="bb-data-fields"></div>
       <button type="button" class="bb-btn" id="bb-data-refresh">Обновить таблицу</button>
@@ -65,5 +69,5 @@
     </div>
   </div>
 </section>
-<script defer src="/static/data.js?v={{ app_version }}-ui2"></script>
+<script defer src="/static/data.js?v={{ app_version }}-ui3"></script>
 {% endblock %}

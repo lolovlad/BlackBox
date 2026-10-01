@@ -5,7 +5,9 @@ from __future__ import annotations
 import csv
 import io
 import json
+import re
 from datetime import datetime, time, timezone
+from numbers import Integral, Real
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -91,6 +93,9 @@ def format_timestamp(value: datetime) -> str:
     return moment.astimezone().strftime("%d.%m.%Y %H:%M:%S")
 
 
+_DOT_DECIMAL = re.compile(r"^-?\d+\.\d+$")
+
+
 def format_cell(value: Any) -> str:
     if value is None or value == "":
         return ""
@@ -100,6 +105,31 @@ def format_cell(value: Any) -> str:
         text = f"{value:.6f}".rstrip("0").rstrip(".")
         return text or "0"
     return str(value)
+
+
+def excel_csv_value(value: Any) -> str:
+    """Format a cell for RU Excel: semicolon CSV, comma as decimal mark.
+
+    Dates, UUIDs and other text stay unchanged so ``01.10.2026`` and ISO
+    timestamps are not treated as numbers.
+    """
+    if value is None or value == "":
+        return ""
+    if isinstance(value, bool):
+        return "1" if value else "0"
+    if isinstance(value, Integral):
+        return str(int(value))
+    if isinstance(value, Real):
+        number = float(value)
+        if number != number or number in {float("inf"), float("-inf")}:
+            return ""
+        text = f"{number:.6f}".rstrip("0").rstrip(".")
+        return (text or "0").replace(".", ",")
+    text = str(value)
+    stripped = text.strip()
+    if _DOT_DECIMAL.match(stripped):
+        return stripped.replace(".", ",")
+    return text
 
 
 def query_measurements(
@@ -294,9 +324,9 @@ def rows_as_csv(payload: dict[str, Any]) -> str:
                 values.append(row.get("bcm_pin", ""))
             else:
                 values.append(row.get("class_label", "Алерт"))
-            writer.writerow([*values, row.get("name", ""), row.get("state_label", "")])
+            writer.writerow([excel_csv_value(item) for item in [*values, row.get("name", ""), row.get("state_label", "")]])
         else:
-            writer.writerow([row.get("time", ""), row.get("vm_name", ""), *row.get("cells", [])])
+            writer.writerow([excel_csv_value(item) for item in [row.get("time", ""), row.get("vm_name", ""), *row.get("cells", [])]])
     return buffer.getvalue()
 
 

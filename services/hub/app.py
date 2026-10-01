@@ -64,7 +64,7 @@ from .security import (
 )
 from .state import EventBus
 from .storage import ParquetStore, StorageUnavailable, purge_vm_directories
-from .telemetry import CHART_POINT_CAP, LIST_PAGE_SIZE, PAGE_SIZE, READ_ROW_CAP, chart_payload, collect_roots, column_defs, describe_sources, format_timestamp, page_table, parse_bound, query_measurements, query_window, rows_as_csv
+from .telemetry import CHART_POINT_CAP, LIST_PAGE_SIZE, PAGE_SIZE, READ_ROW_CAP, chart_payload, collect_roots, column_defs, describe_sources, excel_csv_value, format_timestamp, page_table, parse_bound, query_measurements, query_window, rows_as_csv
 from .vm_config import normalize_runtime_config
 
 logger = logging.getLogger("blackbox.hub")
@@ -2888,6 +2888,7 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
         sort: str = "desc",
         page: int = Query(default=1, ge=1),
         column: list[str] | None = Query(default=None),
+        scope: str = Query(default="history"),
     ):
         current_user(request, repo, cfg)
         active = tab if tab in {"analog", "discrete", "alarms", "gpio"} else "analog"
@@ -2896,18 +2897,20 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
         end = parse_bound(date_to, end_of_day=True)
         names = {str(vm["id"]): str(vm["name"]) for vm in repo.list_vms()}
         if active in {"alarms", "gpio"}:
+            listing = repo.list_active_alarms if scope == "open" else repo.list_alarm_events
+            open_limit = 1_000 if scope == "open" else PAGE_SIZE
             events, total = await asyncio.to_thread(
-                repo.list_alarm_events,
+                listing,
                 selected,
                 kind="gpio" if active == "gpio" else "alert",
                 date_from=start.isoformat() if start else None,
                 date_to=end.isoformat() if end else None,
                 sort_desc=sort != "asc",
-                offset=(page - 1) * PAGE_SIZE,
-                limit=PAGE_SIZE,
+                offset=0 if scope == "open" else (page - 1) * PAGE_SIZE,
+                limit=open_limit,
             )
-            total_pages = max(1, (total + PAGE_SIZE - 1) // PAGE_SIZE) if total else 1
-            page_eff = min(page, total_pages)
+            total_pages = 1 if scope == "open" else (max(1, (total + PAGE_SIZE - 1) // PAGE_SIZE) if total else 1)
+            page_eff = 1 if scope == "open" else min(page, total_pages)
             gpio_bcm = {}
             if active == "gpio":
                 for vm in repo.list_vms():
@@ -2944,7 +2947,7 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
                 "page": page_eff,
                 "total_pages": total_pages,
                 "total_rows": total,
-                "page_size": PAGE_SIZE,
+                "page_size": open_limit if scope == "open" else PAGE_SIZE,
                 "truncated": False,
             }
         sources = await asyncio.to_thread(_sources, set(selected))
@@ -3137,7 +3140,7 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
         buffer = io.StringIO(newline="")
         writer = csv.writer(buffer, delimiter=";")
         writer.writerow(headers)
-        writer.writerows(rows)
+        writer.writerows([[excel_csv_value(cell) for cell in row] for row in rows])
         return ("\ufeff" + buffer.getvalue()).encode("utf-8")
 
     def _incident_export(incident_id: str) -> Path:

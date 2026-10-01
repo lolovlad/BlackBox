@@ -42,9 +42,9 @@
   }
 
   const savedVm = localStorage.getItem('bb-data-vm');
-  if (savedVm) setRadio('vm_id', savedVm);
+  if (savedVm !== null) setRadio('vm_id', savedVm);
   const savedTab = localStorage.getItem('bb-data-tab');
-  if (savedTab === 'analog' || savedTab === 'discrete' || savedTab === 'alarms') {
+  if (savedTab === 'analog' || savedTab === 'discrete' || savedTab === 'alarms' || savedTab === 'gpio') {
     setRadio('active_tab', savedTab);
   }
 
@@ -124,10 +124,12 @@
   function fields() {
     const active = tab();
     const id = vmId();
-    const source = catalog.find(function (item) { return item.id === id; }) || catalog[0];
+    const sources = id ? catalog.filter(function (item) { return item.id === id; }) : catalog;
     const seen = new Map();
-    ((source && source[active]) || []).forEach(function (field) {
-      if (field && field.key && !seen.has(field.key)) seen.set(field.key, field.label || field.key);
+    sources.forEach(function (source) {
+      ((source && source[active]) || []).forEach(function (field) {
+        if (field && field.key && !seen.has(field.key)) seen.set(field.key, field.label || field.key);
+      });
     });
     return Array.from(seen.entries());
   }
@@ -158,17 +160,52 @@
       }).join('') + '</div></div>';
   }
 
+  function renderOpen(payload) {
+    const host = document.getElementById('bb-data-open');
+    if (!host) return;
+    const journal = payload && (payload.tab === 'alarms' || payload.tab === 'gpio');
+    if (!journal) {
+      host.hidden = true;
+      host.innerHTML = '';
+      return;
+    }
+    const rows = payload.rows || [];
+    const byVm = {};
+    rows.forEach(function (row) {
+      const key = row.vm_name || row.vm_id || '';
+      byVm[key] = byVm[key] || [];
+      byVm[key].push(row);
+    });
+    const groups = Object.keys(byVm).sort();
+    host.hidden = false;
+    if (!rows.length) {
+      host.innerHTML = '<p class="bb-hint">Сейчас открытых сигналов нет.</p>';
+      return;
+    }
+    host.innerHTML = '<p class="bb-hint">Открыто сейчас: ' + esc(rows.length) + '</p>' + groups.map(function (name) {
+      const items = byVm[name];
+      return '<div class="bb-open-group"><strong>' + esc(name) + '</strong> · ' + esc(items.length) + '<ul>' + items.map(function (row) {
+        const extra = payload.tab === 'gpio' && row.bcm_pin !== '' && row.bcm_pin != null ? 'BCM ' + row.bcm_pin + ' · ' : '';
+        return '<li>' + esc(extra) + esc(row.name) + ' · ' + esc(row.class_label || '') + '</li>';
+      }).join('') + '</ul></div>';
+    }).join('');
+  }
+
   function renderTable(payload) {
     const rows = payload.rows || [];
-    const journal = payload.tab === 'alarms';
+    const journal = payload.tab === 'alarms' || payload.tab === 'gpio';
+    const gpio = payload.tab === 'gpio';
     const head = journal
-      ? '<th>Время</th><th>Тип</th><th>Название</th><th>Состояние</th>'
-      : '<th>Время</th>' + (payload.columns || []).map(function (column) { return '<th>' + esc(column.label) + '</th>'; }).join('');
+      ? (gpio
+        ? '<th>Время</th><th>ВМ</th><th>BCM</th><th>Название</th><th>Состояние</th>'
+        : '<th>Время</th><th>ВМ</th><th>Тип</th><th>Название</th><th>Состояние</th>')
+      : '<th>Время</th><th>ВМ</th>' + (payload.columns || []).map(function (column) { return '<th>' + esc(column.label) + '</th>'; }).join('');
     const body = rows.map(function (row) {
-      if (journal) return '<tr><td>' + esc(row.time) + '</td><td>' + esc(row.class_label || 'Алерт') + '</td><td>' + esc(row.name) + '</td><td>' + esc(row.state_label) + '</td></tr>';
-      return '<tr><td>' + esc(row.time) + '</td>' + (row.cells || []).map(function (cell) { return '<td>' + esc(cell) + '</td>'; }).join('') + '</tr>';
+      if (gpio) return '<tr><td>' + esc(row.time) + '</td><td>' + esc(row.vm_name) + '</td><td>' + esc(row.bcm_pin) + '</td><td>' + esc(row.name) + '</td><td>' + esc(row.state_label) + '</td></tr>';
+      if (journal) return '<tr><td>' + esc(row.time) + '</td><td>' + esc(row.vm_name) + '</td><td>' + esc(row.class_label || 'Алерт') + '</td><td>' + esc(row.name) + '</td><td>' + esc(row.state_label) + '</td></tr>';
+      return '<tr><td>' + esc(row.time) + '</td><td>' + esc(row.vm_name) + '</td>' + (row.cells || []).map(function (cell) { return '<td>' + esc(cell) + '</td>'; }).join('') + '</tr>';
     }).join('');
-    const title = { analog: 'Аналоги', discrete: 'Дискреты', alarms: 'Аварии' }[payload.tab] || 'Данные';
+    const title = { analog: 'Аналоги', discrete: 'Дискреты', alarms: 'Алерты', gpio: 'GPIO' }[payload.tab] || 'Данные';
     if (payload.page) page = payload.page;
     tableHost.innerHTML = '<p class="bb-hint">Всего записей: ' + esc(payload.total_rows) + ' · страница ' + esc(payload.page) + ' из ' + esc(payload.total_pages) + ' (по ' + esc(payload.page_size) + ')' + (payload.truncated ? ' · показана неполная выборка' : '') + '</p>' +
       '<div class="bb-table-wrap"><table><thead><tr>' + head + '</tr></thead><tbody>' + body + '</tbody></table></div>' +
@@ -188,32 +225,38 @@
     activeFetch = ctl;
     const token = ++loadToken;
     const id = vmId();
+    const catalogKey = id || '*';
     if (!keepPlace) setBusy(true, 'Загрузка…');
-    if (!id) {
-      catalog = [];
-      renderFields();
-      tableHost.innerHTML = '<p class="bb-hint">Выберите машину.</p>';
-      if (token === loadToken) setBusy(false);
-      return;
-    }
     if (!keepPlace) tableHost.innerHTML = '<p class="bb-hint">Загрузка таблицы…</p>';
     tableHost.setAttribute('aria-busy', 'true');
     const stamp = String(Date.now());
     const headers = { 'Cache-Control': 'no-store', Pragma: 'no-cache' };
     const fetchOpts = { cache: 'no-store', headers: headers, signal: ctl.signal };
     try {
-      if (catalogVm !== id || !catalog.length) {
+      if (catalogVm !== catalogKey || !catalog.length) {
         const catalogQuery = new URLSearchParams();
-        catalogQuery.append('vm_id', id);
+        if (id) catalogQuery.append('vm_id', id);
         catalogQuery.set('_', stamp);
         const catalogRes = await fetch('/api/v1/telemetry/catalog?' + catalogQuery.toString(), fetchOpts);
         if (token !== loadToken) return;
         if (!catalogRes.ok) throw new Error('catalog');
         catalog = (await catalogRes.json()).sources || [];
-        catalogVm = id;
+        catalogVm = catalogKey;
       }
       if (token !== loadToken) return;
       if (!keepPlace) renderFields();
+      const journal = tab() === 'alarms' || tab() === 'gpio';
+      if (journal) {
+        const openQuery = params(stamp);
+        openQuery.set('scope', 'open');
+        openQuery.delete('page');
+        const openRes = await fetch('/api/v1/telemetry/rows?' + openQuery.toString(), fetchOpts);
+        if (token !== loadToken) return;
+        if (openRes.ok) renderOpen(await openRes.json());
+        else renderOpen({ tab: tab(), rows: [] });
+      } else {
+        renderOpen(null);
+      }
       const tableRes = await fetch('/api/v1/telemetry/rows?' + params(stamp).toString(), fetchOpts);
       if (token !== loadToken) return;
       if (!tableRes.ok) throw new Error('rows');
@@ -256,7 +299,6 @@
   let vmClickAt = 0;
 
   function applyVm(id) {
-    if (!id) return;
     setRadio('vm_id', id);
     localStorage.setItem('bb-data-vm', id);
     openPicker = false;
@@ -444,11 +486,12 @@
     const message = event.detail || {};
     if (message.type !== 'delta') return;
     const payload = message.payload || {};
-    if (payload.vm_id && payload.vm_id !== vmId()) return;
+    if (payload.vm_id && vmId() && payload.vm_id !== vmId()) return;
     if (message.topic === 'tags' && (tab() === 'analog' || tab() === 'discrete')) schedule();
     if (message.topic === 'alarms') {
       const kind = payload.payload && payload.payload.kind;
       if (tab() === 'alarms' && kind !== 'gpio') schedule();
+      if (tab() === 'gpio' && kind === 'gpio') schedule();
     }
   });
 

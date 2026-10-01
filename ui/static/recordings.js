@@ -97,6 +97,9 @@
     if (!forTree) {
       query.set('page', String(listPage));
       query.set('page_size', String(LIST_PAGE));
+    } else {
+      query.set('page', '1');
+      query.set('page_size', '1');
     }
     const response = await fetch('/api/v1/video/files?' + query.toString(), { credentials: 'same-origin' });
     if (!response.ok) throw new Error('list');
