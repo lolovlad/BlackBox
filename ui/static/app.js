@@ -585,6 +585,7 @@
         readBtn.disabled = true;
         if (result) result.hidden = true;
         try {
+          if (form.id === 'edit-vm' && window.bbEditPause) await window.bbEditPause;
           const body = await mutate('/api/v1/vms/probe', {
             method: 'POST',
             headers: headers({ 'Content-Type': 'application/json' }),
@@ -1212,6 +1213,7 @@
       try {
         if (action === 'delete') {
           await mutate('/api/v1/vms/' + vmId, { method: 'DELETE' });
+          if (window.bbAbandonEditPause) window.bbAbandonEditPause();
           toast('ВМ удалена', 'ok');
           if (button.dataset.redirectAfter) {
             location.href = button.dataset.redirectAfter;
@@ -1286,8 +1288,166 @@
 
   const edit = document.getElementById('edit-vm');
   if (edit) {
+    const vmId = edit.dataset.vmId;
+    const pauseKey = 'bb-edit-pause:' + vmId;
+    const pauseNote = edit.querySelector('[data-edit-pause]');
+    const readBtn = edit.querySelector('[data-probe-read]');
+    let pauseReady = false;
+    let leaving = false;
+    let reloading = false;
+    let resumePromise = null;
+
+    function setPauseNote(text) {
+      if (!pauseNote) return;
+      pauseNote.hidden = !text;
+      pauseNote.textContent = text || '';
+    }
+
+    function rememberPause() {
+      try { sessionStorage.setItem(pauseKey, '1'); } catch (_error) {}
+    }
+
+    function rememberedPause() {
+      try { return sessionStorage.getItem(pauseKey) === '1'; } catch (_error) { return false; }
+    }
+
+    function forgetPause() {
+      try { sessionStorage.removeItem(pauseKey); } catch (_error) {}
+    }
+
+    const navEntry = performance.getEntriesByType('navigation')[0];
+    const reloadedEdit = !!(navEntry && navEntry.type === 'reload');
+    if (rememberedPause() && edit.dataset.vmDesired !== 'running' && !reloadedEdit) forgetPause();
+
+    if (edit.dataset.vmDesired === 'running' || rememberedPause()) {
+      rememberPause();
+      if (readBtn) readBtn.disabled = true;
+      setPauseNote('Останавливаем ВМ, чтобы освободить порт…');
+    }
+
+    function resumeVm() {
+      if (!rememberedPause()) return Promise.resolve();
+      if (resumePromise) return resumePromise;
+      if (window.bbBoot) window.bbBoot('Запуск ВМ', 'Возвращаем машину в работу…', true);
+      resumePromise = mutate('/api/v1/vms/' + vmId + '/start', { method: 'POST' }).then(function () {
+        forgetPause();
+        if (window.bbBootDone) window.bbBootDone();
+      }).catch(function (error) {
+        resumePromise = null;
+        if (window.bbBootDone) window.bbBootDone();
+        throw error;
+      });
+      return resumePromise;
+    }
+
+    function pauseForEdit() {
+      return (async function () {
+        let vm = null;
+        try {
+          const response = await fetch('/api/v1/vms/' + vmId, { credentials: 'same-origin' });
+          if (response.ok) vm = await response.json();
+        } catch (_error) {
+          vm = null;
+        }
+        const running = !!(vm && vm.desired_state === 'running');
+        const hold = running || rememberedPause() || edit.dataset.vmDesired === 'running';
+        if (!hold) {
+          pauseReady = true;
+          setPauseNote('');
+          if (readBtn) readBtn.disabled = false;
+          return;
+        }
+        if (readBtn) readBtn.disabled = true;
+        try {
+          if (running || edit.dataset.vmDesired === 'running') {
+            rememberPause();
+            setPauseNote('Останавливаем ВМ, чтобы освободить порт…');
+            await mutate('/api/v1/vms/' + vmId + '/stop', { method: 'POST' });
+            edit.dataset.vmDesired = 'stopped';
+          }
+          pauseReady = true;
+          setPauseNote('ВМ на паузе: порт свободен для проверки чтения. После выхода из редактирования она снова запустится.');
+        } catch (error) {
+          forgetPause();
+          pauseReady = true;
+          setPauseNote('');
+          toast(error.message, 'error');
+        } finally {
+          if (readBtn) readBtn.disabled = false;
+        }
+      })();
+    }
+
+    let pauseTask = pauseForEdit();
+    window.bbEditPause = pauseTask;
+    window.bbBeforeLeave = async function () {
+      leaving = true;
+      await pauseTask;
+      await resumeVm();
+    };
+    window.bbAbandonEditPause = function () {
+      leaving = true;
+      forgetPause();
+    };
+
+    if (window.navigation && window.navigation.addEventListener) {
+      window.navigation.addEventListener('navigate', function (event) {
+        if (event.navigationType === 'reload') reloading = true;
+      });
+    }
+
+    window.addEventListener('pagehide', function () {
+      if (leaving || reloading || !pauseReady || !rememberedPause()) return;
+      fetch('/api/v1/vms/' + vmId + '/start', {
+        method: 'POST',
+        credentials: 'same-origin',
+        keepalive: true,
+        headers: headers(),
+      });
+    });
+
+    window.addEventListener('pageshow', function (event) {
+      if (!event.persisted) return;
+      leaving = false;
+      pauseReady = false;
+      if (edit.dataset.vmDesired === 'running' || rememberedPause()) {
+        rememberPause();
+        if (readBtn) readBtn.disabled = true;
+        setPauseNote('Останавливаем ВМ, чтобы освободить порт…');
+      }
+      pauseTask = pauseForEdit();
+      window.bbEditPause = pauseTask;
+    });
+
+    async function leaveTo(href) {
+      if (leaving) return;
+      leaving = true;
+      try {
+        await pauseTask;
+        await resumeVm();
+        location.assign(href);
+      } catch (error) {
+        leaving = false;
+        toast(error.message, 'error');
+      }
+    }
+
+    document.addEventListener('click', function (event) {
+      if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+      if (!rememberedPause()) return;
+      const link = event.target.closest('a[href]');
+      if (!link || link.target === '_blank' || link.hasAttribute('download')) return;
+      let url;
+      try { url = new URL(link.href, location.href); } catch (_error) { return; }
+      if (url.origin !== location.origin) return;
+      if (url.pathname + url.search === location.pathname + location.search) return;
+      event.preventDefault();
+      leaveTo(url.href);
+    }, true);
+
     edit.addEventListener('submit', async function (event) {
       event.preventDefault();
+      if (leaving) return;
       const form = new FormData(edit);
       const protocol = edit.dataset.vmProtocol || '';
       const payload = {
@@ -1300,13 +1460,14 @@
       };
       if (protocol === 'gpio') payload.gpio_pins = gpioPinsFromForm(edit);
       try {
-        await mutate('/api/v1/vms/' + edit.dataset.vmId, {
+        await pauseTask;
+        await mutate('/api/v1/vms/' + vmId, {
           method: 'PATCH',
           headers: headers({ 'Content-Type': 'application/json' }),
           body: JSON.stringify(payload),
         });
         toast('ВМ сохранена', 'ok');
-        location.href = '/vms';
+        await leaveTo('/vms');
       } catch (error) {
         toast(error.message, 'error');
       }
@@ -1386,6 +1547,9 @@
   const logout = document.querySelector('[data-logout]');
   if (logout) {
     logout.addEventListener('click', async function () {
+      if (window.bbBeforeLeave) {
+        try { await window.bbBeforeLeave(); } catch (error) { toast(error.message, 'error'); }
+      }
       try {
         await mutate('/api/v1/auth/logout', { method: 'POST' });
       } catch (_e) {}

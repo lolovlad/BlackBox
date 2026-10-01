@@ -837,6 +837,14 @@ html.bb-header-closed .bb-header-inner {
   color: var(--bb-slate);
 }
 
+.bb-edit-pause {
+  margin: 0;
+  padding: 0.65rem 0.8rem;
+  border-radius: 10px;
+  background: var(--bb-blue-soft);
+  color: var(--bb-navy);
+}
+
 .bb-hint a { color: var(--bb-accent); }
 
 .bb-stat-row {

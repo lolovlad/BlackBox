@@ -19,6 +19,8 @@ import time
 from pathlib import Path
 from typing import Any, Iterable
 
+from bb_platform.parser import serial_open_kind
+
 from services.hub.discovery import hub_serial_path, operator_serial_path
 
 
@@ -65,7 +67,16 @@ def classify_error(exc: BaseException) -> tuple[str, str]:
             errno = getattr(cause, "errno", None)
     text = " ".join(part for part in parts if part)
     lowered = text.lower()
-    if errno in {2, 6} or "could not open port" in lowered or "no such file" in lowered:
+    kind = serial_open_kind(text, errno if isinstance(errno, int) else None)
+    if kind == "busy":
+        return "busy", "Порт занят: остановите ВМ, которая уже держит этот UART, и повторите."
+    if kind == "denied":
+        return "denied", "Узел порта виден, но контейнеру запрещено его открыть (errno 1). Порт может быть свободен: проверьте device_cgroup_rules Hub."
+    if kind == "permission":
+        return "permission", "Нет прав на порт. На хосте: пользователь в группе dialout, либо откройте порт из контейнера Hub."
+    if kind == "controlling_tty":
+        return "port_missing", "Открыт управляющий терминал, а не UART прибора. Выберите ttyAMA/ttyUSB из сканера."
+    if kind == "missing":
         return "port_missing", "Узел порта нет или это не serial-устройство. Проверьте путь и монтирование /dev в контейнер."
     if errno in {13} or "permission" in lowered:
         return "permission", "Нет прав на порт. На хосте: пользователь в группе dialout, либо откройте порт из контейнера Hub."

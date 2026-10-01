@@ -4,7 +4,8 @@
 {% block content %}
 <section class="bb-card bb-vm-builder">
   <h1 class="bb-page-title">Изменить VM: {{ vm.name }}</h1>
-  <form id="edit-vm" class="bb-form bb-vm-form" data-vm-id="{{ vm.id }}" data-vm-protocol="{{ vm.protocol }}">
+  <form id="edit-vm" class="bb-form bb-vm-form" data-vm-id="{{ vm.id }}" data-vm-protocol="{{ vm.protocol }}" data-vm-desired="{{ vm.desired_state }}" data-vm-lifecycle="{{ vm.lifecycle }}">
+    <p class="bb-hint bb-edit-pause" data-edit-pause hidden></p>
     <section class="bb-vm-step">
       <h3 class="bb-vm-step-title"><span class="bb-step-num">1</span> Имя</h3>
       <div class="bb-settings-stack">

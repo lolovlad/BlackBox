@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import ast
+import re
 from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID
@@ -358,6 +359,33 @@ def split_channels(fields: list[Any], tags: dict[str, Any]) -> tuple[dict[str, A
     return analog, discrete, unique
 
 
+_ERRNO_RE = re.compile(r"errno\s+(\d+)\b")
+
+
+def serial_open_kind(text: str, errno: int | None = None) -> str | None:
+    """Classify a UART open failure.
+
+    pyserial reports every open error as ``could not open port``, including a
+    busy device and a cgroup denial. The errno in the text is the real cause.
+    ``errno 1`` must not match the digits inside ``errno 16``.
+    """
+    lowered = str(text or "").lower()
+    codes = {int(item) for item in _ERRNO_RE.findall(lowered)}
+    if errno is not None:
+        codes.add(int(errno))
+    if 16 in codes or "resource busy" in lowered:
+        return "busy"
+    if 1 in codes or "operation not permitted" in lowered:
+        return "denied"
+    if 13 in codes or "permission denied" in lowered:
+        return "permission"
+    if 6 in codes:
+        return "controlling_tty"
+    if 2 in codes or "no such file" in lowered or "not a tty" in lowered or "could not open port" in lowered:
+        return "missing"
+    return None
+
+
 def diagnose_read(
     *,
     quality: Quality | str | None,
@@ -391,19 +419,41 @@ def diagnose_read(
             "Алерты читаются из holding-регистров карты (active_alarms) и сейчас недоступны. "
             "Проверьте Slave ID, скорость, A/B и питание прибора."
         )
-        if "could not open port" in lowered or "errno 2" in lowered:
-            cause = "port"
-            title = "Порт недоступен"
+        open_kind = serial_open_kind(error)
+        if open_kind == "busy":
+            cause = "busy"
+            title = "Порт занят"
             detail = (
-                "Контейнер не смог открыть выбранный UART. Это ошибка конфигурации порта, "
-                "а не отсутствие измерений и не алерты прибора."
+                "Выбранный UART уже открыт другим процессом. Остановите ВМ, которая его держит, "
+                "и повторите. Это не ошибка конфигурации и не алерты прибора."
             )
-        elif "errno 6" in lowered:
+        elif open_kind == "denied":
+            cause = "denied"
+            title = "Контейнеру запрещено открыть UART"
+            detail = (
+                "Узел порта виден, но Docker не разрешает его открыть (operation not permitted). "
+                "Порт при этом может быть свободен. Это не занятость UART и не алерты прибора."
+            )
+        elif open_kind == "permission":
+            cause = "permission"
+            title = "Нет прав на UART"
+            detail = (
+                "Порт есть, но процесс не может его открыть (permission denied). "
+                "Проверьте группу dialout. Это не аварии прибора."
+            )
+        elif open_kind == "controlling_tty":
             cause = "port"
             title = "Выбран служебный TTY"
             detail = (
                 "Открыт управляющий терминал, а не UART прибора. Выберите порт из сканера "
                 "(например ttyAMA10 / ttyUSB0) и перезапустите ВМ."
+            )
+        elif open_kind == "missing":
+            cause = "port"
+            title = "Порт недоступен"
+            detail = (
+                "Контейнер не смог открыть выбранный UART: узла нет в контейнере. "
+                "Это ошибка пути или проброса устройства, а не отсутствие измерений и не алерты прибора."
             )
         return {
             "code": "no_answer",
@@ -545,4 +595,4 @@ def parse_batch(batch: RawBatch, map_document: MapDocument) -> list[TagSample]:
     return samples
 
 
-__all__ = ["adapt_legacy_map", "diagnose_read", "field_channel", "field_label", "parse_batch", "parse_source_values", "split_channels"]
+__all__ = ["adapt_legacy_map", "diagnose_read", "field_channel", "field_label", "parse_batch", "parse_source_values", "serial_open_kind", "split_channels"]

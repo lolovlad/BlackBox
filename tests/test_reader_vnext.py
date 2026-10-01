@@ -200,7 +200,19 @@ def test_diagnose_read_separates_link_from_device_alerts():
     )
     assert leftover["code"] == "ok"
     port = diagnose_read(quality="bad", last_error="[Errno 2] could not open port /dev/ttyAMA10", has_sample=True)
-    assert port["cause"] == "port"
+    assert port["cause"] == "port" and port["title"] == "Порт недоступен"
+    busy = diagnose_read(
+        quality="bad",
+        last_error="[Errno 16] could not open port /dev/ttyAMA10: [Errno 16] Device or resource busy: '/dev/ttyAMA10'",
+        has_sample=True,
+    )
+    assert busy["cause"] == "busy" and busy["title"] == "Порт занят"
+    denied = diagnose_read(
+        quality="bad",
+        last_error="[Errno 1] could not open port /dev/ttyAMA10: [Errno 1] Operation not permitted: '/dev/ttyAMA10'",
+        has_sample=True,
+    )
+    assert denied["cause"] == "denied" and "свободен" in denied["detail"]
     missing = diagnose_read(quality=None, last_error="", has_sample=False)
     assert missing["code"] == "no_sample"
     error_before_sample = diagnose_read(

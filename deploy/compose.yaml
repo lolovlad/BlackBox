@@ -54,6 +54,18 @@ services:
       docker-socket-proxy:
         condition: service_started
     networks: [bb-control]
+    # /dev is bind-mounted so Hub can see UART nodes, but Docker still denies
+    # open() unless the device cgroup allows the major. Without these rules
+    # a probe returns EPERM (errno 1) even when nothing holds the port.
+    # 188 ttyUSB, 166 ttyACM, 204 ttyAMA, 4:64+ ttyS.
+    device_cgroup_rules:
+      - "c 188:* rwm"
+      - "c 166:* rwm"
+      - "c 204:* rwm"
+      - "c 4:64 rwm"
+      - "c 4:65 rwm"
+      - "c 4:66 rwm"
+      - "c 4:67 rwm"
     volumes:
       - blackbox-data:/data
       - /dev:/host-dev

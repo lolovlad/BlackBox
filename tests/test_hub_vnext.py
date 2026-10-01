@@ -464,6 +464,22 @@ def test_device_mappings_include_serial_aliases_and_reader_port():
     assert "/dev/ttyAMA10:/dev/ttyAMA10:rwm" in mapped
     assert "/dev/serial0:/dev/serial0:rwm" in mapped
     assert not any("/dev/tty:" in item or item.startswith("/dev/tty:") for item in mapped)
+    tcp = DockerManager.device_mappings(
+        {
+            "protocol": "modbus_tcp",
+            "read_resources": [],
+            "config": {"reader": {"port": "/dev/ttyAMA0", "host": "127.0.0.1", "tcp_port": 502}},
+        }
+    )
+    assert tcp == []
+    gpio = DockerManager.device_mappings(
+        {
+            "protocol": "gpio",
+            "read_resources": [],
+            "config": {"reader": {"port": "/dev/ttyAMA0", "gpio_chip": "/dev/gpiochip0"}},
+        }
+    )
+    assert gpio == ["/dev/gpiochip0:/dev/gpiochip0:rwm"]
 
 
 def test_rtu_worker_container_gets_new_uart_after_port_change(tmp_path: Path, monkeypatch):
@@ -784,6 +800,25 @@ def test_probe_busy_when_serial_is_leased(tmp_path: Path, monkeypatch):
         assert probe.status_code == 200, probe.text
         assert probe.json()["diagnosis"]["code"] == "busy"
         assert probe.json()["ok"] is False
+        stopped = client.post(f"/api/v1/vms/{vm['id']}/stop", headers={"X-CSRF-Token": csrf})
+        assert stopped.status_code == 200, stopped.text
+        assert stopped.json()["desired_state"] == "stopped"
+        released = client.post(
+            "/api/v1/vms/probe",
+            headers={"X-CSRF-Token": csrf},
+            json={
+                "protocol": "modbus_rtu",
+                "map_version": "deif-gempac-v1",
+                "read_resources": [{"resource_id": "serial:/dev/ttyUSB0"}],
+                "config": {"reader": {"port": "/dev/ttyUSB0"}},
+                "vm_id": vm["id"],
+            },
+        )
+        assert released.status_code == 200, released.text
+        assert released.json()["diagnosis"]["code"] != "busy"
+        started_again = client.post(f"/api/v1/vms/{vm['id']}/start", headers={"X-CSRF-Token": csrf})
+        assert started_again.status_code == 200, started_again.text
+        assert started_again.json()["desired_state"] == "running"
 
 
 def test_html_pages_render_with_current_starlette(tmp_path: Path):
@@ -834,6 +869,10 @@ def test_html_pages_render_with_current_starlette(tmp_path: Path):
             if path in {"/vms", f"/vms/{vm['id']}", f"/admin/vms/{vm['id']}/edit"}:
                 assert 'data-vm-action="delete"' in response.text
                 assert "Удалить" in response.text
+            if path.endswith("/edit"):
+                assert 'data-edit-pause' in response.text
+                assert 'data-vm-desired="stopped"' in response.text
+                assert 'data-vm-lifecycle="pending"' in response.text
             if path in {"/vms", f"/vms/{vm['id']}"}:
                 assert "bb-vm-card" in response.text
                 assert 'data-vm-action="start"' in response.text
@@ -1154,6 +1193,10 @@ def test_check_read_classifies_serial_faults_and_lists_nodes(tmp_path: Path):
 
     assert pdu_address(1, 1) == 1
     assert classify_error(FileNotFoundError(2, "No such file"))[0] == "port_missing"
+    denied = OSError(1, "could not open port /dev/ttyAMA10: [Errno 1] Operation not permitted")
+    assert classify_error(denied)[0] == "denied"
+    busy = OSError(16, "could not open port /dev/ttyAMA10: [Errno 16] Device or resource busy")
+    assert classify_error(busy)[0] == "busy"
     timeout = TimeoutError("Modbus request hr failed after 3 retries")
     timeout.__cause__ = OSError("No communication with the instrument (no answer)")
     assert classify_error(timeout)[0] == "no_answer"

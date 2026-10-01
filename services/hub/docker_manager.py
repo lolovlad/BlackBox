@@ -51,8 +51,14 @@ class DockerManager:
                 add(alias)
         config = vm.get("config") if isinstance(vm.get("config"), dict) else {}
         reader = config.get("reader") if isinstance(config.get("reader"), dict) else {}
-        add(reader.get("port"))
-        add(reader.get("gpio_chip"))
+        # ReaderSettings.port defaults to /dev/ttyAMA0 for every protocol.
+        # Mapping it into TCP or GPIO keeps the UART node inside containers
+        # that never open it and makes the next RTU worker look blocked.
+        protocol = str(vm.get("protocol") or "")
+        if protocol in {"", "modbus_rtu"}:
+            add(reader.get("port"))
+        if protocol in {"", "gpio"}:
+            add(reader.get("gpio_chip"))
         return [f"{path}:{path}:rwm" for path in sorted(paths)]
 
     @staticmethod
