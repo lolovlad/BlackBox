@@ -659,18 +659,14 @@
       query: '',
       filter: 'all',
       studioOpen: false,
-      publishOpen: false,
-      uploadAsNewVersion: false,
-      newRevision: false,
-      draft: false,
       loading: false,
       saving: false,
       selectedKey: '',
       documentText: '',
       originalText: '',
-      publishVersion: '',
       draftProtocol: 'modbus_tcp',
       draftPreset: '',
+      uploadTarget: null,
       get currentMap() {
         const key = this.selectedKey;
         return this.maps.find(function (map) { return map.version + '::' + map.protocol === key; }) || null;
@@ -720,55 +716,32 @@
           return family;
         });
       },
-      get plannedRevision() {
-        let max = 0;
-        this.familyVersions.forEach(function (map) {
-          max = Math.max(max, map.revision || 1);
-        });
-        return max + 1;
-      },
       get familyVersions() {
         const current = this.currentMap;
-        const protocol = current ? current.protocol : this.draftProtocol;
-        const name = current ? mapNameOf(current) : String(this.publishVersion || '').replace(/@\d+$/, '');
+        if (!current) return [];
+        const protocol = current.protocol;
+        const name = mapNameOf(current);
         return this.maps.filter(function (map) {
           return map.protocol === protocol && mapNameOf(map) === name;
         }).sort(function (a, b) { return (b.revision || 1) - (a.revision || 1); });
       },
       onEscape() {
-        if (this.publishOpen) {
-          this.publishOpen = false;
-          return;
-        }
         if (this.studioOpen) this.closeStudio();
       },
       closeStudio() {
-        if (this.draft && this.documentText && !window.confirm('Черновик не опубликован. Закрыть окно?')) return;
         this.studioOpen = false;
-        this.draft = false;
-        this.newRevision = false;
       },
-      startNewVersion() {
-        if (!this.currentMap || !this.documentText) {
-          toast('Сначала дождитесь загрузки карты.', 'error');
-          return;
-        }
-        this.newRevision = true;
-        this.uploadAsNewVersion = true;
-        this.publishVersion = mapNameOf(this.currentMap);
-        this.draft = true;
-      },
-      openUpload(asNewVersion) {
-        this.uploadAsNewVersion = !!asNewVersion;
-        if (!asNewVersion) this.newRevision = false;
-        this.publishOpen = true;
+      pickFile(map) {
+        this.uploadTarget = map || null;
+        const input = this.$refs && this.$refs.mapFile;
+        if (input) input.click();
       },
       onFileChosen(event) {
         const file = event.target.files && event.target.files[0];
         event.target.value = '';
-        if (file) this.importFile(file);
+        if (file) this.publishFile(file);
       },
-      async importFile(file) {
+      async publishFile(file) {
         let text;
         try {
           text = await file.text();
@@ -787,31 +760,53 @@
           toast('В корне файла должен быть объект карты.', 'error');
           return;
         }
-        const lockedName = (this.newRevision || this.uploadAsNewVersion) ? (mapNameOf(this.currentMap) || String(this.publishVersion || '').replace(/@\d+$/, '')) : '';
-        const keepProtocol = (this.newRevision || this.uploadAsNewVersion) ? this.draftProtocol : '';
-        const keepPreset = (this.newRevision || this.uploadAsNewVersion) ? this.draftPreset : '';
-        this.draftProtocol = lockedName ? (keepProtocol || parsed.protocol || 'modbus_tcp') : (parsed.protocol || keepProtocol || 'modbus_tcp');
-        this.draftPreset = lockedName ? (keepPreset || parsed.preset_id || '') : (parsed.preset_id || keepPreset || '');
-        const fromFile = String(parsed.version || lockedName || String(file.name || '').replace(/\.json$/i, '') || 'map').replace(/@\d+$/, '');
-        this.publishVersion = lockedName || fromFile;
-        this.newRevision = !!lockedName;
-        if (!lockedName) this.selectedKey = '';
-        this.documentText = JSON.stringify(parsed, null, 2);
-        this.originalText = '';
-        this.draft = true;
-        this.publishOpen = false;
-        this.studioOpen = true;
+        const target = this.uploadTarget;
+        this.uploadTarget = null;
+        const name = (target ? mapNameOf(target) : String(parsed.version || file.name || 'map').replace(/\.json$/i, '')).replace(/@\d+$/, '') || 'map';
+        const protocol = target ? target.protocol : (parsed.protocol || 'modbus_tcp');
+        const preset = target ? (target.preset_id || '') : (parsed.preset_id || '');
+        this.saving = true;
+        try {
+          const created = await mutate('/api/v1/maps', {
+            method: 'POST',
+            headers: headers({ 'Content-Type': 'application/json' }),
+            body: JSON.stringify({
+              protocol: protocol,
+              version: name,
+              preset_id: preset || null,
+              document: parsed,
+            }),
+          });
+          const record = {
+            id: created.map_id || created.id,
+            version: created.version,
+            name: created.name || created.version,
+            revision: created.revision || 1,
+            protocol: created.protocol,
+            preset_id: created.preset_id,
+            checksum: created.checksum,
+            created_at: created.created_at || new Date().toISOString(),
+          };
+          const already = this.maps.some(function (map) {
+            return map.version === record.version && map.protocol === record.protocol;
+          });
+          this.maps = [record].concat(this.maps.filter(function (map) {
+            return !(map.version === record.version && map.protocol === record.protocol);
+          }));
+          toast(already
+            ? ('Файл совпадает с версией ' + record.revision + '. Ничего не изменилось.')
+            : (record.name + ' · версия ' + record.revision + ' сохранена'), already ? 'info' : 'ok');
+          if (this.studioOpen) await this.openMap(record);
+        } catch (error) {
+          toast(error.message, 'error');
+        } finally {
+          this.saving = false;
+        }
       },
       async openMap(map) {
-        if (this.draft && this.documentText && !window.confirm('Черновик не опубликован. Открыть другую версию?')) {
-          return;
-        }
-        this.draft = false;
-        this.newRevision = false;
         this.selectedKey = map.version + '::' + map.protocol;
         this.draftProtocol = map.protocol;
         this.draftPreset = map.preset_id || '';
-        this.publishVersion = mapNameOf(map);
         this.studioOpen = true;
         this.loading = true;
         try {
@@ -842,7 +837,8 @@
         }
       },
       downloadJson() {
-        const name = (this.publishVersion || 'map') + '.json';
+        const current = this.currentMap;
+        const name = ((current && (current.name || current.version)) || 'map') + '.json';
         const blob = new Blob([this.documentText], { type: 'application/json' });
         const url = URL.createObjectURL(blob);
         const link = document.createElement('a');
@@ -865,7 +861,7 @@
           this.maps = this.maps.filter(function (item) {
             return !(item.version === map.version && item.protocol === map.protocol);
           });
-          toast('Карта удалена', 'ok');
+          toast('Версия удалена', 'ok');
           if (this.studioOpen && selected) {
             const next = this.maps.filter(function (item) {
               return item.protocol === protocol && mapNameOf(item) === name;
@@ -874,7 +870,6 @@
               await this.openMap(next);
             } else {
               this.studioOpen = false;
-              this.draft = false;
               this.selectedKey = '';
               this.documentText = '';
               this.originalText = '';
@@ -882,62 +877,6 @@
           }
         } catch (error) {
           toast(error.message, 'error');
-        }
-      },
-      async publishFromEditor() {
-        let parsed;
-        try {
-          parsed = JSON.parse(this.documentText);
-        } catch (_e) {
-          toast('Документ повреждён.', 'error');
-          return;
-        }
-        if (!this.publishVersion.trim()) {
-          toast('Укажите название.', 'error');
-          return;
-        }
-        this.saving = true;
-        try {
-          const created = await mutate('/api/v1/maps', {
-            method: 'POST',
-            headers: headers({ 'Content-Type': 'application/json' }),
-            body: JSON.stringify({
-              protocol: this.draftProtocol,
-              version: this.publishVersion.trim(),
-              preset_id: this.draftPreset.trim() || null,
-              document: parsed,
-            }),
-          });
-          const record = {
-            id: created.map_id || created.id,
-            version: created.version,
-            name: created.name || created.version,
-            revision: created.revision || 1,
-            protocol: created.protocol,
-            preset_id: created.preset_id,
-            checksum: created.checksum,
-            created_at: new Date().toISOString(),
-          };
-          const already = this.maps.some(function (map) {
-            return map.version === record.version && map.protocol === record.protocol;
-          });
-          this.maps = [record].concat(this.maps.filter(function (map) {
-            return !(map.version === record.version && map.protocol === record.protocol);
-          }));
-          this.selectedKey = record.version + '::' + record.protocol;
-          this.publishVersion = record.name;
-          this.documentText = JSON.stringify(created, null, 2);
-          this.originalText = this.documentText;
-          this.draft = false;
-          this.newRevision = false;
-          this.uploadAsNewVersion = false;
-          toast(already
-            ? ('Содержимое совпадает с версией ' + record.revision + '. Новая версия не создана.')
-            : (record.name + ', версия ' + record.revision + ' сохранена. Предыдущие версии на месте.'), already ? 'info' : 'ok');
-        } catch (error) {
-          toast(error.message, 'error');
-        } finally {
-          this.saving = false;
         }
       },
     };

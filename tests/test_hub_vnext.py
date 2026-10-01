@@ -1117,7 +1117,9 @@ def test_maps_page_opens_version_studio(tmp_path: Path):
         assert "bb-maps-page" in html
         assert "bb-studio" in html
         assert "Новая версия" in html
-        assert "Опубликовать версию" in html
+        assert "Загрузить" in html
+        assert "Опубликовать версию" not in html
+        assert "черновик" not in html.lower()
         assert "Удалить" in html
         start = html.find('id="bb-maps-payload">')
         end = html.find("</script>", start)

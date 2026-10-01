@@ -1273,7 +1273,7 @@ html.bb-header-closed .bb-header-inner {
   border-radius: 20px;
   box-shadow: 0 24px 80px rgba(45, 53, 64, 0.28);
   display: grid;
-  grid-template-rows: auto auto 1fr;
+  grid-template-rows: auto 1fr;
   overflow: hidden;
 }
 

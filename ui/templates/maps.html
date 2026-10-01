@@ -3,13 +3,14 @@
 {% block content %}
 <script type="application/json" id="bb-maps-payload">{{ maps | tojson }}</script>
 <section class="bb-maps-page" x-data="bbMapsPage()" x-init="hydrate()" @keydown.escape.window="onEscape()">
+  <input class="bb-sr-only" type="file" accept="application/json,.json" x-ref="mapFile" @change="onFileChosen($event)">
   <div class="bb-maps-hero">
     <div>
       <h1 class="bb-page-title">Карты чтения</h1>
     </div>
     <div class="bb-maps-hero-actions">
       <a class="bb-btn bb-btn-secondary" href="/static/docs/sozdanie-kart.md" download="sozdanie-kart.md"><i class="bi bi-journal-text"></i> Инструкция</a>
-      <button type="button" class="bb-btn" @click="openUpload(false)"><i class="bi bi-upload"></i> Загрузить</button>
+      <button type="button" class="bb-btn" @click="pickFile()" :disabled="saving"><i class="bi bi-upload"></i> Загрузить</button>
     </div>
   </div>
 
@@ -27,36 +28,30 @@
     </div>
   </div>
 
-  <template x-for="family in families" :key="family.key">
-    <section class="bb-map-family">
-      <header class="bb-map-family-head">
-        <h2 x-text="family.name || protocolLabel(family.protocol)"></h2>
-        <span x-text="protocolLabel(family.protocol)"></span>
-        <span class="bb-map-count" x-text="family.items.length + (family.items.length === 1 ? ' версия' : ' версий')"></span>
-      </header>
-      <div class="bb-map-grid">
-        <template x-for="(map, index) in family.items" :key="map.version + '::' + map.protocol">
-          <article class="bb-map-card" @click="openMap(map)">
-            <div class="bb-map-card-top">
-              <strong x-text="map.name || map.version"></strong>
-              <span class="bb-map-pills">
-                <span class="bb-map-pill" x-text="'v' + (map.revision || 1)"></span>
-                <span class="bb-map-pill" x-show="index === 0">актуальная</span>
-              </span>
-            </div>
-            <p class="bb-map-card-meta">
-              <span x-text="protocolLabel(map.protocol)"></span>
-              <span x-text="formatStamp(map.created_at)"></span>
-            </p>
-            <code class="bb-map-checksum" x-text="shortChecksum(map.checksum)"></code>
-            <div class="bb-map-card-actions">
-              <button type="button" class="bb-btn bb-btn-sm bb-btn-danger" @click.stop="deleteMap(map)">Удалить</button>
-            </div>
-          </article>
-        </template>
-      </div>
-    </section>
-  </template>
+  <div class="bb-map-grid">
+    <template x-for="family in families" :key="family.key">
+      <article class="bb-map-card" @click="openMap(family.items[0])">
+        <div class="bb-map-card-top">
+          <strong x-text="family.name"></strong>
+          <span class="bb-map-pills">
+            <span class="bb-map-pill" x-text="'v' + (family.items[0].revision || 1)"></span>
+            <span class="bb-map-pill">актуальная</span>
+          </span>
+        </div>
+        <p class="bb-map-card-meta">
+          <span x-text="protocolLabel(family.protocol)"></span>
+          <span x-text="formatStamp(family.items[0].created_at)"></span>
+        </p>
+        <p class="bb-map-card-meta">
+          <span x-text="family.items.length + (family.items.length === 1 ? ' версия' : ' версий')"></span>
+          <code class="bb-map-checksum" x-text="shortChecksum(family.items[0].checksum)"></code>
+        </p>
+        <div class="bb-map-card-actions">
+          <button type="button" class="bb-btn bb-btn-sm" @click.stop="pickFile(family.items[0])" :disabled="saving">Новая версия</button>
+        </div>
+      </article>
+    </template>
+  </div>
   <p class="bb-muted" x-show="families.length === 0">Нет карт.</p>
 
   <div class="bb-studio" x-show="studioOpen" x-cloak>
@@ -64,46 +59,20 @@
     <div class="bb-studio-panel" role="dialog" aria-modal="true" aria-labelledby="bb-studio-title" @click.stop>
       <header class="bb-studio-head">
         <div>
-          <h2 id="bb-studio-title" x-text="draft ? ((publishVersion || 'Новая карта') + ' · v' + plannedRevision) : (currentMap ? ((currentMap.name || currentMap.version) + ' · v' + (currentMap.revision || 1)) : 'Карта')"></h2>
+          <h2 id="bb-studio-title" x-text="currentMap ? ((currentMap.name || currentMap.version) + ' · v' + (currentMap.revision || 1)) : 'Карта'"></h2>
           <p class="bb-studio-sub">
             <span x-text="protocolLabel(draftProtocol)"></span>
             <span x-show="draftPreset" x-text="draftPreset"></span>
-            <span x-show="draft" class="bb-map-pill bb-map-pill-warn">черновик</span>
           </p>
         </div>
         <div class="bb-studio-head-actions">
-          <button type="button" class="bb-btn" x-show="!draft && currentMap" @click="startNewVersion()"><i class="bi bi-plus-lg"></i> Новая версия</button>
-          <button type="button" class="bb-btn bb-btn-danger bb-btn-sm" x-show="!draft && currentMap" @click="deleteMap(currentMap)"><i class="bi bi-trash"></i> Удалить</button>
+          <button type="button" class="bb-btn" x-show="currentMap" @click="pickFile(currentMap)" :disabled="saving"><i class="bi bi-upload"></i> Новая версия</button>
+          <button type="button" class="bb-btn bb-btn-danger bb-btn-sm" x-show="currentMap" @click="deleteMap(currentMap)"><i class="bi bi-trash"></i> Удалить</button>
           <button type="button" class="bb-btn bb-btn-secondary bb-btn-sm" @click="copyJson()" :disabled="!documentText"><i class="bi bi-clipboard"></i> Копировать</button>
           <button type="button" class="bb-btn bb-btn-secondary bb-btn-sm" @click="downloadJson()" :disabled="!documentText"><i class="bi bi-download"></i> Скачать</button>
           <button type="button" class="bb-btn bb-btn-ghost bb-btn-sm" @click="closeStudio()" aria-label="Закрыть"><i class="bi bi-x-lg"></i></button>
         </div>
       </header>
-
-      <div class="bb-studio-meta">
-        <label>Название
-          <input x-model="publishVersion" :readonly="!draft || newRevision" required>
-        </label>
-        <label>Версия
-          <input readonly :value="draft ? ('v' + plannedRevision) : (currentMap ? ('v' + (currentMap.revision || 1)) : '—')">
-        </label>
-        <p class="bb-hint bb-studio-version-hint" x-show="draft">Название остаётся прежним. Сохранится следующая версия, предыдущие останутся в списке.</p>
-        <label>Тип
-          <select x-model="draftProtocol" :disabled="!draft || newRevision">
-            <option value="simulator">Simulator</option>
-            <option value="modbus_rtu">Modbus RTU</option>
-            <option value="modbus_tcp">Modbus TCP</option>
-            <option value="can">CAN</option>
-          </select>
-        </label>
-        <label>Preset
-          <input x-model="draftPreset" :readonly="!draft || newRevision">
-        </label>
-        <button type="button" class="bb-btn" x-show="draft" @click="publishFromEditor()" :disabled="saving || !documentText">
-          <span x-show="!saving">Опубликовать версию</span>
-          <span x-show="saving">Публикация…</span>
-        </button>
-      </div>
 
       <div class="bb-studio-body">
         <aside class="bb-studio-versions">
@@ -111,7 +80,7 @@
           <ol>
             <template x-for="(map, index) in familyVersions" :key="map.version + '::' + map.protocol">
               <li class="bb-version-row">
-                <button type="button" class="bb-version-item" :class="{ 'is-active': isSelected(map) && !draft }" @click="openMap(map)">
+                <button type="button" class="bb-version-item" :class="{ 'is-active': isSelected(map) }" @click="openMap(map)">
                   <span class="bb-version-dot" :class="{ 'is-latest': index === 0 }"></span>
                   <span>
                     <strong x-text="'v' + (map.revision || 1)"></strong>
@@ -125,36 +94,9 @@
         </aside>
         <div class="bb-studio-editor">
           <p class="bb-muted" x-show="loading">Загрузка…</p>
-          <div class="bb-studio-editor-tools" x-show="draft">
-            <label class="bb-btn bb-btn-secondary bb-btn-sm">
-              <i class="bi bi-upload"></i> Подставить файл
-              <input type="file" accept="application/json,.json" @change="onFileChosen($event)">
-            </label>
-          </div>
           <label class="bb-studio-json-label">Карта
-            <textarea class="bb-json-editor" spellcheck="false" x-model="documentText" :readonly="loading || !draft"></textarea>
+            <textarea class="bb-json-editor" spellcheck="false" x-model="documentText" readonly></textarea>
           </label>
-        </div>
-      </div>
-    </div>
-  </div>
-
-  <div class="bb-studio bb-publish-modal" x-show="publishOpen" x-cloak>
-    <div class="bb-studio-backdrop" @click="publishOpen = false"></div>
-    <div class="bb-publish-panel" role="dialog" aria-modal="true" aria-labelledby="bb-publish-title" @click.stop>
-      <header class="bb-studio-head">
-        <div>
-          <h2 id="bb-publish-title" x-text="uploadAsNewVersion ? 'Новая версия' : 'Загрузить карту'"></h2>
-        </div>
-        <button type="button" class="bb-btn bb-btn-ghost bb-btn-sm" @click="publishOpen = false" aria-label="Закрыть"><i class="bi bi-x-lg"></i></button>
-      </header>
-      <div class="bb-form bb-publish-form">
-        <p class="bb-hint">Для аварий укажите <code>kind=alert</code>. Bitfield без <code>kind</code> остаётся обычным алертом и инцидент не открывает. <a href="/static/docs/sozdanie-kart.md" download="sozdanie-kart.md">Скачать инструкцию</a></p>
-        <label>Файл
-          <input type="file" accept="application/json,.json" @change="onFileChosen($event)">
-        </label>
-        <div class="bb-actions">
-          <button type="button" class="bb-btn bb-btn-secondary" @click="publishOpen = false">Отмена</button>
         </div>
       </div>
     </div>
