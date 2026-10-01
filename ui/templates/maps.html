@@ -8,6 +8,7 @@
       <h1 class="bb-page-title">Карты чтения</h1>
     </div>
     <div class="bb-maps-hero-actions">
+      <a class="bb-btn bb-btn-secondary" href="/static/docs/sozdanie-kart.md" download="sozdanie-kart.md"><i class="bi bi-journal-text"></i> Инструкция</a>
       <button type="button" class="bb-btn" @click="openUpload(false)"><i class="bi bi-upload"></i> Загрузить</button>
     </div>
   </div>
@@ -135,6 +136,7 @@
         <button type="button" class="bb-btn bb-btn-ghost bb-btn-sm" @click="publishOpen = false" aria-label="Закрыть"><i class="bi bi-x-lg"></i></button>
       </header>
       <div class="bb-form bb-publish-form">
+        <p class="bb-hint">Для аварий укажите <code>kind=alert</code>. Bitfield без <code>kind</code> остаётся обычным алертом и инцидент не открывает. <a href="/static/docs/sozdanie-kart.md" download="sozdanie-kart.md">Скачать инструкцию</a></p>
         <label>Файл
           <input type="file" accept="application/json,.json" @change="onFileChosen($event)">
         </label>
