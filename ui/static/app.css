@@ -1184,6 +1184,8 @@ html.bb-header-closed .bb-header-inner {
 
 .bb-map-card-top strong { font-size: 1rem; }
 
+.bb-map-pills { display: flex; gap: 0.35rem; flex-wrap: wrap; justify-content: flex-end; }
+
 .bb-map-pill {
   display: inline-flex;
   align-items: center;
@@ -1287,6 +1289,11 @@ html.bb-header-closed .bb-header-inner {
 .bb-studio-meta select:disabled {
   background: #eef1f7;
   color: var(--bb-navy);
+}
+
+.bb-studio-version-hint {
+  flex: 1 0 100%;
+  margin: 0;
 }
 
 .bb-studio-head h2,

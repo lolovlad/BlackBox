@@ -471,7 +471,7 @@ def _gpio_panel_resource(resources: list[dict[str, Any]]) -> list[dict[str, Any]
     path = str(chosen.get("path") or "")
     label = metadata.get("label")
     lines = metadata.get("ngpio")
-    detail = ["пины BCM 2–27", path]
+    detail = ["пины BCM 2–13 и 18–27", path]
     if label:
         detail.append(str(label))
     if lines:

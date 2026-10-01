@@ -200,7 +200,7 @@
     if (!note) return;
     const path = chip && chip.value;
     note.textContent = path
-      ? ('GPIO панель есть, чип ' + path + '. Читаются все пины BCM 2–27.')
+      ? ('GPIO панель есть, чип ' + path + '. Читаются BCM 2–13 и 18–27; UART 14–17 не захватываются.')
       : 'Hub только проверяет, что GPIO панель есть. В сканирование ресурсов она не входит.';
   }
 
@@ -215,6 +215,8 @@
         pull: row.querySelector('[name="gpio_pull"]')?.value || 'up',
         invert: !!(invert && invert.checked),
       };
+    }).filter(function (pin) {
+      return pin.bcm_pin < 14 || pin.bcm_pin > 17;
     });
   }
 
@@ -646,10 +648,10 @@
   window.bbMapsPage = function bbMapsPage() {
     const labels = { simulator: 'Simulator', modbus_rtu: 'Modbus RTU', modbus_tcp: 'Modbus TCP', can: 'CAN', gpio: 'GPIO' };
 
-    function nextVersion(version) {
-      const match = String(version || '').match(/^(.*?)(\d+)$/);
-      if (!match) return (version || 'map') + '-v2';
-      return match[1] + String(Number(match[2]) + 1);
+    function mapNameOf(map) {
+      if (!map) return '';
+      if (map.name) return String(map.name);
+      return String(map.version || '').replace(/@\d+$/, '');
     }
 
     return {
@@ -701,28 +703,29 @@
         const order = [];
         this.maps.forEach(function (map) {
           if (this.filter !== 'all' && map.protocol !== this.filter) return;
-          const haystack = [map.version, map.protocol, map.preset_id || ''].join(' ').toLowerCase();
+          const haystack = [mapNameOf(map), map.version, map.protocol, map.preset_id || ''].join(' ').toLowerCase();
           if (needle && haystack.indexOf(needle) === -1) return;
-          const key = map.protocol + '::' + (map.preset_id || '');
+          const key = map.protocol + '::' + mapNameOf(map);
           if (!groups[key]) {
-            groups[key] = { key: key, protocol: map.protocol, preset_id: map.preset_id, items: [] };
+            groups[key] = { key: key, protocol: map.protocol, name: mapNameOf(map), preset_id: map.preset_id, items: [] };
             order.push(key);
           }
           groups[key].items.push(map);
         }.bind(this));
         return order.map(function (key) {
           const family = groups[key];
-          family.items.sort(function (a, b) { return String(b.created_at || '').localeCompare(String(a.created_at || '')); });
+          family.items.sort(function (a, b) { return (b.revision || 1) - (a.revision || 1); });
+          family.preset_id = family.items[0] ? family.items[0].preset_id : family.preset_id;
           return family;
         });
       },
       get familyVersions() {
         const current = this.currentMap;
         const protocol = current ? current.protocol : this.draftProtocol;
-        const preset = current ? (current.preset_id || '') : (this.draftPreset || '');
+        const name = current ? mapNameOf(current) : String(this.publishVersion || '').replace(/@\d+$/, '');
         return this.maps.filter(function (map) {
-          return map.protocol === protocol && (map.preset_id || '') === preset;
-        }).sort(function (a, b) { return String(b.created_at || '').localeCompare(String(a.created_at || '')); });
+          return map.protocol === protocol && mapNameOf(map) === name;
+        }).sort(function (a, b) { return (b.revision || 1) - (a.revision || 1); });
       },
       onEscape() {
         if (this.publishOpen) {
@@ -764,12 +767,13 @@
           toast('В корне файла должен быть объект карты.', 'error');
           return;
         }
-        const suggested = this.uploadAsNewVersion && this.currentMap ? nextVersion(this.currentMap.version) : '';
+        const keepName = this.uploadAsNewVersion && this.currentMap ? mapNameOf(this.currentMap) : '';
         const keepProtocol = this.uploadAsNewVersion ? this.draftProtocol : '';
         const keepPreset = this.uploadAsNewVersion ? this.draftPreset : '';
         this.draftProtocol = parsed.protocol || keepProtocol || 'modbus_tcp';
         this.draftPreset = parsed.preset_id || keepPreset || '';
-        this.publishVersion = parsed.version || suggested || String(file.name || '').replace(/\.json$/i, '') || 'map-v1';
+        const fromFile = String(parsed.version || keepName || String(file.name || '').replace(/\.json$/i, '') || 'map').replace(/@\d+$/, '');
+        this.publishVersion = fromFile;
         this.selectedKey = '';
         this.documentText = JSON.stringify(parsed, null, 2);
         this.originalText = '';
@@ -785,7 +789,7 @@
         this.selectedKey = map.version + '::' + map.protocol;
         this.draftProtocol = map.protocol;
         this.draftPreset = map.preset_id || '';
-        this.publishVersion = map.version;
+        this.publishVersion = mapNameOf(map);
         this.studioOpen = true;
         this.loading = true;
         try {
@@ -827,11 +831,12 @@
       },
       async deleteMap(map) {
         if (!map) return;
-        if (!window.confirm('Удалить карту «' + map.version + '»?\n\nВерсия будет удалена из каталога. Это действие нельзя отменить.')) {
+        const label = mapNameOf(map) + ', версия ' + (map.revision || 1);
+        if (!window.confirm('Удалить «' + label + '»?\n\nЭта версия будет удалена из каталога. Это действие нельзя отменить.')) {
           return;
         }
         const protocol = map.protocol;
-        const preset = map.preset_id || '';
+        const name = mapNameOf(map);
         const selected = this.isSelected(map);
         try {
           await mutate('/api/v1/maps/' + encodeURIComponent(map.version) + '?protocol=' + encodeURIComponent(map.protocol), { method: 'DELETE' });
@@ -841,8 +846,8 @@
           toast('Карта удалена', 'ok');
           if (this.studioOpen && selected) {
             const next = this.maps.filter(function (item) {
-              return item.protocol === protocol && (item.preset_id || '') === preset;
-            }).sort(function (a, b) { return String(b.created_at || '').localeCompare(String(a.created_at || '')); })[0];
+              return item.protocol === protocol && mapNameOf(item) === name;
+            }).sort(function (a, b) { return (b.revision || 1) - (a.revision || 1); })[0];
             if (next) {
               await this.openMap(next);
             } else {
@@ -884,18 +889,27 @@
           const record = {
             id: created.map_id || created.id,
             version: created.version,
+            name: created.name || created.version,
+            revision: created.revision || 1,
             protocol: created.protocol,
             preset_id: created.preset_id,
             checksum: created.checksum,
             created_at: new Date().toISOString(),
           };
+          const already = this.maps.some(function (map) {
+            return map.version === record.version && map.protocol === record.protocol;
+          });
           this.maps = [record].concat(this.maps.filter(function (map) {
             return !(map.version === record.version && map.protocol === record.protocol);
           }));
           this.selectedKey = record.version + '::' + record.protocol;
+          this.publishVersion = record.name;
+          this.documentText = JSON.stringify(created, null, 2);
           this.originalText = this.documentText;
           this.draft = false;
-          toast('Опубликована версия ' + record.version, 'ok');
+          toast(already
+            ? ('Это уже версия ' + record.revision + ' карты ' + record.name)
+            : ('Опубликована ' + record.name + ', версия ' + record.revision), 'ok');
         } catch (error) {
           toast(error.message, 'error');
         } finally {

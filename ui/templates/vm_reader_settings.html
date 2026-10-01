@@ -174,7 +174,7 @@
 
   <fieldset class="bb-protocol-panel" data-protocol-panel="gpio" data-discovers="false" {% if active_protocol != 'gpio' %}hidden{% endif %}>
     <legend class="bb-sr-only">GPIO</legend>
-    <p class="bb-muted" data-gpio-panel>{% if reader.get('gpio_chip') %}GPIO панель есть: {{ reader.get('gpio_chip') }}. Читаются все пины BCM 2–27.{% else %}Hub только проверяет, что GPIO панель есть. В сканирование ресурсов она не входит.{% endif %}</p>
+    <p class="bb-muted" data-gpio-panel>{% if reader.get('gpio_chip') %}GPIO панель есть: {{ reader.get('gpio_chip') }}. Читаются BCM 2–13 и 18–27; UART 14–17 не захватываются.{% else %}Hub только проверяет, что GPIO панель есть. В сканирование ресурсов она не входит.{% endif %}</p>
     <input type="hidden" name="gpio_chip" value="{{ reader.get('gpio_chip', '') }}">
     <div class="bb-settings-grid">
       {% call field('Опрос, секунд', 'Как часто читать всю панель. 0.05 с.', 'bi-stopwatch') %}

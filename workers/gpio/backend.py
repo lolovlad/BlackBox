@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from workers.gpio.pins import PinSpec
+from workers.gpio.pins import PinSpec, UART_RESERVED_BCM_PINS
 
 
 class GpiodBackend:
@@ -13,6 +13,8 @@ class GpiodBackend:
         self._gpiod = gpiod
         self._lines: dict[int, object] = {}
         for pin in pins:
+            if pin.bcm_pin in UART_RESERVED_BCM_PINS:
+                continue
             bias = {"up": Bias.PULL_UP, "down": Bias.PULL_DOWN}.get(pin.pull, Bias.DISABLED)
             config = {int(pin.bcm_pin): gpiod.LineSettings(direction=Direction.INPUT, bias=bias)}
             try:

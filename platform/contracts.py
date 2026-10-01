@@ -179,6 +179,8 @@ class WorkerError(Contract):
 class MapDocument(Contract):
     map_id: UUID = Field(default_factory=uuid4)
     version: str = Field(min_length=1, max_length=128)
+    name: str = ""
+    revision: int = Field(default=1, ge=1)
     protocol: VmProtocol
     preset_id: str | None = Field(default=None, max_length=128)
     checksum: str = Field(min_length=64, max_length=64)

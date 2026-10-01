@@ -61,7 +61,7 @@
       <select name="map_version" id="create-map-version" required>
         <option value="">— выберите карту —</option>
         {% for m in maps %}
-        <option value="{{ m.version }}" data-protocol="{{ m.protocol }}">{{ m.version }}{% if m.preset_id %} · {{ m.preset_id }}{% endif %}</option>
+        <option value="{{ m.version }}" data-protocol="{{ m.protocol }}">{{ m.name or m.version }} · v{{ m.revision or 1 }}{% if m.preset_id %} · {{ m.preset_id }}{% endif %}</option>
         {% endfor %}
       </select>
       {% endcall %}

@@ -8,9 +8,12 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from bb_platform.contracts import MapDocument, VmProtocol
 
-DEFAULT_GPIO_VERSION = "gpio-panel-v1"
-# BCM numbers broken out on the 40-pin header. One panel reads this whole set.
-HEADER_BCM_PINS = tuple(range(2, 28))
+DEFAULT_GPIO_VERSION = "gpio-panel-v3"
+# GPIO14–17 are reserved for the board UART/RS-485 path. Requesting these
+# lines through libgpiod switches them to GPIO input and breaks Modbus RTU.
+UART_RESERVED_BCM_PINS = frozenset(range(14, 18))
+# BCM numbers available to the GPIO panel without stealing UART functions.
+HEADER_BCM_PINS = tuple(pin for pin in range(2, 28) if pin not in UART_RESERVED_BCM_PINS)
 DEFAULT_GPIO_PINS = [
     {"bcm_pin": bcm, "name": f"GPIO_{bcm}", "trigger_level": 0, "hold_sec": 0.5, "pull": "up", "invert": False}
     for bcm in HEADER_BCM_PINS
@@ -69,6 +72,8 @@ def normalize_pins(pins: list[dict]) -> list[dict]:
     seen: set[int] = set()
     names: set[str] = set()
     for pin in parsed:
+        if pin["bcm_pin"] in UART_RESERVED_BCM_PINS:
+            raise ValueError(f"BCM {pin['bcm_pin']} зарезервирован для UART/RS-485")
         if pin["bcm_pin"] in seen:
             raise ValueError(f"Повтор BCM {pin['bcm_pin']}")
         if pin["name"] in names:
@@ -84,6 +89,8 @@ def pins_from_fields(fields: list[dict]) -> list[PinSpec]:
         if not isinstance(field, dict) or "bcm_pin" not in field:
             continue
         pin = GpioPin.model_validate(field)
+        if pin.bcm_pin in UART_RESERVED_BCM_PINS:
+            continue
         specs.append(
             PinSpec(
                 bcm_pin=pin.bcm_pin,

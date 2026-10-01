@@ -30,16 +30,19 @@
   <template x-for="family in families" :key="family.key">
     <section class="bb-map-family">
       <header class="bb-map-family-head">
-        <h2 x-text="protocolLabel(family.protocol)"></h2>
-        <span x-show="family.preset_id" x-text="family.preset_id"></span>
+        <h2 x-text="family.name || protocolLabel(family.protocol)"></h2>
+        <span x-text="protocolLabel(family.protocol)"></span>
         <span class="bb-map-count" x-text="family.items.length + (family.items.length === 1 ? ' версия' : ' версий')"></span>
       </header>
       <div class="bb-map-grid">
         <template x-for="(map, index) in family.items" :key="map.version + '::' + map.protocol">
           <article class="bb-map-card" @click="openMap(map)">
             <div class="bb-map-card-top">
-              <strong x-text="map.version"></strong>
-              <span class="bb-map-pill" x-show="index === 0">актуальная</span>
+              <strong x-text="map.name || map.version"></strong>
+              <span class="bb-map-pills">
+                <span class="bb-map-pill" x-text="'v' + (map.revision || 1)"></span>
+                <span class="bb-map-pill" x-show="index === 0">актуальная</span>
+              </span>
             </div>
             <p class="bb-map-card-meta">
               <span x-text="protocolLabel(map.protocol)"></span>
@@ -61,7 +64,7 @@
     <div class="bb-studio-panel" role="dialog" aria-modal="true" aria-labelledby="bb-studio-title" @click.stop>
       <header class="bb-studio-head">
         <div>
-          <h2 id="bb-studio-title" x-text="draft ? (publishVersion || 'Новая карта') : (currentMap ? currentMap.version : 'Карта')"></h2>
+          <h2 id="bb-studio-title" x-text="draft ? (publishVersion || 'Новая карта') : (currentMap ? ((currentMap.name || currentMap.version) + ' · v' + (currentMap.revision || 1)) : 'Карта')"></h2>
           <p class="bb-studio-sub">
             <span x-text="protocolLabel(draftProtocol)"></span>
             <span x-show="draftPreset" x-text="draftPreset"></span>
@@ -81,6 +84,7 @@
         <label>Название
           <input x-model="publishVersion" :readonly="!draft" required>
         </label>
+        <p class="bb-hint bb-studio-version-hint" x-show="draft">То же название публикует следующую версию: v2, v3 и дальше. Виртуальные машины с этой картой переключатся на неё.</p>
         <label>Тип
           <select x-model="draftProtocol" :disabled="!draft">
             <option value="simulator">Simulator</option>
@@ -107,7 +111,7 @@
                 <button type="button" class="bb-version-item" :class="{ 'is-active': isSelected(map) && !draft }" @click="openMap(map)">
                   <span class="bb-version-dot" :class="{ 'is-latest': index === 0 }"></span>
                   <span>
-                    <strong x-text="map.version"></strong>
+                    <strong x-text="'v' + (map.revision || 1)"></strong>
                     <small x-text="formatStamp(map.created_at)"></small>
                   </span>
                 </button>

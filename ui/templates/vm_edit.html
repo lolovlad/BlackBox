@@ -28,7 +28,7 @@
         {% call field('Карта чтения', 'Версия карты этого протокола.', 'bi-file-earmark-code') %}
         <select name="map_version" id="edit-map-version" required>
           {% for m in maps %}
-            {% if m.protocol == vm.protocol %}<option value="{{ m.version }}" {% if m.version == vm.map_version %}selected{% endif %}>{{ m.version }}{% if m.preset_id %} · {{ m.preset_id }}{% endif %}</option>{% endif %}
+            {% if m.protocol == vm.protocol %}<option value="{{ m.version }}" {% if m.version == vm.map_version %}selected{% endif %}>{{ m.name or m.version }} · v{{ m.revision or 1 }}{% if m.preset_id %} · {{ m.preset_id }}{% endif %}</option>{% endif %}
           {% endfor %}
         </select>
         {% endcall %}

@@ -1045,15 +1045,40 @@ def test_modbus_reader_retries_fake_instrument():
     assert ModbusReader(instrument, retries=2).read([{"name": "holding", "fc": 3, "address": 0, "count": 2}]) == {"holding": [12, 13]}
 
 
-def test_map_version_is_immutable(tmp_path: Path):
+def test_republish_same_map_name_creates_next_revision(tmp_path: Path):
     with _client(tmp_path) as client:
         assert client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin-password"}).status_code == 200
         csrf = client.cookies.get("bb_csrf")
         first = {"requests": [{"name": "sim", "fc": 3, "address": 0, "count": 1}], "fields": [{"name": "value", "type": "uint16", "source": "sim", "address": 0}]}
         second = {"requests": [{"name": "sim", "fc": 3, "address": 0, "count": 2}], "fields": [{"name": "value", "type": "uint16", "source": "sim", "address": 0}]}
-        assert client.post("/api/v1/maps", json={"protocol": "simulator", "version": "immutable-v1", "document": first}, headers={"X-CSRF-Token": csrf}).status_code == 200
-        conflict = client.post("/api/v1/maps", json={"protocol": "simulator", "version": "immutable-v1", "document": second}, headers={"X-CSRF-Token": csrf})
-        assert conflict.status_code == 409 and conflict.json()["code"] == "map_immutable"
+        created = client.post("/api/v1/maps", json={"protocol": "simulator", "version": "AGC-2_Basic", "document": first}, headers={"X-CSRF-Token": csrf})
+        assert created.status_code == 200, created.text
+        assert created.json()["version"] == "AGC-2_Basic"
+        assert created.json()["name"] == "AGC-2_Basic"
+        assert created.json()["revision"] == 1
+        vm = client.post(
+            "/api/v1/vms",
+            json={"name": "mapped", "protocol": "simulator", "map_version": "AGC-2_Basic"},
+            headers={"X-CSRF-Token": csrf},
+        )
+        assert vm.status_code == 200, vm.text
+        again = client.post("/api/v1/maps", json={"protocol": "simulator", "version": "AGC-2_Basic", "document": first}, headers={"X-CSRF-Token": csrf})
+        assert again.status_code == 200, again.text
+        assert again.json()["version"] == "AGC-2_Basic"
+        assert again.json()["revision"] == 1
+        nxt = client.post("/api/v1/maps", json={"protocol": "simulator", "version": "AGC-2_Basic", "document": second}, headers={"X-CSRF-Token": csrf})
+        assert nxt.status_code == 200, nxt.text
+        body = nxt.json()
+        assert body["name"] == "AGC-2_Basic"
+        assert body["revision"] == 2
+        assert body["version"] == "AGC-2_Basic@2"
+        assert body["requests"][0]["count"] == 2
+        original = client.get("/api/v1/maps/AGC-2_Basic", params={"protocol": "simulator"})
+        assert original.status_code == 200
+        assert original.json()["document"]["requests"][0]["count"] == 1
+        assert original.json()["revision"] == 1
+        updated = client.get(f"/api/v1/vms/{vm.json()['id']}")
+        assert updated.json()["map_version"] == "AGC-2_Basic@2"
 
 
 def test_get_map_document_by_version(tmp_path: Path):
@@ -1301,16 +1326,16 @@ def test_gpio_chip_seeds_running_vm_once(tmp_path: Path, monkeypatch):
         assert client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin-password"}).status_code == 200
         csrf = client.cookies.get("bb_csrf")
         maps = client.get("/api/v1/maps").json()["items"]
-        assert any(item["protocol"] == "gpio" and item["version"] == "gpio-panel-v1" for item in maps)
+        assert any(item["protocol"] == "gpio" and item["version"] == "gpio-panel-v3" for item in maps)
         vms = [item for item in client.get("/api/v1/vms").json()["items"] if item["protocol"] == "gpio"]
         assert len(vms) == 1
         assert vms[0]["desired_state"] == "running"
-        assert vms[0]["map_version"] == "gpio-panel-v1"
+        assert vms[0]["map_version"] == "gpio-panel-v3"
         assert vms[0]["config"]["reader"]["gpio_chip"] == "/dev/gpiochip0"
         assert vms[0]["read_resources"] == []
-        document = client.get("/api/v1/maps/gpio-panel-v1", params={"protocol": "gpio"}).json()["document"]
+        document = client.get("/api/v1/maps/gpio-panel-v3", params={"protocol": "gpio"}).json()["document"]
         bcm = [field["bcm_pin"] for field in document["fields"] if "bcm_pin" in field]
-        assert bcm == list(range(2, 28))
+        assert bcm == [*range(2, 14), *range(18, 28)]
         stopped = client.post(f"/api/v1/vms/{vms[0]['id']}/stop", headers={"X-CSRF-Token": csrf})
         assert stopped.status_code == 200
     cfg = HubConfig(

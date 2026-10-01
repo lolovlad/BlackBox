@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import hashlib
 import json
+import re
 import secrets
 import sqlite3
 from contextlib import contextmanager
@@ -78,6 +80,41 @@ def _parse_iso(value: Any) -> datetime | None:
     return moment if moment.tzinfo is not None else moment.replace(tzinfo=timezone.utc)
 
 
+_SNAPSHOT_REVISION = re.compile(r"^(.+)@([1-9][0-9]*)$")
+
+
+def parse_map_snapshot(version: str) -> tuple[str, int]:
+    """Split a stored snapshot id into the stable map name and revision."""
+    text = str(version or "").strip()
+    match = _SNAPSHOT_REVISION.fullmatch(text)
+    if not match:
+        return text, 1
+    return match.group(1), int(match.group(2))
+
+
+def map_family_name(version: str) -> str:
+    return parse_map_snapshot(version)[0]
+
+
+def snapshot_version(name: str, revision: int) -> str:
+    return name if int(revision) <= 1 else f"{name}@{int(revision)}"
+
+
+def map_body_checksum(document: dict[str, Any]) -> str:
+    """Checksum of the readable map, ignoring the snapshot id."""
+    protocol = document.get("protocol")
+    if hasattr(protocol, "value"):
+        protocol = protocol.value
+    canonical = {
+        "protocol": protocol,
+        "preset_id": document.get("preset_id"),
+        "requests": document.get("requests") or [],
+        "fields": document.get("fields") or [],
+    }
+    encoded = json.dumps(canonical, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
 class HubRepository:
     def __init__(self, path: Path) -> None:
         self.path = path
@@ -125,7 +162,8 @@ class HubRepository:
                 CREATE TABLE IF NOT EXISTS map_versions (
                     id TEXT PRIMARY KEY, version TEXT NOT NULL, protocol TEXT NOT NULL,
                     preset_id TEXT, checksum TEXT NOT NULL, document_json TEXT NOT NULL,
-                    created_at TEXT NOT NULL, UNIQUE(checksum)
+                    created_at TEXT NOT NULL, name TEXT, revision INTEGER NOT NULL DEFAULT 1,
+                    UNIQUE(checksum)
                 );
                 CREATE TABLE IF NOT EXISTS discovered_resources (
                     resource_id TEXT PRIMARY KEY, kind TEXT NOT NULL, name TEXT NOT NULL,
@@ -314,6 +352,17 @@ class HubRepository:
             alarm_active_columns = {row[1] for row in c.execute("PRAGMA table_info(alarm_active)").fetchall()}
             if "triggers_incident" not in alarm_active_columns:
                 c.execute("ALTER TABLE alarm_active ADD COLUMN triggers_incident INTEGER NOT NULL DEFAULT 0")
+            map_columns = {row[1] for row in c.execute("PRAGMA table_info(map_versions)").fetchall()}
+            if "name" not in map_columns:
+                c.execute("ALTER TABLE map_versions ADD COLUMN name TEXT")
+            if "revision" not in map_columns:
+                c.execute("ALTER TABLE map_versions ADD COLUMN revision INTEGER NOT NULL DEFAULT 1")
+            for row in c.execute("SELECT id, version, name FROM map_versions").fetchall():
+                if str(row["name"] or "").strip():
+                    continue
+                family, revision = parse_map_snapshot(str(row["version"]))
+                c.execute("UPDATE map_versions SET name=?, revision=? WHERE id=?", (family, revision, row["id"]))
+            c.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_map_family_revision ON map_versions(protocol, name, revision)")
             ingest_info = c.execute("PRAGMA table_info(ingest_batches)").fetchall()
             ingest_columns = {row[1] for row in ingest_info}
             ingest_pk = [row[1] for row in ingest_info if row[5]]
@@ -850,14 +899,49 @@ class HubRepository:
 
     def save_map(self, document: dict[str, Any]) -> None:
         now = datetime.now(timezone.utc).isoformat()
+        name = str(document.get("name") or map_family_name(str(document["version"])))
+        revision = int(document.get("revision") or parse_map_snapshot(str(document["version"]))[1])
+        stored = dict(document)
+        stored["name"] = name
+        stored["revision"] = revision
         with self.connect() as c:
-            existing = c.execute("SELECT checksum FROM map_versions WHERE version=? AND protocol=? LIMIT 1", (document["version"], document["protocol"])).fetchone()
-            if existing is not None and existing["checksum"] != document["checksum"]:
-                raise ValueError(f"map version {document['version']} is immutable")
+            existing = c.execute(
+                "SELECT checksum FROM map_versions WHERE version=? AND protocol=? LIMIT 1",
+                (document["version"], document["protocol"]),
+            ).fetchone()
+            if existing is not None:
+                if existing["checksum"] == document["checksum"]:
+                    return
+                raise ValueError(f"Снимок «{document['version']}» уже занят другой картой.")
             c.execute(
-                "INSERT OR IGNORE INTO map_versions(id,version,protocol,preset_id,checksum,document_json,created_at) VALUES(?,?,?,?,?,?,?)",
-                (document["map_id"], document["version"], document["protocol"], document.get("preset_id"), document["checksum"], json.dumps(document), now),
+                "INSERT INTO map_versions(id,version,protocol,preset_id,checksum,document_json,created_at,name,revision) VALUES(?,?,?,?,?,?,?,?,?)",
+                (
+                    document["map_id"],
+                    document["version"],
+                    document["protocol"],
+                    document.get("preset_id"),
+                    document["checksum"],
+                    json.dumps(stored),
+                    now,
+                    name,
+                    revision,
+                ),
             )
+
+    def maps_in_family(self, name: str, protocol: str) -> list[dict[str, Any]]:
+        with self.connect() as c:
+            rows = c.execute(
+                "SELECT id,version,name,revision,protocol,preset_id,checksum,document_json,created_at FROM map_versions WHERE name=? AND protocol=? ORDER BY revision",
+                (name, protocol),
+            ).fetchall()
+        items: list[dict[str, Any]] = []
+        for row in rows:
+            payload = dict(row)
+            payload["document"] = json.loads(payload.pop("document_json"))
+            payload["name"] = str(payload.get("name") or map_family_name(str(payload["version"])))
+            payload["revision"] = int(payload.get("revision") or 1)
+            items.append(payload)
+        return items
 
     def map_by_version(self, version: str, protocol: str | None = None) -> dict[str, Any] | None:
         with self.connect() as c:
@@ -870,26 +954,34 @@ class HubRepository:
     def list_maps(self) -> list[dict[str, Any]]:
         with self.connect() as c:
             rows = c.execute(
-                "SELECT id,version,protocol,preset_id,checksum,created_at FROM map_versions ORDER BY created_at DESC"
+                "SELECT id,version,name,revision,protocol,preset_id,checksum,created_at FROM map_versions ORDER BY created_at DESC"
             ).fetchall()
-        return [dict(row) for row in rows]
+        items: list[dict[str, Any]] = []
+        for row in rows:
+            payload = dict(row)
+            payload["name"] = str(payload.get("name") or map_family_name(str(payload["version"])))
+            payload["revision"] = int(payload.get("revision") or 1)
+            items.append(payload)
+        return items
 
     def map_record(self, version: str, protocol: str | None = None) -> dict[str, Any] | None:
         with self.connect() as c:
             if protocol is None:
                 row = c.execute(
-                    "SELECT id,version,protocol,preset_id,checksum,document_json,created_at FROM map_versions WHERE version=? ORDER BY created_at DESC LIMIT 1",
+                    "SELECT id,version,name,revision,protocol,preset_id,checksum,document_json,created_at FROM map_versions WHERE version=? ORDER BY created_at DESC LIMIT 1",
                     (version,),
                 ).fetchone()
             else:
                 row = c.execute(
-                    "SELECT id,version,protocol,preset_id,checksum,document_json,created_at FROM map_versions WHERE version=? AND protocol=? ORDER BY created_at DESC LIMIT 1",
+                    "SELECT id,version,name,revision,protocol,preset_id,checksum,document_json,created_at FROM map_versions WHERE version=? AND protocol=? ORDER BY created_at DESC LIMIT 1",
                     (version, protocol),
                 ).fetchone()
         if row is None:
             return None
         payload = dict(row)
         payload["document"] = json.loads(payload.pop("document_json"))
+        payload["name"] = str(payload.get("name") or map_family_name(str(payload["version"])))
+        payload["revision"] = int(payload.get("revision") or 1)
         return payload
 
     def vms_using_map(self, version: str, protocol: str) -> list[dict[str, Any]]:

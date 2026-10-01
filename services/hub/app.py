@@ -41,7 +41,7 @@ from workers.gpio.pins import pins_from_fields
 
 from .config import HubConfig
 from .connection import PROFILES, connection_profile, inventory_kinds
-from .db import HubRepository
+from .db import HubRepository, map_body_checksum, map_family_name, snapshot_version
 from .discovery import KIND_LABELS, PROTOCOL_RESOURCE_KIND, discover_gpio_resources, discover_resources, discovery_summary, is_usable_can_interface, is_usable_serial_port
 from .docker_manager import DockerManager, DockerUnavailable
 from .gpio_seed import ensure_gpio_vm, publish_gpio_pins
@@ -690,7 +690,7 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
     repo.upsert_resources(_discover_resources(cfg.data_root, repo, probe_network=False))
     if repo.resource_by_id("storage:data"):
         repo.approve_resource("storage:data", None)
-    ensure_gpio_vm(repo, worker_image=cfg.worker_image_gpio)
+    gpio_map_reloads = ensure_gpio_vm(repo, worker_image=cfg.worker_image_gpio)
     bus = EventBus()
     store = ParquetStore(cfg.data_root / "telemetry", min_free_bytes=cfg.telemetry_min_free_bytes, quota_bytes=cfg.telemetry_quota_bytes)
     docker_manager = DockerManager(docker_client, enabled=cfg.docker_enabled)
@@ -730,6 +730,23 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
         app.state.docker = docker_manager
         app.state.worker_tokens = {}
         app.state.worker_commands = {}
+        for vm_id in gpio_map_reloads:
+            vm = repo.get_vm(vm_id)
+            if vm is None:
+                continue
+            app.state.worker_commands.setdefault(vm_id, []).append(
+                VmCommand(
+                    vm_id=UUID(vm_id),
+                    action="apply_map",
+                    config_revision=int(vm["config_revision"]),
+                    map_version=str(vm["map_version"]),
+                ).model_dump(mode="json")
+            )
+            if vm.get("container_id") and docker_manager.client is not None:
+                try:
+                    await asyncio.to_thread(docker_manager.restart, vm)
+                except Exception:
+                    logger.exception("Failed to restart GPIO worker %s after UART pin sanitization", vm_id)
         app.state.video_previews = {}
         app.state.log_seen = {}
         # Keep buffers independent per VM, even when several VMs share one
@@ -1269,16 +1286,62 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
         logger.exception("Unhandled error on %s %s", request.method, request.url.path)
         return _problem("internal_error", "Internal server error", 500)
 
+    def _adopt_map_revision(protocol: str, previous_versions: list[str], snapshot: str) -> None:
+        seen: set[str] = set()
+        commands = getattr(app.state, "worker_commands", None)
+        for previous in previous_versions:
+            if not previous or previous == snapshot or previous in seen:
+                continue
+            seen.add(previous)
+            for vm in repo.vms_using_map(previous, protocol):
+                updated = repo.update_vm(str(vm["id"]), {"map_version": snapshot})
+                if updated is None or commands is None:
+                    continue
+                running = updated.get("desired_state") == "running" or updated.get("lifecycle") in {
+                    VmLifecycle.STARTING.value,
+                    VmLifecycle.RUNNING.value,
+                }
+                if running:
+                    commands.setdefault(str(vm["id"]), []).append(
+                        VmCommand(
+                            vm_id=UUID(str(vm["id"])),
+                            action="apply_map",
+                            config_revision=int(updated["config_revision"]),
+                            map_version=snapshot,
+                        ).model_dump(mode="json")
+                    )
+
     def _publish_map_document(document_payload: dict[str, Any], *, protocol: VmProtocol, preset_id: str | None, version: str, account: dict[str, Any]) -> MapDocument:
+        family = map_family_name(version)
+        if not family:
+            raise HTTPException(422, detail={"code": "invalid_map", "message": "Укажите название карты"})
         try:
-            document = adapt_legacy_map(document_payload, protocol=protocol, preset_id=preset_id, version=version)
+            preview = adapt_legacy_map(document_payload, protocol=protocol, preset_id=preset_id, version=family)
         except (ValueError, ValidationError, TypeError) as exc:
             raise HTTPException(422, detail={"code": "invalid_map", "message": _exc_message(exc)}) from exc
+        incoming = map_body_checksum(preview.model_dump(mode="json"))
+        family_rows = repo.maps_in_family(family, protocol.value)
+        for row in family_rows:
+            if map_body_checksum(row["document"]) != incoming:
+                continue
+            current = MapDocument.model_validate(row["document"])
+            return current.model_copy(update={"name": row["name"], "revision": int(row["revision"])})
+        revision = 1 + max((int(row["revision"]) for row in family_rows), default=0)
+        snapshot = snapshot_version(family, revision)
+        if len(snapshot) > 128:
+            raise HTTPException(422, detail={"code": "invalid_map", "message": "Название карты слишком длинное"})
+        try:
+            document = adapt_legacy_map(document_payload, protocol=protocol, preset_id=preset_id, version=snapshot)
+        except (ValueError, ValidationError, TypeError) as exc:
+            raise HTTPException(422, detail={"code": "invalid_map", "message": _exc_message(exc)}) from exc
+        document = document.model_copy(update={"name": family, "revision": revision})
         try:
             repo.save_map(document.model_dump(mode="json"))
         except ValueError as exc:
             raise HTTPException(409, detail={"code": "map_immutable", "message": str(exc)}) from exc
-        repo.record_audit(int(account["id"]), "map.publish", document.version, {"checksum": document.checksum})
+        if revision > 1:
+            _adopt_map_revision(protocol.value, [str(row["version"]) for row in family_rows], document.version)
+        repo.record_audit(int(account["id"]), "map.publish", document.version, {"checksum": document.checksum, "name": family, "revision": revision})
         return document
 
     def admin(request: Request):
