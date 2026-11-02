@@ -337,7 +337,7 @@ class HubRepository:
             rule_columns = {row[1] for row in c.execute("PRAGMA table_info(emergency_rules)").fetchall()}
             if "vm_id" not in rule_columns:
                 c.execute("ALTER TABLE emergency_rules ADD COLUMN vm_id TEXT")
-            c.executemany("INSERT OR IGNORE INTO roles(name) VALUES (?)", [("admin",), ("user",)])
+            c.executemany("INSERT OR IGNORE INTO roles(name) VALUES (?)", [("admin",), ("operator",), ("user",)])
             columns = {row[1] for row in c.execute("PRAGMA table_info(virtual_machines)").fetchall()}
             if "heartbeat_at" not in columns:
                 c.execute("ALTER TABLE virtual_machines ADD COLUMN heartbeat_at TEXT")
@@ -434,7 +434,7 @@ class HubRepository:
         return None if row is None else dict(row)
 
     def create_user(self, username: str, password: str, role: str = "user") -> dict[str, Any]:
-        if role not in {"admin", "user"}:
+        if role not in {"admin", "operator", "user"}:
             raise ValueError("invalid role")
         with self.connect() as c:
             c.execute("INSERT INTO users(username,password_hash,role,created_at) VALUES(?,?,?,?)", (username, self.hasher.hash(password), role, datetime.now(timezone.utc).isoformat()))
@@ -445,6 +445,30 @@ class HubRepository:
         with self.connect() as c:
             rows = c.execute("SELECT id,username,role,disabled,created_at FROM users ORDER BY username").fetchall()
         return [dict(row) for row in rows]
+
+    def update_user(self, user_id: int, *, role: str | None = None, disabled: bool | None = None, password: str | None = None) -> dict[str, Any] | None:
+        if role is not None and role not in {"admin", "operator"}:
+            raise ValueError("invalid role")
+        changes: dict[str, Any] = {}
+        if role is not None:
+            changes["role"] = role
+        if disabled is not None:
+            changes["disabled"] = int(disabled)
+        if password:
+            changes["password_hash"] = self.hasher.hash(password)
+        with self.connect() as c:
+            c.execute("BEGIN IMMEDIATE")
+            if changes:
+                assignments = ",".join(f"{key}=?" for key in changes)
+                c.execute(f"UPDATE users SET {assignments} WHERE id=?", [*changes.values(), int(user_id)])
+            row = c.execute("SELECT id,username,role,disabled,created_at FROM users WHERE id=?", (int(user_id),)).fetchone()
+            if row is not None and (disabled is True or password):
+                c.execute(
+                    "UPDATE refresh_sessions SET revoked_at=? WHERE user_id=? AND revoked_at IS NULL",
+                    (datetime.now(timezone.utc).isoformat(), int(user_id)),
+                )
+            c.commit()
+        return dict(row) if row is not None else None
 
     def create_refresh_session(self, user_id: int, token_hash: str, expires_at: str, sid: str | None = None) -> str:
         sid = sid or str(uuid4())

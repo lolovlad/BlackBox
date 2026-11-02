@@ -12,7 +12,7 @@
     {% call field('Носитель', 'Куда писать файлы. По умолчанию внутренний диск Hub.', 'bi-hdd') %}
     <select name="storage_resource_id">
       {% for r in storage_resources %}
-      <option value="{{ r.resource_id }}" {% if r.resource_id == current_storage_id or r.resource_id == storage.get('target_resource_id') %}selected{% endif %}>{{ r.name }} · {{ r.path }}</option>
+      <option value="{{ r.resource_id }}" {% if r.resource_id == current_storage_id or r.resource_id == storage.get('target_resource_id') or (not current_storage_id and not storage.get('target_resource_id') and r.resource_id == default_storage_id) %}selected{% endif %}>{{ r.name }} · {{ r.path }}</option>
       {% endfor %}
     </select>
     {% endcall %}

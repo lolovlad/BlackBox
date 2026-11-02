@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block title %}Пользователи · BlackBox{% endblock %}
+{% block body_class %}bb-admin-page bb-users-page{% endblock %}
+{% block content %}
+<section class="bb-admin-heading" data-current-user="{{ user.id }}">
+  <div><p class="bb-eyebrow">АДМИНИСТРИРОВАНИЕ</p><h1 class="bb-page-title">Пользователи</h1><p class="bb-page-lead">Учетные записи и уровни доступа к системе.</p></div>
+  <div class="bb-admin-count"><strong id="bb-user-count">—</strong><span>учетных записей</span></div>
+</section>
+
+<section class="bb-admin-toolbar" aria-label="Фильтры пользователей">
+  <label class="bb-admin-search"><i class="bi bi-search" aria-hidden="true"></i><span class="bb-sr-only">Поиск пользователей</span><input id="bb-user-search" type="search" placeholder="Поиск по имени" autocomplete="off"></label>
+  <label class="bb-admin-filter"><span class="bb-sr-only">Фильтр по роли</span><select id="bb-user-role-filter"><option value="">Все роли</option><option value="admin">Администраторы</option><option value="operator">Операторы</option></select></label>
+  <label class="bb-admin-filter"><span class="bb-sr-only">Фильтр по статусу</span><select id="bb-user-status-filter"><option value="">Все статусы</option><option value="active">Активные</option><option value="disabled">Отключенные</option></select></label>
+  <button type="button" class="bb-btn" id="bb-user-add-toggle" aria-expanded="false" aria-controls="bb-user-create-panel"><i class="bi bi-person-plus" aria-hidden="true"></i> Добавить пользователя</button>
+</section>
+
+<section class="bb-admin-create" id="bb-user-create-panel" hidden>
+  <div class="bb-admin-create-head"><div><h2>Новая учетная запись</h2><p class="bb-muted">Назначьте роль и задайте временный пароль.</p></div><button type="button" class="bb-icon-btn" id="bb-user-create-close" aria-label="Закрыть"><i class="bi bi-x-lg"></i></button></div>
+  <form id="bb-user-create" class="bb-admin-create-form" autocomplete="off">
+    <label>Имя пользователя<input name="username" required minlength="1" maxlength="255" autocomplete="off" placeholder="Например, operator-2"></label>
+    <label>Временный пароль<input name="password" type="password" required minlength="8" autocomplete="new-password" placeholder="Не менее 8 символов"></label>
+    <label>Роль<select name="role"><option value="operator">Оператор · чтение и экспорт</option><option value="admin">Администратор · полный доступ</option></select></label>
+    <div class="bb-admin-create-actions"><button type="button" class="bb-btn bb-btn-secondary" id="bb-user-create-cancel">Отмена</button><button type="submit" class="bb-btn"><i class="bi bi-check2" aria-hidden="true"></i> Создать</button></div>
+  </form>
+</section>
+
+<section class="bb-admin-table-section" aria-label="Список пользователей">
+  <div class="bb-table-wrap bb-admin-table-wrap"><table class="bb-table bb-admin-table">
+    <thead><tr><th scope="col">Пользователь</th><th scope="col">Роль</th><th scope="col">Статус</th><th scope="col">Создан</th><th scope="col"><span class="bb-sr-only">Действия</span></th></tr></thead>
+    <tbody id="bb-user-list"><tr><td colspan="5" class="bb-admin-empty">Загрузка учетных записей…</td></tr></tbody>
+  </table></div>
+  <p id="bb-user-message" class="bb-admin-message" role="status" aria-live="polite"></p>
+</section>
+
+<dialog class="bb-admin-dialog" id="bb-user-password-dialog" aria-labelledby="bb-user-password-title">
+  <form method="dialog" class="bb-admin-dialog-close"><button class="bb-icon-btn" aria-label="Закрыть"><i class="bi bi-x-lg"></i></button></form>
+  <h2 id="bb-user-password-title">Сменить пароль</h2><p class="bb-muted" id="bb-user-password-label"></p>
+  <form id="bb-user-password-form" class="bb-admin-dialog-form"><label>Новый пароль<input name="password" type="password" required minlength="8" autocomplete="new-password"></label><div class="bb-admin-create-actions"><button type="button" class="bb-btn bb-btn-secondary" id="bb-user-password-cancel">Отмена</button><button type="submit" class="bb-btn">Сохранить пароль</button></div></form>
+</dialog>
+<script defer src="/static/admin.js?v={{ app_version }}-admin2"></script>
+{% endblock %}

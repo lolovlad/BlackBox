@@ -73,6 +73,7 @@ services:
       - /sys/bus/gpio:/host/sys/bus/gpio:ro
       - /sys/class/gpio:/host/sys/class/gpio:ro
       - /proc/net/arp:/host/proc/net/arp:ro
+      - /run/dbus/system_bus_socket:/run/dbus/system_bus_socket
       - /sys/block:/host/sys/block:ro
       - /proc/1/mountinfo:/host/proc/1/mountinfo:ro
       - type: bind

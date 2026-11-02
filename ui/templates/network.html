@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+{% block title %}Сеть · BlackBox{% endblock %}
+{% block body_class %}bb-admin-page bb-network-page{% endblock %}
+{% block content %}
+<section class="bb-admin-heading">
+  <div><p class="bb-eyebrow">АДМИНИСТРИРОВАНИЕ</p><h1 class="bb-page-title">Сеть устройства</h1><p class="bb-page-lead">Интернет-подключение и беспроводная точка доступа.</p></div>
+  {% if settings %}<div class="bb-network-status"><span class="bb-status-dot {% if settings.ethernet.current.state.startswith('100') %}is-online{% endif %}"></span><span>{{ 'Подключено' if settings.ethernet.current.state.startswith('100') else 'Нет подключения' }}</span><small>Ethernet · {{ settings.ethernet.interface }}</small></div>{% endif %}
+</section>
+
+{% if network_error %}
+<section class="bb-network-error" role="alert"><i class="bi bi-exclamation-circle" aria-hidden="true"></i><div><strong>Не удалось получить настройки сети</strong><p>{{ network_error }}</p></div></section>
+{% elif settings %}
+<form id="bb-network-settings" class="bb-network-form" autocomplete="off">
+  <nav class="bb-network-tabs" role="tablist" aria-label="Тип подключения">
+    <button type="button" class="is-active" role="tab" aria-selected="true" aria-controls="bb-network-ethernet" id="bb-tab-ethernet" data-network-tab="ethernet"><i class="bi bi-ethernet" aria-hidden="true"></i><span>Ethernet</span><small>{{ settings.ethernet.current.addresses|join(', ') or 'Нет IP-адреса' }}</small></button>
+    <button type="button" role="tab" aria-selected="false" aria-controls="bb-network-wifi" id="bb-tab-wifi" data-network-tab="wifi"><i class="bi bi-wifi" aria-hidden="true"></i><span>Wi-Fi</span><small>{{ settings.wifi.ssid }} · {{ settings.wifi.current.addresses|join(', ') or 'Нет IP-адреса' }}</small></button>
+  </nav>
+
+  <section class="bb-network-panel" id="bb-network-ethernet" role="tabpanel" aria-labelledby="bb-tab-ethernet">
+    <div class="bb-network-panel-heading"><div><h2>Проводное подключение</h2><p>Получение интернет-настроек от основного роутера.</p></div><span class="bb-interface-tag">{{ settings.ethernet.interface }}</span></div>
+    <label class="bb-switch-row"><span><strong>Получать IP автоматически</strong><small>DHCP назначит IP, шлюз и DNS-серверы</small></span><input type="checkbox" role="switch" name="ethernet_dhcp" {% if settings.ethernet.dhcp %}checked{% endif %}></label>
+    <div class="bb-network-fields" data-ethernet-fields>
+      <label>IP-адрес и маска<input name="ethernet_address" value="{{ settings.ethernet.address }}" placeholder="10.109.114.149/24" inputmode="text" autocomplete="off"></label>
+      <label>Шлюз<input name="ethernet_gateway" value="{{ settings.ethernet.gateway }}" placeholder="10.109.114.1" inputmode="decimal" autocomplete="off"></label>
+      <label>DNS-серверы<input name="ethernet_dns" value="{{ settings.ethernet.dns }}" placeholder="1.1.1.1, 8.8.8.8" inputmode="text" autocomplete="off"></label>
+    </div>
+    <div class="bb-network-current"><span>Текущий адрес</span><strong>{{ settings.ethernet.current.addresses|join(', ') or 'Не назначен' }}</strong><span>Шлюз</span><strong>{{ settings.ethernet.current.gateway or '—' }}</strong><span>DNS</span><strong>{{ settings.ethernet.current.dns|join(', ') or '—' }}</strong></div>
+  </section>
+
+  <section class="bb-network-panel" id="bb-network-wifi" role="tabpanel" aria-labelledby="bb-tab-wifi" hidden>
+    <div class="bb-network-panel-heading"><div><h2>Беспроводная сеть</h2><p>Точка доступа для подключения операторов к устройству.</p></div><span class="bb-interface-tag">{{ settings.wifi.interface }}</span></div>
+    <label class="bb-switch-row"><span><strong>Точка доступа Wi-Fi</strong><small>Выключение отключит подключенных клиентов</small></span><input type="checkbox" role="switch" name="wifi_enabled" {% if settings.wifi.enabled %}checked{% endif %}></label>
+    <div class="bb-network-wifi-fields">
+      <label>Имя сети<input name="wifi_ssid" value="{{ settings.wifi.ssid }}" maxlength="32" required autocomplete="off" placeholder="BlackBox-AP"></label>
+      <label>Пароль Wi-Fi<div class="bb-password-field"><input name="wifi_password" type="password" minlength="8" maxlength="63" autocomplete="new-password" placeholder="{% if settings.wifi.password_configured %}Пароль задан · оставьте пустым, чтобы не менять{% else %}Не менее 8 символов{% endif %}"><button type="button" class="bb-icon-btn" data-password-toggle aria-label="Показать пароль" title="Показать пароль"><i class="bi bi-eye" aria-hidden="true"></i></button></div></label>
+    </div>
+    <p class="bb-network-note"><i class="bi bi-shield-lock" aria-hidden="true"></i>{% if settings.wifi.password_configured %}Защита WPA-PSK включена. Пароль не отображается.{% else %}Для новой точки доступа задайте пароль WPA-PSK.{% endif %}</p>
+    <label class="bb-switch-row bb-network-dhcp-row"><span><strong>Раздавать IP-адреса клиентам</strong><small>DHCP и общий доступ к подключению через NetworkManager</small></span><input type="checkbox" role="switch" name="wifi_dhcp" {% if settings.wifi.dhcp %}checked{% endif %}></label>
+    <div class="bb-network-fields" data-wifi-address-fields>
+      <label>Адрес точки доступа и подсеть<input name="wifi_address" value="{{ settings.wifi.address }}" placeholder="10.200.200.1/24" inputmode="text" autocomplete="off"></label>
+    </div>
+    <div class="bb-network-current"><span>Точка доступа</span><strong>{{ 'Включена' if settings.wifi.enabled else 'Выключена' }}</strong><span>Адрес устройства</span><strong>{{ settings.wifi.current.addresses|join(', ') or settings.wifi.address or 'Не задан' }}</strong><span>Шлюз</span><strong>{{ settings.wifi.current.gateway or '—' }}</strong></div>
+  </section>
+
+  <footer class="bb-network-footer"><p id="bb-network-message" class="bb-admin-message" role="status" aria-live="polite">Изменения вступят в силу после применения. Подключение по текущей сети может прерваться.</p><button type="submit" class="bb-btn" id="bb-network-save"><i class="bi bi-floppy" aria-hidden="true"></i> Сохранить настройки</button></footer>
+</form>
+{% endif %}
+<script defer src="/static/admin.js?v={{ app_version }}-admin2"></script>
+{% endblock %}

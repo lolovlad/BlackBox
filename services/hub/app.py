@@ -47,6 +47,7 @@ from .docker_manager import DockerManager, DockerUnavailable
 from .gpio_seed import ensure_gpio_vm, publish_gpio_pins
 from .link import vm_link_status
 from .monitor import collect_system_monitor, gpio_panel
+from .network_config import NetworkConfigError, apply_network, network_status
 from .probe import run_probe
 from .registry import PROTOCOLS, protocol_spec
 from .security import (
@@ -239,7 +240,18 @@ _CAMERA_ID = re.compile(r"^[A-Za-z0-9_-]+$")
 class UserCreateRequest(BaseModel):
     username: str = Field(min_length=1, max_length=255)
     password: str = Field(min_length=8, max_length=1024)
-    role: str = "user"
+    role: Literal["admin", "operator"] = "operator"
+
+
+class UserPatchRequest(BaseModel):
+    role: Literal["admin", "operator"] | None = None
+    disabled: bool | None = None
+    password: str | None = Field(default=None, min_length=8, max_length=1024)
+
+
+class NetworkSettingsRequest(BaseModel):
+    ethernet: dict[str, Any]
+    wifi: dict[str, Any]
 
 
 def _exc_message(exc: BaseException) -> str:
@@ -518,6 +530,19 @@ def _approved_storage_resource(repo: HubRepository, resource_id: str | None) -> 
             },
         )
     return resource_id
+
+
+def _default_storage_id(repo: HubRepository) -> str:
+    resources = repo.list_resources()
+    for item in resources:
+        if (
+            item.get("kind") == ResourceKind.STORAGE.value
+            and item.get("approved")
+            and item.get("available")
+            and str((item.get("metadata") or {}).get("device") or "").startswith("nvme")
+        ):
+            return str(item["resource_id"])
+    return "storage:data"
 
 
 def _video_output_dir(repo: HubRepository, cfg: HubConfig, config: VideoConfig) -> str:
@@ -807,6 +832,9 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
             if descriptor is None or descriptor.get("kind") != ResourceKind.STORAGE.value or not descriptor.get("approved") or not descriptor.get("available"):
                 raise StorageUnavailable(f"Storage target is not approved: {target_id}")
             base = Path(descriptor.get("path") or cfg.data_root).resolve()
+            device = str((descriptor.get("metadata") or {}).get("device") or "")
+            if device.startswith("nvme") and not os.path.ismount(base):
+                raise StorageUnavailable(f"Selected NVMe storage is not mounted: {base}")
             subdir = str(storage_cfg.get("telemetry_subdir") or "telemetry")
             root = (base / subdir).resolve()
             try:
@@ -816,6 +844,14 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
             key = f"{root}|{vm['id']}"
             existing = app.state.storage_stores.get(key)
             if existing is None:
+                try:
+                    root.mkdir(parents=True, exist_ok=True)
+                    with tempfile.NamedTemporaryFile(prefix=".blackbox-write-check-", dir=root) as check:
+                        check.write(b"blackbox-storage-check")
+                        check.flush()
+                        os.fsync(check.fileno())
+                except OSError as exc:
+                    raise StorageUnavailable(f"Selected storage is not writable: {root}: {exc}") from exc
                 existing = ParquetStore(
                     root,
                     min_free_bytes=int(storage_cfg.get("min_free_bytes", cfg.telemetry_min_free_bytes)),
@@ -1497,7 +1533,11 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
         read_input = payload.read_resources if payload.read_resources is not None else (payload.resources or [])
         resources = _bind_protocol_read_resources(repo, payload.protocol.value, read_input, int(account["id"]))
         _validate_reader_allowlist(repo, payload.protocol.value, runtime_config, resources)
-        storage_id = _approved_storage_resource(repo, payload.storage_resource_id or runtime_config["storage"]["target_resource_id"])
+        requested_storage = payload.storage_resource_id
+        explicit_storage = payload.config.get("storage") if isinstance(payload.config.get("storage"), dict) else {}
+        if requested_storage is None and not explicit_storage.get("target_resource_id") and not payload.config.get("storage_target_id"):
+            requested_storage = _default_storage_id(repo)
+        storage_id = _approved_storage_resource(repo, requested_storage or runtime_config["storage"]["target_resource_id"])
         runtime_config["storage"]["target_resource_id"] = storage_id
         image = {
             VmProtocol.SIMULATOR: cfg.worker_image_simulator,
@@ -1900,7 +1940,46 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
             repo.record_audit(int(account["id"]), "user.create", str(created["id"]), {"role": created["role"]})
             return created
         except Exception as exc:
+            if isinstance(exc, ValueError) and str(exc) == "invalid role":
+                raise HTTPException(422, detail={"code": "invalid_role", "message": "Role must be admin or operator"}) from exc
             return _problem("user_create_failed", str(exc), 409)
+
+    @app.patch("/api/v1/users/{user_id}", dependencies=[Depends(csrf_protect)])
+    async def update_user_account(user_id: int, payload: UserPatchRequest, account=Depends(admin)):
+        values = payload.model_dump(exclude_unset=True)
+        target = next((item for item in repo.list_users() if int(item["id"]) == user_id), None)
+        if target is None:
+            raise HTTPException(404, detail={"code": "user_not_found", "message": "Пользователь не найден"})
+        next_role = values.get("role", target["role"])
+        next_disabled = values.get("disabled", bool(target["disabled"]))
+        if user_id == int(account["id"]) and (next_disabled or next_role != "admin"):
+            raise HTTPException(409, detail={"code": "self_lockout", "message": "Нельзя отключить или понизить собственную учетную запись"})
+        if target["role"] == "admin" and not target["disabled"] and (next_role != "admin" or next_disabled):
+            active_admins = [item for item in repo.list_users() if item["role"] == "admin" and not item["disabled"]]
+            if len(active_admins) <= 1:
+                raise HTTPException(409, detail={"code": "last_admin", "message": "Нельзя отключить последнего администратора"})
+        try:
+            updated = repo.update_user(user_id, **values)
+        except ValueError as exc:
+            raise HTTPException(422, detail={"code": "invalid_role", "message": str(exc)}) from exc
+        repo.record_audit(int(account["id"]), "user.update", str(user_id), {key: value for key, value in values.items() if key != "password"} | ({"password_reset": True} if values.get("password") else {}))
+        return updated
+
+    @app.get("/api/v1/network")
+    async def get_network_settings(account=Depends(admin)):
+        try:
+            return await asyncio.to_thread(network_status)
+        except NetworkConfigError as exc:
+            raise HTTPException(503, detail={"code": "network_unavailable", "message": str(exc)}) from exc
+
+    @app.put("/api/v1/network", dependencies=[Depends(csrf_protect)])
+    async def put_network_settings(payload: NetworkSettingsRequest, account=Depends(admin)):
+        try:
+            result = await asyncio.to_thread(apply_network, payload.model_dump())
+        except NetworkConfigError as exc:
+            raise HTTPException(422, detail={"code": "network_settings_failed", "message": str(exc)}) from exc
+        repo.record_audit(int(account["id"]), "network.configure", None, {"ethernet_dhcp": bool(payload.ethernet.get("dhcp")), "wifi_enabled": bool(payload.wifi.get("enabled")), "wifi_ssid": payload.wifi.get("ssid")})
+        return result
 
     @app.get("/api/v1/vms/{vm_id}/logs")
     async def vm_logs(vm_id: str, tail: int = Query(default=2000, ge=1, le=5000), account=Depends(user)):
@@ -2818,6 +2897,7 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
             "reader": {},
             "storage": {},
             "buffer": {},
+            "default_storage_id": _default_storage_id(repo),
             "selected_read_ids": [],
             "current_storage_id": "",
             **groups,
@@ -3599,6 +3679,26 @@ def create_app(config: HubConfig | None = None, *, docker_client: Any = None) ->
                 **groups,
             },
         )
+
+    @app.get("/admin/users", response_class=HTMLResponse)
+    async def admin_users_page(request: Request):
+        account = _require_admin_html(request)
+        if isinstance(account, RedirectResponse):
+            return account
+        return templates.TemplateResponse(request=request, name="users.html", context={"user": account})
+
+    @app.get("/admin/network", response_class=HTMLResponse)
+    async def admin_network_page(request: Request):
+        account = _require_admin_html(request)
+        if isinstance(account, RedirectResponse):
+            return account
+        try:
+            settings = await asyncio.to_thread(network_status)
+            error = None
+        except NetworkConfigError as exc:
+            settings = None
+            error = str(exc)
+        return templates.TemplateResponse(request=request, name="network.html", context={"user": account, "settings": settings, "network_error": error})
 
     @app.get("/admin/maps", response_class=HTMLResponse)
     async def admin_maps_page(request: Request):

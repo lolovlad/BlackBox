@@ -15,7 +15,7 @@ RUN pip install --no-cache-dir uv
 
 FROM base AS hub-deps
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends iputils-ping \
+    && apt-get install -y --no-install-recommends iputils-ping network-manager \
     && rm -rf /var/lib/apt/lists/*
 COPY pyproject.toml uv.lock README.md ./
 RUN --mount=type=cache,target=/root/.cache/uv \
@@ -47,6 +47,7 @@ COPY presets ./presets
 COPY ui ./ui
 COPY blackbox ./blackbox
 COPY modbus_acquire ./modbus_acquire
+ENV DBUS_SYSTEM_BUS_ADDRESS=unix:path=/run/dbus/system_bus_socket
 EXPOSE 8080
 ENTRYPOINT ["/app/.venv/bin/uvicorn", "services.hub.app:app", "--host", "0.0.0.0", "--port", "8080"]
 

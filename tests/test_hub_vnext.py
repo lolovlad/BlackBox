@@ -10,6 +10,7 @@ from bb_platform.contracts import RawBatch, RawSample, VmProtocol
 from bb_platform.parser import parse_source_values
 from workers.modbus_rtu.main import ModbusReader
 from services.hub.app import create_app
+from services.hub.app import _default_storage_id
 from services.hub.config import HubConfig
 
 
@@ -1140,6 +1141,74 @@ def test_user_is_read_only_and_websocket_gets_snapshot(tmp_path: Path):
             assert snapshot["alarms"] == []
             assert snapshot["vm_status"] == []
             assert "tags_good" in snapshot and "system" in snapshot
+
+
+def test_operator_role_is_read_only_and_can_be_created_in_admin_ui(tmp_path: Path):
+    with _client(tmp_path) as client:
+        client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin-password"})
+        csrf = client.cookies.get("bb_csrf")
+        assert client.get("/admin/users").status_code == 200
+        created = client.post(
+            "/api/v1/users",
+            json={"username": "operator", "password": "operator-password", "role": "operator"},
+            headers={"X-CSRF-Token": csrf},
+        )
+        assert created.status_code == 200
+        assert created.json()["role"] == "operator"
+        client.post("/api/v1/auth/logout", headers={"X-CSRF-Token": csrf})
+        client.cookies.clear()
+        assert client.post("/api/v1/auth/login", json={"username": "operator", "password": "operator-password"}).status_code == 200
+        csrf = client.cookies.get("bb_csrf")
+        assert client.get("/api/v1/users").status_code == 403
+        assert client.get("/api/v1/network").status_code == 403
+        assert client.post("/api/v1/vms", json={}, headers={"X-CSRF-Token": csrf}).status_code == 403
+
+
+def test_admin_can_manage_users_without_locking_out_the_last_admin(tmp_path: Path):
+    with _client(tmp_path) as client:
+        assert client.post("/api/v1/auth/login", json={"username": "admin", "password": "admin-password"}).status_code == 200
+        csrf = client.cookies.get("bb_csrf")
+        created = client.post(
+            "/api/v1/users",
+            json={"username": "operator", "password": "operator-password", "role": "operator"},
+            headers={"X-CSRF-Token": csrf},
+        )
+        user_id = created.json()["id"]
+
+        assert client.patch(f"/api/v1/users/{user_id}", json={"role": "admin"}, headers={"X-CSRF-Token": csrf}).json()["role"] == "admin"
+        changed_password = client.patch(
+            f"/api/v1/users/{user_id}", json={"password": "new-operator-password"}, headers={"X-CSRF-Token": csrf}
+        )
+        assert changed_password.status_code == 200
+        assert "password" not in changed_password.json()
+        assert client.patch(f"/api/v1/users/{user_id}", json={"disabled": True}, headers={"X-CSRF-Token": csrf}).status_code == 200
+        assert client.post("/api/v1/auth/login", json={"username": "operator", "password": "new-operator-password"}).status_code == 401
+
+        self_id = client.get("/api/v1/auth/me").json()["id"]
+        last_admin = client.patch(f"/api/v1/users/{self_id}", json={"disabled": True}, headers={"X-CSRF-Token": csrf})
+        assert last_admin.status_code == 409
+        assert last_admin.json()["code"] == "self_lockout"
+
+        self_role = client.patch(f"/api/v1/users/{self_id}", json={"role": "operator"}, headers={"X-CSRF-Token": csrf})
+        assert self_role.status_code == 409
+        assert self_role.json()["code"] == "self_lockout"
+
+
+def test_nvme_is_the_default_storage_when_available():
+    class Resources:
+        def __init__(self, items):
+            self.items = items
+
+        def list_resources(self):
+            return self.items
+
+    assert _default_storage_id(Resources([
+        {"resource_id": "storage:data", "kind": "storage", "approved": True, "available": True, "metadata": {"class": "internal"}},
+        {"resource_id": "storage:nvme0n1p1", "kind": "storage", "approved": True, "available": True, "metadata": {"device": "nvme0n1p1"}},
+    ])) == "storage:nvme0n1p1"
+    assert _default_storage_id(Resources([
+        {"resource_id": "storage:nvme0n1p1", "kind": "storage", "approved": False, "available": True, "metadata": {"device": "nvme0n1p1"}},
+    ])) == "storage:data"
 
 
 def test_parser_rejects_attribute_escape():
