@@ -24,7 +24,7 @@
       <label>Шлюз<input name="ethernet_gateway" value="{{ settings.ethernet.gateway }}" placeholder="10.109.114.1" inputmode="decimal" autocomplete="off"></label>
       <label>DNS-серверы<input name="ethernet_dns" value="{{ settings.ethernet.dns }}" placeholder="1.1.1.1, 8.8.8.8" inputmode="text" autocomplete="off"></label>
     </div>
-    <div class="bb-network-current"><span>Текущий адрес</span><strong>{{ settings.ethernet.current.addresses|join(', ') or 'Не назначен' }}</strong><span>Шлюз</span><strong>{{ settings.ethernet.current.gateway or '—' }}</strong><span>DNS</span><strong>{{ settings.ethernet.current.dns|join(', ') or '—' }}</strong></div>
+    <div class="bb-network-current"><div><span>Текущий адрес</span><strong>{{ settings.ethernet.current.addresses|join(', ') or 'Не назначен' }}</strong></div><div><span>Шлюз</span><strong>{{ settings.ethernet.current.gateway or '—' }}</strong></div><div><span>DNS</span><strong>{{ settings.ethernet.current.dns|join(', ') or '—' }}</strong></div></div>
   </section>
 
   <section class="bb-network-panel" id="bb-network-wifi" role="tabpanel" aria-labelledby="bb-tab-wifi" hidden>
@@ -39,7 +39,7 @@
     <div class="bb-network-fields" data-wifi-address-fields>
       <label>Адрес точки доступа и подсеть<input name="wifi_address" value="{{ settings.wifi.address }}" placeholder="10.200.200.1/24" inputmode="text" autocomplete="off"></label>
     </div>
-    <div class="bb-network-current"><span>Точка доступа</span><strong>{{ 'Включена' if settings.wifi.enabled else 'Выключена' }}</strong><span>Адрес устройства</span><strong>{{ settings.wifi.current.addresses|join(', ') or settings.wifi.address or 'Не задан' }}</strong><span>Шлюз</span><strong>{{ settings.wifi.current.gateway or '—' }}</strong></div>
+    <div class="bb-network-current"><div><span>Точка доступа</span><strong>{{ 'Включена' if settings.wifi.enabled else 'Выключена' }}</strong></div><div><span>Адрес устройства</span><strong>{{ settings.wifi.current.addresses|join(', ') or settings.wifi.address or 'Не задан' }}</strong></div><div><span>Шлюз</span><strong>{{ settings.wifi.current.gateway or '—' }}</strong></div></div>
   </section>
 
   <footer class="bb-network-footer"><p id="bb-network-message" class="bb-admin-message" role="status" aria-live="polite">Изменения вступят в силу после применения. Подключение по текущей сети может прерваться.</p><button type="submit" class="bb-btn" id="bb-network-save"><i class="bi bi-floppy" aria-hidden="true"></i> Сохранить настройки</button></footer>

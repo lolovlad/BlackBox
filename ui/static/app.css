@@ -2044,7 +2044,7 @@ html.bb-header-closed .bb-header-inner {
   .bb-log-row { grid-template-columns: 1fr; gap: 0.1rem; margin-bottom: 0.55rem; }
 }
 
-.bb-admin-page { max-width: 1080px; }
+.bb-admin-page .bb-main { max-width: 1080px; }
 .bb-admin-heading { display: flex; align-items: center; justify-content: space-between; gap: 1.25rem; margin: 0.1rem 0 1.25rem; }
 .bb-admin-heading > div:first-child { min-width: 0; }
 .bb-admin-heading .bb-page-title { margin-bottom: .2rem; }
@@ -2139,7 +2139,8 @@ html.bb-header-closed .bb-header-inner {
 .bb-network-note { display: flex; align-items: center; gap: .45rem; margin: -.25rem 0 .7rem; color: var(--bb-slate); font-size: .78rem; }
 .bb-network-note i { color: #247c77; }
 .bb-network-dhcp-row { margin-top: .2rem; }
-.bb-network-current { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: .2rem .75rem; padding-top: .8rem; border-top: 1px solid var(--bb-border); }
+.bb-network-current { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: .75rem; padding-top: .8rem; border-top: 1px solid var(--bb-border); }
+.bb-network-current > div { display: grid; gap: .2rem; min-width: 0; }
 .bb-network-current span { color: var(--bb-slate); font-size: .72rem; }
 .bb-network-current strong { min-width: 0; overflow-wrap: anywhere; font-size: .78rem; font-weight: 600; }
 .bb-network-footer { display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: .8rem 1.35rem; border-top: 1px solid var(--bb-border); background: #f7f9fa; }
@@ -2155,7 +2156,6 @@ html.bb-header-closed .bb-header-inner {
   .bb-admin-create-actions { grid-column: 1; }
   .bb-network-fields { grid-template-columns: 1fr; }
   .bb-network-current { grid-template-columns: repeat(2,minmax(0,1fr)); }
-  .bb-network-current > :nth-child(3) { grid-column: 1; }
   .bb-network-footer { align-items: stretch; flex-direction: column; }
 }
 @media (max-width: 480px) {
@@ -2164,9 +2164,7 @@ html.bb-header-closed .bb-header-inner {
   .bb-network-tabs button { width: 50%; padding: .65rem; }
   .bb-network-panel { padding: .9rem; }
   .bb-network-wifi-fields { grid-template-columns: 1fr; }
-  .bb-network-current { grid-template-columns: 1fr; gap: .25rem; }
-  .bb-network-current strong { margin-bottom: .35rem; }
-  .bb-network-current > :nth-child(3) { grid-column: auto; }
+  .bb-network-current { grid-template-columns: 1fr; gap: .55rem; }
   .bb-network-footer { padding: .8rem .9rem; }
 }
 
